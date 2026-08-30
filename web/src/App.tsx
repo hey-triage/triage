@@ -7,10 +7,10 @@ import { HelpOverlay } from './components/HelpOverlay.js'
 import { InboxPage } from './components/InboxPage.js'
 import { ProjectsPage } from './components/ProjectsPage.js'
 import {
-  NewSessionDialog,
+  NewSessionComposer,
   type NewSession,
   type SessionPreset,
-} from './components/NewSessionDialog.js'
+} from './components/NewSessionComposer.js'
 import { Sidebar } from './components/Sidebar.js'
 import { Transcript } from './components/Transcript.js'
 import { ADD_WATCH_KEY, REFINE_WATCH_KEY, WatchesPage } from './components/WatchesPage.js'
@@ -24,7 +24,6 @@ export function App() {
   const [route, navigate] = useHashRoute()
   const currentId = route.page === 'session' ? route.id : null
   const events = useEvents(currentId)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [preset, setPreset] = useState<SessionPreset | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -62,13 +61,16 @@ export function App() {
 
   const newSession = useCallback(() => {
     setPreset(null)
-    setDialogOpen(true)
-  }, [])
+    navigate('')
+  }, [navigate])
 
-  const newSessionIn = useCallback((project: Project) => {
-    setPreset({ title: '', firstMessage: '', cwd: project.path })
-    setDialogOpen(true)
-  }, [])
+  const newSessionIn = useCallback(
+    (project: Project) => {
+      setPreset({ title: '', firstMessage: '', cwd: project.path })
+      navigate('')
+    },
+    [navigate],
+  )
 
   const syncInbox = useCallback(() => {
     // Bust the server cache, then (re)mount the inbox so it renders the result.
@@ -122,6 +124,7 @@ export function App() {
       cwd: s.cwd,
       firstMessage: s.firstMessage || undefined,
     })
+    setPreset(null)
   }, [])
 
   const addWatch = useCallback(() => {
@@ -154,7 +157,7 @@ export function App() {
           'Use `gh` to pull the full context (diff, comments, CI) and get started.',
         ].join('\n'),
       })
-      setDialogOpen(true)
+      navigate('')
     }
     // A project tied to the item's repo decides where the session runs.
     void fetch('/api/projects')
@@ -164,7 +167,7 @@ export function App() {
         openWith(match?.path)
       })
       .catch(() => openWith())
-  }, [])
+  }, [navigate])
 
   return (
     <>
@@ -193,6 +196,8 @@ export function App() {
           <ConnectorsPage />
         ) : route.page === 'projects' ? (
           <ProjectsPage />
+        ) : route.page === 'home' ? (
+          <NewSessionComposer preset={preset} onCreate={create} />
         ) : current ? (
           <>
             <div id="chatHeader">
@@ -215,16 +220,9 @@ export function App() {
             />
           </>
         ) : (
-          <div id="empty">Start a session to dispatch work to Claude Code →</div>
+          <div id="empty">Session not found →</div>
         )}
       </div>
-
-      <NewSessionDialog
-        open={dialogOpen}
-        preset={preset}
-        onClose={() => setDialogOpen(false)}
-        onCreate={create}
-      />
 
       <CommandPalette
         open={paletteOpen}

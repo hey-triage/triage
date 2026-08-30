@@ -196,6 +196,20 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
   .sess.running .dot, .card .glyph.busy, .statusline .pip, .msg.assistant.live::after { animation: none; }
 }
 
+/* ---------- new-session home ---------- */
+#newSessionHome {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 16px; padding: 20px;
+}
+#newSessionHome h2 { margin: 0; font-size: 15px; font-weight: 500; color: var(--dim); }
+#newSessionHome #composer { width: 100%; padding: 0; }
+#newSessionHome .frame { max-width: 640px; }
+.statusline select.chip {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  cursor: pointer; font: 11px/1.4 var(--mono); max-width: 260px;
+}
+.statusline select.chip:focus { outline: none; border-color: var(--accent-dim); }
+
 /* ---------- empty / modal ---------- */
 #empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--dim); }
 dialog {
