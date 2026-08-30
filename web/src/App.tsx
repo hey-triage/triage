@@ -5,6 +5,7 @@ import type {
   PermissionMode,
   Project,
   ProjectsResponse,
+  QuestionAnswers,
   ScoredItem,
 } from '../../shared/protocol.js'
 import { CommandPalette } from './components/CommandPalette.js'
@@ -49,8 +50,9 @@ export function App() {
   }, [currentId, conn])
 
   const respond = useCallback(
-    (requestId: string, behavior: PermissionBehavior) => {
-      if (currentId) store.send({ type: 'permission_response', sessionId: currentId, requestId, behavior })
+    (requestId: string, behavior: PermissionBehavior, answers?: QuestionAnswers) => {
+      if (currentId)
+        store.send({ type: 'permission_response', sessionId: currentId, requestId, behavior, answers })
     },
     [currentId],
   )

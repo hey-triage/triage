@@ -263,7 +263,20 @@ export type SessionEvent =
     }
   // 'expired' = the request outlived its subprocess (interrupt, crash, server
   // restart) and can no longer be answered.
-  | { kind: 'permission_resolved'; id: string; behavior: PermissionBehavior | 'expired' }
+  | {
+      kind: 'permission_resolved'
+      id: string
+      behavior: PermissionBehavior | 'expired'
+      /** What the user picked, when the prompt was an AskUserQuestion. */
+      answers?: QuestionAnswers
+    }
+
+/**
+ * The answers to an `AskUserQuestion` call: question text → the chosen option
+ * label (multi-select joins its labels with ", "). Handed back to the tool as
+ * `input.answers`, which is where Claude Code reads a picked answer from.
+ */
+export type QuestionAnswers = Record<string, string>
 
 // ---------------------------------------------------------------------------
 // Wire messages
@@ -290,6 +303,8 @@ export type ClientMessage =
       sessionId: string
       requestId: string
       behavior: PermissionBehavior
+      /** Set only for AskUserQuestion prompts — folded into the tool's input. */
+      answers?: QuestionAnswers
     }
   | { type: 'interrupt'; sessionId: string }
 

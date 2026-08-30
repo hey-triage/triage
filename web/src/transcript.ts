@@ -13,6 +13,7 @@ import {
   isToolUseBlock,
   type McpServerInfo,
   type PermissionBehavior,
+  type QuestionAnswers,
   type RawBlock,
   type SessionEvent,
 } from '../../shared/protocol.js'
@@ -42,6 +43,8 @@ export type TranscriptItem =
       title?: string
       canAlwaysAllow?: boolean
       resolved?: PermissionBehavior | 'expired'
+      /** AskUserQuestion only: what the user picked, for the replayed card. */
+      answers?: QuestionAnswers
     }
 
 export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem[] {
@@ -78,7 +81,10 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
       }
       case 'permission_resolved': {
         const item = permsById.get(ev.id)
-        if (item) item.resolved = ev.behavior
+        if (item) {
+          item.resolved = ev.behavior
+          item.answers = ev.answers
+        }
         break
       }
       case 'sdk': {

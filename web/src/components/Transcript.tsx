@@ -1,7 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
-import type { PermissionBehavior, SessionEvent } from '../../../shared/protocol.js'
+import type { PermissionBehavior, QuestionAnswers, SessionEvent } from '../../../shared/protocol.js'
+import { parseQuestions } from '../askQuestions.js'
 import { useLiveText } from '../hooks.js'
 import { buildTranscript, type TranscriptItem } from '../transcript.js'
+import { AskCard } from './AskCard.js'
 import { InitCard } from './InitCard.js'
 import { Markdown } from './Markdown.js'
 import { PermissionCard } from './PermissionCard.js'
@@ -10,7 +12,7 @@ import { ToolCard } from './ToolCard.js'
 type Props = {
   sessionId: string
   events: readonly SessionEvent[]
-  onRespond: (requestId: string, behavior: PermissionBehavior) => void
+  onRespond: (requestId: string, behavior: PermissionBehavior, answers?: QuestionAnswers) => void
 }
 
 export function Transcript({ sessionId, events, onRespond }: Props) {
@@ -59,8 +61,16 @@ const Item = memo(function Item({
       return <InitCard item={item} />
     case 'tool':
       return <ToolCard item={item} />
-    case 'permission':
-      return <PermissionCard item={item} onRespond={onRespond} />
+    case 'permission': {
+      // AskUserQuestion arrives as a permission prompt, but it is a question
+      // for the reader — render it as choices, not as JSON to approve.
+      const questions = item.toolName === 'AskUserQuestion' ? parseQuestions(item.input) : null
+      return questions ? (
+        <AskCard item={item} questions={questions} onRespond={onRespond} />
+      ) : (
+        <PermissionCard item={item} onRespond={onRespond} />
+      )
+    }
   }
 })
 

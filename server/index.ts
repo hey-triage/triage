@@ -40,6 +40,7 @@ import type {
   ModelsResponse,
   PermissionBehavior,
   PermissionMode,
+  QuestionAnswers,
   SdkMessage,
   ServerMessage,
   SessionEvent,
@@ -265,12 +266,19 @@ class LiveSession {
     })
   }
 
-  resolvePermission(id: string, behavior: PermissionBehavior) {
+  resolvePermission(id: string, behavior: PermissionBehavior, answers?: QuestionAnswers) {
     const pending = this.pendingPermissions.get(id)
     if (!pending) return
     this.pendingPermissions.delete(id)
     if (behavior === 'deny') {
       pending.resolve({ behavior: 'deny', message: 'Denied by the user in the triage web UI.' })
+    } else if (answers) {
+      // AskUserQuestion: the picked labels ride back in on the tool's input,
+      // which is where the tool reads the user's answer from.
+      pending.resolve({
+        behavior: 'allow',
+        updatedInput: { ...pending.input, answers },
+      })
     } else {
       // 'allow_always' is 'allow' plus the SDK's suggested rules — re-homed to
       // 'session' first. The SDK suggests 'localSettings', which would write
@@ -286,7 +294,7 @@ class LiveSession {
           : {}),
       })
     }
-    this.emit({ kind: 'permission_resolved', id, behavior }, true)
+    this.emit({ kind: 'permission_resolved', id, behavior, ...(answers ? { answers } : {}) }, true)
   }
 
   /**
@@ -1127,6 +1135,18 @@ const permissionMode = (v: unknown): PermissionMode | undefined =>
   PERMISSION_MODES.includes(v as PermissionMode) ? (v as PermissionMode) : undefined
 
 /**
+ * AskUserQuestion answers off the socket: a flat string→string map, or nothing.
+ * Non-string values are dropped rather than passed through — this object is
+ * merged into a tool's input.
+ */
+const questionAnswers = (v: unknown): QuestionAnswers | undefined => {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined
+  const out: QuestionAnswers = {}
+  for (const [k, val] of Object.entries(v)) if (typeof val === 'string') out[k] = val
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
  * The socket is untrusted input (vision principle 6), so incoming frames are
  * validated into the ClientMessage union rather than cast into it.
  */
@@ -1172,6 +1192,7 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
             // the ones that have to be spelled out exactly.
             behavior:
               m.behavior === 'allow' ? 'allow' : m.behavior === 'allow_always' ? 'allow_always' : 'deny',
+            answers: questionAnswers(m.answers),
           }
         : null
     case 'interrupt':
@@ -1251,7 +1272,7 @@ wss.on('connection', (ws) => {
           break
         }
         case 'permission_response': {
-          live.get(msg.sessionId)?.resolvePermission(msg.requestId, msg.behavior)
+          live.get(msg.sessionId)?.resolvePermission(msg.requestId, msg.behavior, msg.answers)
           break
         }
         case 'interrupt': {
