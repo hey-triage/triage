@@ -124,9 +124,10 @@ body {
 .perm pre { font-family: var(--mono); font-size: 11px; color: var(--dim); max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 10px; }
 .perm button { padding: 6px 16px; border-radius: 7px; border: none; cursor: pointer; font-weight: 600; margin-right: 8px; }
 .perm .allow { background: var(--green); color: #10240f; }
+.perm .allowAlways { background: transparent; color: var(--green); border: 1px solid var(--green); }
 .perm .deny { background: transparent; color: var(--red); border: 1px solid var(--red); }
 .perm .verdict { font-size: 12px; font-family: var(--mono); color: var(--dim); }
-.perm .verdict.allow { color: var(--green); }
+.perm .verdict.allow, .perm .verdict.allow_always { color: var(--green); }
 .perm .verdict.deny { color: var(--red); }
 
 .meta {
@@ -277,6 +278,52 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
 .modelPicker .submenu .blurb {
   margin: 4px 8px 8px; font-size: 11.5px; line-height: 1.4; color: var(--dim);
 }
+
+/* ---------- permission-mode picker ---------- */
+/* Shares the model picker's menu shell; only the chip and the risk colouring
+   are its own, so the two chips sit in one statusline as siblings. */
+.permPicker { position: relative; flex: none; }
+.statusline .chip.perm {
+  cursor: pointer; font: 11px/1.4 var(--mono); color: var(--text); gap: 6px;
+}
+.statusline .chip.perm:hover:not(:disabled) { border-color: var(--accent-dim); }
+.statusline .chip.perm:disabled { opacity: .5; cursor: default; }
+.statusline .chip.perm svg { fill: none; stroke: currentColor; color: var(--dim); }
+/* A permissive session should be legible at a glance, not read off a menu. */
+.statusline .chip.perm.risk-some { border-color: var(--accent-dim); color: var(--accent); }
+.statusline .chip.perm.risk-some svg { color: var(--accent); }
+.statusline .chip.perm.risk-high { border-color: var(--red); color: var(--red); }
+.statusline .chip.perm.risk-high svg { color: var(--red); }
+
+.permPicker .menu {
+  position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 0;
+  min-width: 330px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
+  font: 13px/1.45 -apple-system, "Segoe UI", sans-serif;
+}
+.permPicker .row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 10px; border: none; border-radius: 8px; cursor: pointer;
+  background: transparent; color: var(--text); text-align: left; font: inherit;
+}
+.permPicker .row:hover { background: rgba(255, 255, 255, .06); }
+.permPicker .row .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.permPicker .row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.permPicker .row .desc { font-size: 11.5px; color: var(--dim); white-space: normal; }
+.permPicker .row svg { flex: none; color: var(--accent); }
+.permPicker .row.risk-high .name { color: var(--red); }
+.permPicker .blurb { margin: 6px 10px 4px; font-size: 11.5px; line-height: 1.4; color: var(--dim); }
+.permPicker .blurb kbd { font-family: var(--mono); font-size: 10.5px; }
+
+.permPicker .confirm { margin: 6px; padding: 10px; border: 1px solid var(--red); border-radius: 8px; }
+.permPicker .confirm p { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--text); }
+.permPicker .confirm button {
+  padding: 6px 12px; border-radius: 7px; cursor: pointer; font-weight: 600;
+  font-size: 12px; margin-right: 8px;
+}
+.permPicker .confirm .danger { background: var(--red); color: #2a0f0f; border: none; }
+.permPicker .confirm .cancel { background: transparent; color: var(--dim); border: 1px solid var(--border); }
 
 /* ---------- empty / modal ---------- */
 #empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--dim); }

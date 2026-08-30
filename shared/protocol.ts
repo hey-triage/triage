@@ -13,7 +13,20 @@
 
 export type SessionStatus = 'starting' | 'idle' | 'running' | 'error'
 
-export type PermissionBehavior = 'allow' | 'deny'
+/**
+ * What the user did with one prompt. `allow_always` is `allow` plus the SDK's
+ * own "don't ask again" suggestions, scoped to this session — the narrow way
+ * to stop being asked, as against turning the whole session permissive.
+ */
+export type PermissionBehavior = 'allow' | 'allow_always' | 'deny'
+
+/**
+ * How much the session asks before acting. A subset of the SDK's own
+ * `PermissionMode`: the four that answer "how often am I interrupted".
+ * ('plan' and 'dontAsk' are the SDK's other two — deliberately not offered,
+ * they change what the agent does rather than how much it asks.)
+ */
+export type PermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions'
 
 /** How much thinking the model puts into a turn. The SDK's own scale. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -27,6 +40,8 @@ export type SessionSummary = {
   model?: string
   /** The chosen effort, when the user picked one. */
   effort?: EffortLevel
+  /** How much this session asks before acting. Absent = 'default'. */
+  permissionMode?: PermissionMode
   /** Current git branch of `cwd`, when it is a repo. Derived, not stored. */
   branch?: string
 }
@@ -240,6 +255,11 @@ export type SessionEvent =
       input: Record<string, unknown>
       title?: string
       description?: string
+      /**
+       * The SDK offered "don't ask again" rules for this call, so the card can
+       * show that button. Not every prompt has them (a one-off path, say).
+       */
+      canAlwaysAllow?: boolean
     }
   // 'expired' = the request outlived its subprocess (interrupt, crash, server
   // restart) and can no longer be answered.
@@ -257,9 +277,12 @@ export type ClientMessage =
       firstMessage?: string
       model?: string
       effort?: EffortLevel
+      permissionMode?: PermissionMode
     }
   /** Switch a session's model/effort — mid-session, and for every turn after. */
   | { type: 'set_model'; sessionId: string; model?: string; effort?: EffortLevel }
+  /** Switch how much a session asks — mid-session, and for every turn after. */
+  | { type: 'set_permission_mode'; sessionId: string; mode: PermissionMode }
   | { type: 'subscribe'; sessionId: string }
   | { type: 'user_message'; sessionId: string; text: string }
   | {

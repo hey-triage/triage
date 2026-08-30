@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   EffortLevel,
   PermissionBehavior,
+  PermissionMode,
   Project,
   ProjectsResponse,
   ScoredItem,
@@ -64,6 +65,13 @@ export function App() {
   const setModel = useCallback(
     (model: string | undefined, effort: EffortLevel | undefined) => {
       if (currentId) store.send({ type: 'set_model', sessionId: currentId, model, effort })
+    },
+    [currentId],
+  )
+
+  const setPermissionMode = useCallback(
+    (mode: PermissionMode) => {
+      if (currentId) store.send({ type: 'set_permission_mode', sessionId: currentId, mode })
     },
     [currentId],
   )
@@ -138,6 +146,7 @@ export function App() {
       firstMessage: s.firstMessage || undefined,
       model: s.model,
       effort: s.effort,
+      permissionMode: s.permissionMode,
     })
     setPreset(null)
   }, [])
@@ -232,9 +241,11 @@ export function App() {
               branch={current.branch}
               model={current.model}
               effort={current.effort}
+              permissionMode={current.permissionMode}
               onSend={sendMessage}
               onInterrupt={interrupt}
               onModelChange={setModel}
+              onPermissionModeChange={setPermissionMode}
             />
           </>
         ) : (

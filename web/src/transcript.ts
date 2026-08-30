@@ -40,6 +40,7 @@ export type TranscriptItem =
       toolName: string
       input: Record<string, unknown>
       title?: string
+      canAlwaysAllow?: boolean
       resolved?: PermissionBehavior | 'expired'
     }
 
@@ -69,6 +70,7 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
           toolName: ev.toolName,
           input: ev.input,
           title: ev.title,
+          canAlwaysAllow: ev.canAlwaysAllow,
         }
         permsById.set(ev.id, item)
         items.push(item)

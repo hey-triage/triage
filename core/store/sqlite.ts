@@ -12,7 +12,7 @@ import path from 'node:path'
 import type { InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
 import type { WorkItem } from '../work/types.js'
 import type { ItemState, ItemStatus } from '../work/state.js'
-import type { EffortLevel } from '../../shared/protocol.js'
+import type { EffortLevel, PermissionMode } from '../../shared/protocol.js'
 import type { NewWatch, Watch, WatchCadence, WatchRunResult } from '../watch/types.js'
 import type {
   ConfigStore,
@@ -106,6 +106,9 @@ const MIGRATIONS: string[] = [
   // is not the same as any named model — an org can move it under us.
   `ALTER TABLE sessions ADD COLUMN model TEXT;
    ALTER TABLE sessions ADD COLUMN effort TEXT;`,
+  // 7: how much a session asks before acting. NULL = 'default' (ask every
+  // time), which is what every session predating this column was doing.
+  `ALTER TABLE sessions ADD COLUMN permission_mode TEXT;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -151,15 +154,25 @@ type SessionRow = {
   sdk_session_id: string | null
   model: string | null
   effort: string | null
+  permission_mode: string | null
   created_at: number
   updated_at: number
 }
 
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
+const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions']
+
 /** Storage is text; anything the app no longer recognizes reads back as null. */
 const toEffort = (v: string | null): EffortLevel | null =>
   EFFORTS.includes(v as EffortLevel) ? (v as EffortLevel) : null
+
+/**
+ * Same rule, and it matters more here: a mode we stop recognizing must fall
+ * back to asking, never to a permissive mode inferred from a stale string.
+ */
+const toPermissionMode = (v: string | null): PermissionMode | null =>
+  PERMISSION_MODES.includes(v as PermissionMode) ? (v as PermissionMode) : null
 
 const toSession = (r: SessionRow): StoredSession => ({
   id: r.id,
@@ -168,6 +181,7 @@ const toSession = (r: SessionRow): StoredSession => ({
   sdkSessionId: r.sdk_session_id,
   model: r.model,
   effort: toEffort(r.effort),
+  permissionMode: toPermissionMode(r.permission_mode),
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -179,13 +193,14 @@ class SqliteSessions implements SessionStore {
     const now = Date.now()
     const model = s.model ?? null
     const effort = s.effort ?? null
+    const permissionMode = s.permissionMode ?? null
     this.db
       .prepare(
-        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, permission_mode, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
       )
-      .run(s.id, s.title, s.cwd, model, effort, now, now)
-    return { ...s, model, effort, sdkSessionId: null, createdAt: now, updatedAt: now }
+      .run(s.id, s.title, s.cwd, model, effort, permissionMode, now, now)
+    return { ...s, model, effort, permissionMode, sdkSessionId: null, createdAt: now, updatedAt: now }
   }
 
   async get(id: string): Promise<StoredSession | null> {
@@ -204,6 +219,10 @@ class SqliteSessions implements SessionStore {
 
   async setModel(id: string, model: string | null, effort: EffortLevel | null): Promise<void> {
     this.db.prepare('UPDATE sessions SET model = ?, effort = ? WHERE id = ?').run(model, effort, id)
+  }
+
+  async setPermissionMode(id: string, mode: PermissionMode | null): Promise<void> {
+    this.db.prepare('UPDATE sessions SET permission_mode = ? WHERE id = ?').run(mode, id)
   }
 
   async touch(id: string): Promise<void> {

@@ -4,6 +4,7 @@ import { MOD_LABEL } from '../keys.js'
 const SHORTCUTS: Array<[string, string]> = [
   [`${MOD_LABEL}K`, 'Command center'],
   ['n', 'New session'],
+  ['Shift+Tab', 'Composer: cycle how much the session asks before acting'],
   ['g i', 'Go to Inbox'],
   ['g w', 'Go to Watches'],
   ['g p', 'Go to Projects'],

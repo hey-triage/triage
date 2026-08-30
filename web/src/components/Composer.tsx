@@ -1,7 +1,9 @@
 import { Folder, GitBranch } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
-import type { EffortLevel, SessionStatus } from '../../../shared/protocol.js'
+import type { EffortLevel, PermissionMode, SessionStatus } from '../../../shared/protocol.js'
+import { nextMode } from '../permissionModes.js'
 import { ModelPicker } from './ModelPicker.js'
+import { PermissionModePicker } from './PermissionModePicker.js'
 
 type Props = {
   status: SessionStatus
@@ -9,9 +11,11 @@ type Props = {
   branch?: string
   model?: string
   effort?: EffortLevel
+  permissionMode?: PermissionMode
   onSend: (text: string) => void
   onInterrupt: () => void
   onModelChange: (model: string | undefined, effort: EffortLevel | undefined) => void
+  onPermissionModeChange: (mode: PermissionMode) => void
 }
 
 /** `/Users/you/Code/x` → `~/Code/x` — display only. */
@@ -32,9 +36,11 @@ export function Composer({
   branch,
   model,
   effort,
+  permissionMode,
   onSend,
   onInterrupt,
   onModelChange,
+  onPermissionModeChange,
 }: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
@@ -70,6 +76,7 @@ export function Composer({
             </span>
           )}
           <ModelPicker model={model} effort={effort} onChange={onModelChange} />
+          <PermissionModePicker mode={permissionMode} onChange={onPermissionModeChange} />
           <span className={`state ${status}`}>
             <span className="pip" />
             {STATUS_LABEL[status]}
@@ -92,6 +99,12 @@ export function Composer({
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 submit()
+              } else if (e.key === 'Tab' && e.shiftKey) {
+                // Claude Code's own gesture, and the composer is where the
+                // hands already are — so it lives here rather than in the
+                // global map, which ignores keys typed into a text field.
+                e.preventDefault()
+                onPermissionModeChange(nextMode(permissionMode))
               }
             }}
           />
@@ -106,7 +119,8 @@ export function Composer({
         </div>
 
         <div className="hint">
-          <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for a new line
+          <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for a new line · <kbd>Shift+Tab</kbd> to
+          change what gets asked
         </div>
       </div>
     </div>

@@ -13,7 +13,13 @@
  * - Booleans are 0/1 in storage, real booleans out here.
  * - JSON is (de)serialized inside the adapter; domain types carry objects.
  */
-import type { EffortLevel, InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
+import type {
+  EffortLevel,
+  InboxSnapshot,
+  PermissionMode,
+  Project,
+  SessionEvent,
+} from '../../shared/protocol.js'
 import type { WorkItem } from '../work/types.js'
 import type { ItemState } from '../work/state.js'
 import type { NewWatch, Watch, WatchRunResult } from '../watch/types.js'
@@ -28,6 +34,8 @@ export type StoredSession = {
   model: string | null
   /** The effort the user picked; null = the model's own default. */
   effort: EffortLevel | null
+  /** How much the session asks before acting; null = 'default' (ask). */
+  permissionMode: PermissionMode | null
   createdAt: number
   updatedAt: number
 }
@@ -38,6 +46,7 @@ export type NewSession = {
   cwd: string
   model?: string | null
   effort?: EffortLevel | null
+  permissionMode?: PermissionMode | null
 }
 
 export type StoredEvent = {
@@ -54,6 +63,8 @@ export interface SessionStore {
   setSdkSessionId(id: string, sdkSessionId: string): Promise<void>
   /** Persist a model/effort switch, so a revived session keeps the choice. */
   setModel(id: string, model: string | null, effort: EffortLevel | null): Promise<void>
+  /** Persist a permission-mode switch, so a revived session keeps the choice. */
+  setPermissionMode(id: string, mode: PermissionMode | null): Promise<void>
   /** Bump updatedAt (a session saw activity). */
   touch(id: string): Promise<void>
 }

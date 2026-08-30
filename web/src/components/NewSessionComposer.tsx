@@ -1,8 +1,15 @@
 import { ChevronDown, FolderGit2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { EffortLevel, Project, ProjectsResponse } from '../../../shared/protocol.js'
+import type {
+  EffortLevel,
+  PermissionMode,
+  Project,
+  ProjectsResponse,
+} from '../../../shared/protocol.js'
 import { isEffort } from '../models.js'
+import { isPermissionMode, nextMode } from '../permissionModes.js'
 import { ModelPicker } from './ModelPicker.js'
+import { PermissionModePicker } from './PermissionModePicker.js'
 
 export type NewSession = {
   title: string
@@ -10,6 +17,7 @@ export type NewSession = {
   firstMessage: string
   model?: string
   effort?: EffortLevel
+  permissionMode?: PermissionMode
 }
 
 export type SessionPreset = { title: string; firstMessage: string; cwd?: string }
@@ -26,6 +34,9 @@ const DEFAULT_CWD = '~/Code/prnl/hey-triage'
 // per-browser preference, so it does not belong in the session store.
 const MODEL_KEY = 'triage.newSession.model'
 const EFFORT_KEY = 'triage.newSession.effort'
+// Permission mode is remembered the same way — someone who works in auto mode
+// wants the next session in auto mode too, not a fresh round of prompts.
+const PERMISSION_KEY = 'triage.newSession.permissionMode'
 
 const remembered = (key: string): string | undefined => localStorage.getItem(key) ?? undefined
 
@@ -52,6 +63,10 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
   const [effort, setEffort] = useState<EffortLevel | undefined>(() => {
     const stored = remembered(EFFORT_KEY)
     return isEffort(stored) ? stored : undefined
+  })
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(() => {
+    const stored = remembered(PERMISSION_KEY)
+    return isPermissionMode(stored) ? stored : undefined
   })
   const box = useRef<HTMLTextAreaElement>(null)
 
@@ -85,7 +100,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
   function submit() {
     const trimmed = text.trim()
     if (!trimmed) return
-    onCreate({ title: titleFrom(trimmed), cwd, firstMessage: trimmed, model, effort })
+    onCreate({ title: titleFrom(trimmed), cwd, firstMessage: trimmed, model, effort, permissionMode })
     setText('')
     requestAnimationFrame(autosize)
   }
@@ -127,6 +142,14 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
                 remember(EFFORT_KEY, e)
               }}
             />
+
+            <PermissionModePicker
+              mode={permissionMode}
+              onChange={(m) => {
+                setPermissionMode(m)
+                remember(PERMISSION_KEY, m)
+              }}
+            />
           </div>
 
           <div className="inputRow">
@@ -145,6 +168,11 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   submit()
+                } else if (e.key === 'Tab' && e.shiftKey) {
+                  e.preventDefault()
+                  const m = nextMode(permissionMode)
+                  setPermissionMode(m)
+                  remember(PERMISSION_KEY, m)
                 }
               }}
             />

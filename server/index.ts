@@ -29,6 +29,7 @@ import {
   type Query,
   type SDKUserMessage,
   type PermissionResult,
+  type PermissionUpdate,
 } from '@anthropic-ai/claude-agent-sdk'
 import type {
   ClientMessage,
@@ -38,6 +39,7 @@ import type {
   ModelOption,
   ModelsResponse,
   PermissionBehavior,
+  PermissionMode,
   SdkMessage,
   ServerMessage,
   SessionEvent,
@@ -114,6 +116,13 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
+/**
+ * A permission rule the SDK suggested, pinned to this session. Every variant
+ * of PermissionUpdate carries a `destination`, so this is a blanket rewrite —
+ * nothing an "Always allow" click produces may reach a settings file.
+ */
+const sessionScoped = (u: PermissionUpdate): PermissionUpdate => ({ ...u, destination: 'session' })
+
 // ---------------------------------------------------------------------------
 // Live session: one running Claude subprocess bound to a stored session row.
 // ---------------------------------------------------------------------------
@@ -124,9 +133,16 @@ class LiveSession {
   private readonly input = new AsyncQueue<SDKUserMessage>()
   private readonly pendingPermissions = new Map<
     string,
-    { input: Record<string, unknown>; resolve: (r: PermissionResult) => void }
+    {
+      input: Record<string, unknown>
+      /** The SDK's own "don't ask again" rules, replayed on `allow_always`. */
+      suggestions: PermissionUpdate[]
+      resolve: (r: PermissionResult) => void
+    }
   >()
   private readonly q: Query
+  /** Whether this subprocess was spawned able to bypass permission checks. */
+  private readonly bypassArmed: boolean
 
   constructor(
     readonly row: StoredSession,
@@ -134,6 +150,7 @@ class LiveSession {
     resumeSdkSessionId: string | null,
   ) {
     this.seq = lastSeq
+    this.bypassArmed = row.permissionMode === 'bypassPermissions'
     this.q = query({
       prompt: this.input,
       options: {
@@ -147,10 +164,22 @@ class LiveSession {
         // real choice (an org can move it), not a model we should pin here.
         ...(row.model ? { model: row.model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
+        // How much this session asks. Omitted for 'default' so the SDK keeps
+        // its own default rather than us pinning a value that means the same.
+        ...(row.permissionMode && row.permissionMode !== 'default'
+          ? { permissionMode: row.permissionMode }
+          : {}),
+        // The SDK refuses 'bypassPermissions' without this explicit opt-in.
+        ...(row.permissionMode === 'bypassPermissions'
+          ? { allowDangerouslySkipPermissions: true }
+          : {}),
         // Revival: replay the agent's own transcript into the new subprocess.
         ...(resumeSdkSessionId ? { resume: resumeSdkSessionId } : {}),
+        // Still set under every mode: the permissive modes short-circuit the
+        // calls they cover before this runs, and whatever still reaches here
+        // is a call that mode decided a human should see.
         canUseTool: (toolName, toolInput, opts) =>
-          this.requestPermission(toolName, toolInput, opts.title, opts.description),
+          this.requestPermission(toolName, toolInput, opts),
       },
     })
     void this.pump()
@@ -215,13 +244,24 @@ class LiveSession {
   private requestPermission(
     toolName: string,
     toolInput: Record<string, unknown>,
-    title?: string,
-    description?: string,
+    opts: { title?: string; description?: string; suggestions?: PermissionUpdate[] },
   ): Promise<PermissionResult> {
     const id = randomUUID()
+    const suggestions = opts.suggestions ?? []
     return new Promise<PermissionResult>((resolve) => {
-      this.pendingPermissions.set(id, { input: toolInput, resolve })
-      this.emit({ kind: 'permission_request', id, toolName, input: toolInput, title, description }, true)
+      this.pendingPermissions.set(id, { input: toolInput, suggestions, resolve })
+      this.emit(
+        {
+          kind: 'permission_request',
+          id,
+          toolName,
+          input: toolInput,
+          title: opts.title,
+          description: opts.description,
+          canAlwaysAllow: suggestions.length > 0,
+        },
+        true,
+      )
     })
   }
 
@@ -229,12 +269,52 @@ class LiveSession {
     const pending = this.pendingPermissions.get(id)
     if (!pending) return
     this.pendingPermissions.delete(id)
-    if (behavior === 'allow') {
-      pending.resolve({ behavior: 'allow', updatedInput: pending.input })
-    } else {
+    if (behavior === 'deny') {
       pending.resolve({ behavior: 'deny', message: 'Denied by the user in the triage web UI.' })
+    } else {
+      // 'allow_always' is 'allow' plus the SDK's suggested rules — re-homed to
+      // 'session' first. The SDK suggests 'localSettings', which would write
+      // the rule into the project's .claude on disk and outlive the session; a
+      // button in a transcript is consent for this session, not a settings
+      // edit. Widening the scope beyond that stays a deliberate act in
+      // ~/.claude, where the user can see the whole list at once.
+      pending.resolve({
+        behavior: 'allow',
+        updatedInput: pending.input,
+        ...(behavior === 'allow_always' && pending.suggestions.length > 0
+          ? { updatedPermissions: pending.suggestions.map(sessionScoped) }
+          : {}),
+      })
     }
     this.emit({ kind: 'permission_resolved', id, behavior }, true)
+  }
+
+  /**
+   * Switch how much this session asks, for every turn from here on.
+   *
+   * Returns false when the running subprocess cannot take the switch — the
+   * caller has already persisted it, so the fix is to end this subprocess and
+   * let the next turn revive one built for the new mode. That is the case for
+   * 'bypassPermissions': its opt-in is a spawn-time CLI flag, so a subprocess
+   * started without it can never be talked into bypassing.
+   */
+  async setPermissionMode(mode: PermissionMode): Promise<boolean> {
+    if (mode === 'bypassPermissions' && !this.bypassArmed) return false
+    try {
+      await this.q.setPermissionMode(mode)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * End the subprocess without killing the session: closing the prompt stream
+   * ends the SDK's iteration, and `pump`'s `finally` does the bookkeeping.
+   * The next message revives it from the row, picking up whatever changed.
+   */
+  stop() {
+    this.input.close()
   }
 
   private expirePendingPermissions() {
@@ -289,6 +369,7 @@ function summarize(row: StoredSession): SessionSummary {
     // before the subprocess has reported anything.
     model: row.model ?? l?.model,
     effort: row.effort ?? undefined,
+    permissionMode: row.permissionMode ?? undefined,
     branch: branches.get(row.id),
   }
 }
@@ -318,8 +399,16 @@ async function createSession(
   cwd: string,
   model: string | null,
   effort: EffortLevel | null,
+  permissionMode: PermissionMode | null,
 ): Promise<StoredSession> {
-  const row = await store.sessions.create({ id: randomUUID(), title, cwd, model, effort })
+  const row = await store.sessions.create({
+    id: randomUUID(),
+    title,
+    cwd,
+    model,
+    effort,
+    permissionMode,
+  })
   rows.set(row.id, row)
   live.set(row.id, new LiveSession(row, 0, null))
   void refreshBranch(row)
@@ -1028,6 +1117,15 @@ const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const effort = (v: unknown): EffortLevel | undefined =>
   EFFORT_LEVELS.includes(v as EffortLevel) ? (v as EffortLevel) : undefined
 
+const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions']
+
+/**
+ * Unrecognized modes fall through to `undefined`, i.e. ask — a frame the
+ * server does not understand must never widen what a session may do.
+ */
+const permissionMode = (v: unknown): PermissionMode | undefined =>
+  PERMISSION_MODES.includes(v as PermissionMode) ? (v as PermissionMode) : undefined
+
 /**
  * The socket is untrusted input (vision principle 6), so incoming frames are
  * validated into the ClientMessage union rather than cast into it.
@@ -1046,11 +1144,18 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         firstMessage: typeof m.firstMessage === 'string' ? m.firstMessage : undefined,
         model: model(m.model),
         effort: effort(m.effort),
+        permissionMode: permissionMode(m.permissionMode),
       }
     case 'set_model':
       return typeof m.sessionId === 'string'
         ? { type: 'set_model', sessionId: m.sessionId, model: model(m.model), effort: effort(m.effort) }
         : null
+    case 'set_permission_mode': {
+      const mode = permissionMode(m.mode)
+      return typeof m.sessionId === 'string' && mode
+        ? { type: 'set_permission_mode', sessionId: m.sessionId, mode }
+        : null
+    }
     case 'subscribe':
       return typeof m.sessionId === 'string' ? { type: 'subscribe', sessionId: m.sessionId } : null
     case 'user_message':
@@ -1063,7 +1168,10 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
             type: 'permission_response',
             sessionId: m.sessionId,
             requestId: m.requestId,
-            behavior: m.behavior === 'allow' ? 'allow' : 'deny',
+            // Anything unrecognized is a denial: the permissive readings are
+            // the ones that have to be spelled out exactly.
+            behavior:
+              m.behavior === 'allow' ? 'allow' : m.behavior === 'allow_always' ? 'allow_always' : 'deny',
           }
         : null
     case 'interrupt':
@@ -1092,7 +1200,13 @@ wss.on('connection', (ws) => {
         case 'create_session': {
           const cwd = expandHome(msg.cwd)
           const title = msg.title.trim() || `Session ${rows.size + 1}`
-          const row = await createSession(title, cwd, msg.model ?? null, msg.effort ?? null)
+          const row = await createSession(
+            title,
+            cwd,
+            msg.model ?? null,
+            msg.effort ?? null,
+            msg.permissionMode ?? null,
+          )
           send(ws, { type: 'session_created', session: summarize(row) })
           broadcastSessionList()
           if (msg.firstMessage?.trim()) live.get(row.id)?.sendUserMessage(msg.firstMessage.trim())
@@ -1107,6 +1221,20 @@ wss.on('connection', (ws) => {
           // A session with no subprocess picks the choice up from its row when
           // it is revived; a live one is switched in place.
           await live.get(row.id)?.setModel(row.model, row.effort)
+          broadcastSessionList()
+          break
+        }
+        case 'set_permission_mode': {
+          const row = rows.get(msg.sessionId)
+          if (!row) break
+          row.permissionMode = msg.mode
+          await store.sessions.setPermissionMode(row.id, msg.mode)
+          // Same shape as set_model: the row is the source of truth for a
+          // revival, and a live subprocess is switched in place where it can
+          // be. Where it cannot (arming a bypass needs a spawn-time flag), the
+          // subprocess is retired so the next turn brings up one that can.
+          const session = live.get(row.id)
+          if (session && !(await session.setPermissionMode(msg.mode))) session.stop()
           broadcastSessionList()
           break
         }
