@@ -44,30 +44,6 @@ export function Sidebar({
       <header>
         triage <small>local sessions · claude code harness</small>
       </header>
-      <button id="newBtn" onClick={onNew}>
-        + New session
-      </button>
-      <div id="sessionList">
-        {sessions.map((s) => (
-          <div
-            key={s.id}
-            className={`sess ${s.status}${s.id === currentId ? ' active' : ''}`}
-            onClick={() => onSelect(s.id)}
-          >
-            <span className="dot" />
-            <span className="name">{s.title}</span>
-            <a
-              href={`#${s.id}`}
-              target="_blank"
-              rel="noreferrer"
-              title="Open in new tab"
-              onClick={(e) => e.stopPropagation()}
-            >
-              ↗
-            </a>
-          </div>
-        ))}
-      </div>
       <nav id="sideNav">
         <button className={`navItem${inboxActive ? ' active' : ''}`} onClick={onInbox}>
           <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -94,6 +70,30 @@ export function Sidebar({
           Connectors
         </button>
       </nav>
+      <button id="newBtn" onClick={onNew}>
+        + New session
+      </button>
+      <div id="sessionList">
+        {sessions.map((s) => (
+          <div
+            key={s.id}
+            className={`sess ${s.status}${s.id === currentId ? ' active' : ''}`}
+            onClick={() => onSelect(s.id)}
+          >
+            <span className="dot" />
+            <span className="name">{s.title}</span>
+            <a
+              href={`#${s.id}`}
+              target="_blank"
+              rel="noreferrer"
+              title="Open in new tab"
+              onClick={(e) => e.stopPropagation()}
+            >
+              ↗
+            </a>
+          </div>
+        ))}
+      </div>
       <div className={conn === 'connected' ? '' : 'down'} id="connState">
         {CONN_LABEL[conn]}
         <kbd title="Command center">{MOD_LABEL}K</kbd>

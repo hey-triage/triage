@@ -215,7 +215,7 @@ dialog .go { background: var(--accent); color: #1a1408; }
 dialog .cancel { background: transparent; color: var(--dim); border: 1px solid var(--border); }
 
 /* ---------- sidebar nav ---------- */
-#sideNav { padding: 8px; border-top: 1px solid var(--border); }
+#sideNav { padding: 8px; border-bottom: 1px solid var(--border); }
 #sideNav .navItem {
   width: 100%; display: flex; align-items: center; gap: 8px;
   padding: 9px 10px; border-radius: 8px; border: 1px solid transparent;
