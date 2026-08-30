@@ -1,3 +1,4 @@
+import { ChevronDown, FolderGit2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Project, ProjectsResponse } from '../../../shared/protocol.js'
 
@@ -70,23 +71,26 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
       <div id="composer">
         <div className="frame">
           <div className="statusline">
-            <select
-              className="chip cwd"
-              title={cwd}
-              value={projects.find((p) => p.path === cwd)?.id ?? ''}
-              onChange={(e) => {
-                const p = projects.find((x) => x.id === e.target.value)
-                if (p) setCwd(p.path)
-              }}
-            >
-              {!projects.some((p) => p.path === cwd) && <option value="">{homely(cwd)}</option>}
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {p.repo ? ` (${p.repo})` : ''}
-                </option>
-              ))}
-            </select>
+            <label className="chip cwd pick" title={`Project folder: ${cwd}`}>
+              <FolderGit2 size={13} aria-hidden="true" />
+              <select
+                aria-label="Project"
+                value={projects.find((p) => p.path === cwd)?.id ?? ''}
+                onChange={(e) => {
+                  const p = projects.find((x) => x.id === e.target.value)
+                  if (p) setCwd(p.path)
+                }}
+              >
+                {!projects.some((p) => p.path === cwd) && <option value="">{homely(cwd)}</option>}
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.repo ? ` (${p.repo})` : ''}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={12} aria-hidden="true" />
+            </label>
           </div>
 
           <div className="inputRow">
@@ -96,7 +100,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
               autoFocus
               rows={1}
               value={text}
-              placeholder="Message Claude…"
+              placeholder="Describe what you want to work on — a bug, a feature, a question…"
               onChange={(e) => {
                 setText(e.target.value)
                 autosize()
@@ -108,13 +112,15 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
                 }
               }}
             />
+          </div>
+
+          <div className="actions">
+            <span className="hint">
+              <kbd>Enter</kbd> to start · <kbd>Shift+Enter</kbd> for a new line
+            </span>
             <button id="sendBtn" onClick={submit} disabled={!text.trim()}>
               Start
             </button>
-          </div>
-
-          <div className="hint">
-            <kbd>Enter</kbd> to start · <kbd>Shift+Enter</kbd> for a new line
           </div>
         </div>
       </div>

@@ -158,9 +158,11 @@ body {
 }
 .statusline .chip.cwd { overflow: hidden; }
 .statusline .chip.cwd { text-overflow: ellipsis; }
-.statusline .chip svg { width: 12px; height: 12px; fill: var(--dim); flex: none; }
+.statusline .chip svg {
+  width: 13px; height: 13px; flex: none;
+  fill: none; stroke: currentColor; opacity: .8;
+}
 .statusline .chip.branch { color: var(--blue); }
-.statusline .chip.branch svg { fill: var(--blue); }
 .statusline .state { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; }
 .statusline .pip { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
 .statusline .state.idle .pip { background: var(--green); }
@@ -172,9 +174,10 @@ body {
 #box {
   flex: 1; resize: none; background: transparent; color: var(--text);
   border: none; padding: 6px 2px;
-  font: 16px/1.5 inherit; min-height: 26px; max-height: 200px; outline: none;
+  font-family: inherit; font-size: 15px; line-height: 1.6;
+  min-height: 26px; max-height: 200px; outline: none;
 }
-#box::placeholder { color: var(--dim); }
+#box::placeholder { color: var(--dim); opacity: 1; }
 #sendBtn, #stopBtn {
   padding: 8px 18px; border-radius: 9px; border: none; cursor: pointer; font-weight: 600;
   flex: none; transition: filter .1s, opacity .1s;
@@ -201,14 +204,33 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 16px; padding: 20px;
 }
-#newSessionHome h2 { margin: 0; font-size: 15px; font-weight: 500; color: var(--dim); }
-#newSessionHome #composer { width: 100%; padding: 0; }
-#newSessionHome .frame { max-width: 640px; }
-.statusline select.chip {
-  appearance: none; -webkit-appearance: none; -moz-appearance: none;
-  cursor: pointer; font: 11px/1.4 var(--mono); max-width: 260px;
+#newSessionHome h2 {
+  margin: 0; font-size: 20px; font-weight: 500; letter-spacing: -.01em; color: var(--text);
 }
-.statusline select.chip:focus { outline: none; border-color: var(--accent-dim); }
+#newSessionHome #composer { width: 100%; padding: 0; }
+#newSessionHome .frame { max-width: 720px; }
+#newSessionHome .inputRow { padding: 14px 14px 0; }
+#newSessionHome #box { min-height: 132px; max-height: 320px; font-size: 16px; }
+#newSessionHome .actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px 12px;
+}
+#newSessionHome .actions .hint { padding: 0; }
+#newSessionHome .actions #sendBtn { padding: 8px 22px; }
+.statusline .chip.cwd.pick {
+  color: var(--text); cursor: pointer; max-width: 300px;
+  transition: border-color .12s, background .12s;
+}
+.statusline .chip.cwd.pick:hover { border-color: var(--accent-dim); background: #1e2431; }
+.statusline .chip.cwd.pick:focus-within { border-color: var(--accent-dim); }
+.statusline .chip.cwd.pick select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  min-width: 0; max-width: 100%; padding: 0; margin: 0;
+  background: transparent; border: none; outline: none; cursor: pointer;
+  color: inherit; font: 11px/1.6 var(--mono);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.statusline .chip.cwd.pick select option { background: var(--panel); color: var(--text); }
 
 /* ---------- empty / modal ---------- */
 #empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--dim); }
