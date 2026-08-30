@@ -13,7 +13,7 @@
  * - Booleans are 0/1 in storage, real booleans out here.
  * - JSON is (de)serialized inside the adapter; domain types carry objects.
  */
-import type { InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
+import type { EffortLevel, InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
 import type { WorkItem } from '../work/types.js'
 import type { ItemState } from '../work/state.js'
 import type { NewWatch, Watch, WatchRunResult } from '../watch/types.js'
@@ -24,6 +24,10 @@ export type StoredSession = {
   cwd: string
   /** Claude Code's own session id — the key for `resume` and the link to its transcript. */
   sdkSessionId: string | null
+  /** The model the user picked; null = whatever Claude Code defaults to. */
+  model: string | null
+  /** The effort the user picked; null = the model's own default. */
+  effort: EffortLevel | null
   createdAt: number
   updatedAt: number
 }
@@ -32,6 +36,8 @@ export type NewSession = {
   id: string
   title: string
   cwd: string
+  model?: string | null
+  effort?: EffortLevel | null
 }
 
 export type StoredEvent = {
@@ -46,6 +52,8 @@ export interface SessionStore {
   /** All sessions, most recently active first. */
   list(): Promise<StoredSession[]>
   setSdkSessionId(id: string, sdkSessionId: string): Promise<void>
+  /** Persist a model/effort switch, so a revived session keeps the choice. */
+  setModel(id: string, model: string | null, effort: EffortLevel | null): Promise<void>
   /** Bump updatedAt (a session saw activity). */
   touch(id: string): Promise<void>
 }

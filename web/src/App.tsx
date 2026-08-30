@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PermissionBehavior, Project, ProjectsResponse, ScoredItem } from '../../shared/protocol.js'
+import type {
+  EffortLevel,
+  PermissionBehavior,
+  Project,
+  ProjectsResponse,
+  ScoredItem,
+} from '../../shared/protocol.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import { Composer } from './components/Composer.js'
 import { ConnectorsPage } from './components/ConnectorsPage.js'
@@ -51,6 +57,13 @@ export function App() {
   const sendMessage = useCallback(
     (text: string) => {
       if (currentId) store.send({ type: 'user_message', sessionId: currentId, text })
+    },
+    [currentId],
+  )
+
+  const setModel = useCallback(
+    (model: string | undefined, effort: EffortLevel | undefined) => {
+      if (currentId) store.send({ type: 'set_model', sessionId: currentId, model, effort })
     },
     [currentId],
   )
@@ -123,6 +136,8 @@ export function App() {
       title: s.title,
       cwd: s.cwd,
       firstMessage: s.firstMessage || undefined,
+      model: s.model,
+      effort: s.effort,
     })
     setPreset(null)
   }, [])
@@ -215,8 +230,11 @@ export function App() {
               status={current.status}
               cwd={current.cwd}
               branch={current.branch}
+              model={current.model}
+              effort={current.effort}
               onSend={sendMessage}
               onInterrupt={interrupt}
+              onModelChange={setModel}
             />
           </>
         ) : (

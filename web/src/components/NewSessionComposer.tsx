@@ -1,8 +1,16 @@
 import { ChevronDown, FolderGit2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Project, ProjectsResponse } from '../../../shared/protocol.js'
+import type { EffortLevel, Project, ProjectsResponse } from '../../../shared/protocol.js'
+import { isEffort } from '../models.js'
+import { ModelPicker } from './ModelPicker.js'
 
-export type NewSession = { title: string; cwd: string; firstMessage: string }
+export type NewSession = {
+  title: string
+  cwd: string
+  firstMessage: string
+  model?: string
+  effort?: EffortLevel
+}
 
 export type SessionPreset = { title: string; firstMessage: string; cwd?: string }
 
@@ -13,6 +21,18 @@ type Props = {
 }
 
 const DEFAULT_CWD = '~/Code/prnl/hey-triage'
+
+// The last model picked here is the default for the next new session — a
+// per-browser preference, so it does not belong in the session store.
+const MODEL_KEY = 'triage.newSession.model'
+const EFFORT_KEY = 'triage.newSession.effort'
+
+const remembered = (key: string): string | undefined => localStorage.getItem(key) ?? undefined
+
+function remember(key: string, value: string | undefined) {
+  if (value) localStorage.setItem(key, value)
+  else localStorage.removeItem(key)
+}
 
 /** `/Users/you/Code/x` → `~/Code/x` — display only. */
 function homely(p: string): string {
@@ -28,6 +48,11 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
   const [projects, setProjects] = useState<Project[]>([])
   const [cwd, setCwd] = useState(DEFAULT_CWD)
   const [text, setText] = useState('')
+  const [model, setModel] = useState<string | undefined>(() => remembered(MODEL_KEY))
+  const [effort, setEffort] = useState<EffortLevel | undefined>(() => {
+    const stored = remembered(EFFORT_KEY)
+    return isEffort(stored) ? stored : undefined
+  })
   const box = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -60,7 +85,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
   function submit() {
     const trimmed = text.trim()
     if (!trimmed) return
-    onCreate({ title: titleFrom(trimmed), cwd, firstMessage: trimmed })
+    onCreate({ title: titleFrom(trimmed), cwd, firstMessage: trimmed, model, effort })
     setText('')
     requestAnimationFrame(autosize)
   }
@@ -91,6 +116,17 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
               </select>
               <ChevronDown size={12} aria-hidden="true" />
             </label>
+
+            <ModelPicker
+              model={model}
+              effort={effort}
+              onChange={(m, e) => {
+                setModel(m)
+                setEffort(e)
+                remember(MODEL_KEY, m)
+                remember(EFFORT_KEY, e)
+              }}
+            />
           </div>
 
           <div className="inputRow">

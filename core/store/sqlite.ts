@@ -12,6 +12,7 @@ import path from 'node:path'
 import type { InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
 import type { WorkItem } from '../work/types.js'
 import type { ItemState, ItemStatus } from '../work/state.js'
+import type { EffortLevel } from '../../shared/protocol.js'
 import type { NewWatch, Watch, WatchCadence, WatchRunResult } from '../watch/types.js'
 import type {
   ConfigStore,
@@ -101,6 +102,10 @@ const MIGRATIONS: string[] = [
      snooze_until INTEGER,
      pinned       INTEGER NOT NULL DEFAULT 0
    );`,
+  // 6: the model a session runs on. NULL = Claude Code's own default, which
+  // is not the same as any named model — an org can move it under us.
+  `ALTER TABLE sessions ADD COLUMN model TEXT;
+   ALTER TABLE sessions ADD COLUMN effort TEXT;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -144,15 +149,25 @@ type SessionRow = {
   title: string
   cwd: string
   sdk_session_id: string | null
+  model: string | null
+  effort: string | null
   created_at: number
   updated_at: number
 }
+
+const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/** Storage is text; anything the app no longer recognizes reads back as null. */
+const toEffort = (v: string | null): EffortLevel | null =>
+  EFFORTS.includes(v as EffortLevel) ? (v as EffortLevel) : null
 
 const toSession = (r: SessionRow): StoredSession => ({
   id: r.id,
   title: r.title,
   cwd: r.cwd,
   sdkSessionId: r.sdk_session_id,
+  model: r.model,
+  effort: toEffort(r.effort),
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -162,10 +177,15 @@ class SqliteSessions implements SessionStore {
 
   async create(s: NewSession): Promise<StoredSession> {
     const now = Date.now()
+    const model = s.model ?? null
+    const effort = s.effort ?? null
     this.db
-      .prepare('INSERT INTO sessions (id, title, cwd, sdk_session_id, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)')
-      .run(s.id, s.title, s.cwd, now, now)
-    return { ...s, sdkSessionId: null, createdAt: now, updatedAt: now }
+      .prepare(
+        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+      )
+      .run(s.id, s.title, s.cwd, model, effort, now, now)
+    return { ...s, model, effort, sdkSessionId: null, createdAt: now, updatedAt: now }
   }
 
   async get(id: string): Promise<StoredSession | null> {
@@ -180,6 +200,10 @@ class SqliteSessions implements SessionStore {
 
   async setSdkSessionId(id: string, sdkSessionId: string): Promise<void> {
     this.db.prepare('UPDATE sessions SET sdk_session_id = ? WHERE id = ?').run(sdkSessionId, id)
+  }
+
+  async setModel(id: string, model: string | null, effort: EffortLevel | null): Promise<void> {
+    this.db.prepare('UPDATE sessions SET model = ?, effort = ? WHERE id = ?').run(model, effort, id)
   }
 
   async touch(id: string): Promise<void> {

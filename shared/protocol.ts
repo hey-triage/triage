@@ -15,12 +15,18 @@ export type SessionStatus = 'starting' | 'idle' | 'running' | 'error'
 
 export type PermissionBehavior = 'allow' | 'deny'
 
+/** How much thinking the model puts into a turn. The SDK's own scale. */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
 export type SessionSummary = {
   id: string
   title: string
   cwd: string
   status: SessionStatus
+  /** The chosen model when the user picked one, else what the SDK reported. */
   model?: string
+  /** The chosen effort, when the user picked one. */
+  effort?: EffortLevel
   /** Current git branch of `cwd`, when it is a repo. Derived, not stored. */
   branch?: string
 }
@@ -80,6 +86,31 @@ export type Connector = {
 
 export type ConnectorsResponse =
   | { ok: true; probedAt: number; connectors: Connector[] }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
+// Models (GET /api/models)
+//
+// What this machine's Claude Code will actually run, asked of the SDK itself
+// (supportedModels()) rather than hardcoded — the catalog changes under us,
+// and an org policy can shrink it. Same shape of probe as the connectors one.
+// ---------------------------------------------------------------------------
+
+export type ModelOption = {
+  /** What to pass as `model` — an alias ('sonnet') or a wire id. */
+  id: string
+  /** The wire id `id` resolves to; lets a reported model match its alias row. */
+  resolvedModel?: string
+  /** "Opus (1M context)" */
+  name: string
+  /** One line under the name in the picker. */
+  description: string
+  /** Effort levels this model accepts; empty when it has no effort control. */
+  efforts: EffortLevel[]
+}
+
+export type ModelsResponse =
+  | { ok: true; probedAt: number; models: ModelOption[] }
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +250,16 @@ export type SessionEvent =
 // ---------------------------------------------------------------------------
 
 export type ClientMessage =
-  | { type: 'create_session'; title: string; cwd: string; firstMessage?: string }
+  | {
+      type: 'create_session'
+      title: string
+      cwd: string
+      firstMessage?: string
+      model?: string
+      effort?: EffortLevel
+    }
+  /** Switch a session's model/effort — mid-session, and for every turn after. */
+  | { type: 'set_model'; sessionId: string; model?: string; effort?: EffortLevel }
   | { type: 'subscribe'; sessionId: string }
   | { type: 'user_message'; sessionId: string; text: string }
   | {

@@ -34,6 +34,9 @@ import type {
   ClientMessage,
   Connector,
   ConnectorsResponse,
+  EffortLevel,
+  ModelOption,
+  ModelsResponse,
   PermissionBehavior,
   SdkMessage,
   ServerMessage,
@@ -140,6 +143,10 @@ class LiveSession {
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         settingSources: ['user', 'project', 'local'],
         includePartialMessages: true,
+        // Omitted when the user never picked: Claude Code's own default is a
+        // real choice (an org can move it), not a model we should pin here.
+        ...(row.model ? { model: row.model } : {}),
+        ...(row.effort ? { effort: row.effort } : {}),
         // Revival: replay the agent's own transcript into the new subprocess.
         ...(resumeSdkSessionId ? { resume: resumeSdkSessionId } : {}),
         canUseTool: (toolName, toolInput, opts) =>
@@ -182,6 +189,15 @@ class LiveSession {
       live.delete(this.row.id)
       broadcastSessionList()
     }
+  }
+
+  /**
+   * Switch model/effort for every turn from here on. `setModel` and the flag
+   * settings layer both apply live, so an in-flight session doesn't restart.
+   */
+  async setModel(model: string | null, effort: EffortLevel | null) {
+    await this.q.setModel(model ?? undefined)
+    await this.q.applyFlagSettings({ effortLevel: effort })
   }
 
   sendUserMessage(text: string) {
@@ -269,7 +285,10 @@ function summarize(row: StoredSession): SessionSummary {
     title: row.title,
     cwd: row.cwd,
     status: l?.status ?? 'idle',
-    model: l?.model,
+    // The user's pick wins: it is what the next turn runs on, and it is set
+    // before the subprocess has reported anything.
+    model: row.model ?? l?.model,
+    effort: row.effort ?? undefined,
     branch: branches.get(row.id),
   }
 }
@@ -294,8 +313,13 @@ async function refreshBranch(row: StoredSession) {
   }
 }
 
-async function createSession(title: string, cwd: string): Promise<StoredSession> {
-  const row = await store.sessions.create({ id: randomUUID(), title, cwd })
+async function createSession(
+  title: string,
+  cwd: string,
+  model: string | null,
+  effort: EffortLevel | null,
+): Promise<StoredSession> {
+  const row = await store.sessions.create({ id: randomUUID(), title, cwd, model, effort })
   rows.set(row.id, row)
   live.set(row.id, new LiveSession(row, 0, null))
   void refreshBranch(row)
@@ -549,6 +573,50 @@ function probeConnectors(): Promise<ConnectorProbe> {
     }
   })()
   return connectorInFlight
+}
+
+// ---------------------------------------------------------------------------
+// Models: which models this machine's Claude Code will actually run. Asked of
+// the SDK (supportedModels()) rather than hardcoded — the catalog moves, and
+// an org policy can shrink it. Same throwaway-subprocess shape as the
+// connector probe, and the answer is stable enough to cache for the process.
+// ---------------------------------------------------------------------------
+type ModelProbe = { probedAt: number; models: ModelOption[] }
+
+let modelCache: ModelProbe | null = null
+let modelInFlight: Promise<ModelProbe> | null = null
+
+function probeModels(): Promise<ModelProbe> {
+  if (modelInFlight) return modelInFlight
+  modelInFlight = (async () => {
+    const input = new AsyncQueue<SDKUserMessage>()
+    const q = query({
+      prompt: input,
+      options: {
+        cwd: os.homedir(),
+        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        settingSources: ['user', 'project', 'local'],
+      },
+    })
+    try {
+      const models = (await q.supportedModels()).map(
+        (m): ModelOption => ({
+          id: m.value,
+          resolvedModel: m.resolvedModel,
+          name: m.displayName,
+          description: m.description,
+          efforts: m.supportsEffort ? (m.supportedEffortLevels ?? []) : [],
+        }),
+      )
+      modelCache = { probedAt: Date.now(), models }
+      return modelCache
+    } finally {
+      input.close()
+      void q.return(undefined).catch(() => {}) // dispose the subprocess
+      modelInFlight = null
+    }
+  })()
+  return modelInFlight
 }
 
 // ---------------------------------------------------------------------------
@@ -898,6 +966,19 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(body))
     return
   }
+  if (url.pathname === '/api/models') {
+    let body: ModelsResponse
+    try {
+      const probe =
+        modelCache && url.searchParams.get('refresh') !== '1' ? modelCache : await probeModels()
+      body = { ok: true, probedAt: probe.probedAt, models: probe.models }
+    } catch (err) {
+      body = { ok: false, error: String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
   if (url.pathname === '/api/connectors') {
     let body: ConnectorsResponse
     try {
@@ -942,6 +1023,11 @@ function expandHome(p: string): string {
   return path.resolve(p)
 }
 
+const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+const effort = (v: unknown): EffortLevel | undefined =>
+  EFFORT_LEVELS.includes(v as EffortLevel) ? (v as EffortLevel) : undefined
+
 /**
  * The socket is untrusted input (vision principle 6), so incoming frames are
  * validated into the ClientMessage union rather than cast into it.
@@ -950,6 +1036,7 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
   if (typeof raw !== 'object' || raw === null) return null
   const m = raw as Record<string, unknown>
   const str = (v: unknown) => (typeof v === 'string' ? v : '')
+  const model = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
   switch (m.type) {
     case 'create_session':
       return {
@@ -957,7 +1044,13 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         title: str(m.title),
         cwd: str(m.cwd),
         firstMessage: typeof m.firstMessage === 'string' ? m.firstMessage : undefined,
+        model: model(m.model),
+        effort: effort(m.effort),
       }
+    case 'set_model':
+      return typeof m.sessionId === 'string'
+        ? { type: 'set_model', sessionId: m.sessionId, model: model(m.model), effort: effort(m.effort) }
+        : null
     case 'subscribe':
       return typeof m.sessionId === 'string' ? { type: 'subscribe', sessionId: m.sessionId } : null
     case 'user_message':
@@ -999,10 +1092,22 @@ wss.on('connection', (ws) => {
         case 'create_session': {
           const cwd = expandHome(msg.cwd)
           const title = msg.title.trim() || `Session ${rows.size + 1}`
-          const row = await createSession(title, cwd)
+          const row = await createSession(title, cwd, msg.model ?? null, msg.effort ?? null)
           send(ws, { type: 'session_created', session: summarize(row) })
           broadcastSessionList()
           if (msg.firstMessage?.trim()) live.get(row.id)?.sendUserMessage(msg.firstMessage.trim())
+          break
+        }
+        case 'set_model': {
+          const row = rows.get(msg.sessionId)
+          if (!row) break
+          row.model = msg.model ?? null
+          row.effort = msg.effort ?? null
+          await store.sessions.setModel(row.id, row.model, row.effort)
+          // A session with no subprocess picks the choice up from its row when
+          // it is revived; a live one is switched in place.
+          await live.get(row.id)?.setModel(row.model, row.effort)
+          broadcastSessionList()
           break
         }
         case 'subscribe': {
@@ -1039,6 +1144,9 @@ inboxCache = await store.inbox.load() // last snapshot, so first paint is instan
 // Probe connectors in the background at startup: the Slack source gates on the
 // result, and the Connectors page becomes instant.
 probeConnectors().catch((err) => console.error('[connectors] startup probe failed:', err))
+// Same idea for the model list: the composer's picker should be populated by
+// the time anyone opens it.
+probeModels().catch((err) => console.error('[models] startup probe failed:', err))
 server.listen(PORT, () => {
   console.log(`triage-dev server → http://localhost:${PORT}  (db: ${DB_FILE})`)
 })

@@ -1,13 +1,17 @@
 import { Folder, GitBranch } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
-import type { SessionStatus } from '../../../shared/protocol.js'
+import type { EffortLevel, SessionStatus } from '../../../shared/protocol.js'
+import { ModelPicker } from './ModelPicker.js'
 
 type Props = {
   status: SessionStatus
   cwd: string
   branch?: string
+  model?: string
+  effort?: EffortLevel
   onSend: (text: string) => void
   onInterrupt: () => void
+  onModelChange: (model: string | undefined, effort: EffortLevel | undefined) => void
 }
 
 /** `/Users/you/Code/x` → `~/Code/x` — display only. */
@@ -22,7 +26,16 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'error',
 }
 
-export function Composer({ status, cwd, branch, onSend, onInterrupt }: Props) {
+export function Composer({
+  status,
+  cwd,
+  branch,
+  model,
+  effort,
+  onSend,
+  onInterrupt,
+  onModelChange,
+}: Props) {
   const [text, setText] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
   const running = status === 'running' || status === 'starting'
@@ -56,6 +69,7 @@ export function Composer({ status, cwd, branch, onSend, onInterrupt }: Props) {
               {branch}
             </span>
           )}
+          <ModelPicker model={model} effort={effort} onChange={onModelChange} />
           <span className={`state ${status}`}>
             <span className="pip" />
             {STATUS_LABEL[status]}
