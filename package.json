@@ -1,0 +1,42 @@
+{
+  "name": "@hey-triage/triage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ranked work inbox for engineers — every item arrives with its action drafted, dispatch straight into your local Claude Code",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hey-triage/triage.git"
+  },
+  "homepage": "https://heytriage.com",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
+    "dev:server": "tsx server/index.ts",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "tsx server/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.251",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.1.1",
+    "dompurify": "^3.4.14",
+    "marked": "^18.0.11",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

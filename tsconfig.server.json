@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "composite": true,
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "server",
+    "shared",
+    "core",
+    "vite.config.ts"
+  ]
+}
