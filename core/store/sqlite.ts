@@ -109,6 +109,8 @@ const MIGRATIONS: string[] = [
   // 7: how much a session asks before acting. NULL = 'default' (ask every
   // time), which is what every session predating this column was doing.
   `ALTER TABLE sessions ADD COLUMN permission_mode TEXT;`,
+  // 8: pinned sessions — they sort above the rest, regardless of activity.
+  `ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -155,6 +157,7 @@ type SessionRow = {
   model: string | null
   effort: string | null
   permission_mode: string | null
+  pinned: number
   created_at: number
   updated_at: number
 }
@@ -182,6 +185,7 @@ const toSession = (r: SessionRow): StoredSession => ({
   model: r.model,
   effort: toEffort(r.effort),
   permissionMode: toPermissionMode(r.permission_mode),
+  pinned: r.pinned === 1,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -200,7 +204,16 @@ class SqliteSessions implements SessionStore {
          VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
       )
       .run(s.id, s.title, s.cwd, model, effort, permissionMode, now, now)
-    return { ...s, model, effort, permissionMode, sdkSessionId: null, createdAt: now, updatedAt: now }
+    return {
+      ...s,
+      model,
+      effort,
+      permissionMode,
+      pinned: false,
+      sdkSessionId: null,
+      createdAt: now,
+      updatedAt: now,
+    }
   }
 
   async get(id: string): Promise<StoredSession | null> {
@@ -209,7 +222,9 @@ class SqliteSessions implements SessionStore {
   }
 
   async list(): Promise<StoredSession[]> {
-    const rows = this.db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as SessionRow[]
+    const rows = this.db
+      .prepare('SELECT * FROM sessions ORDER BY pinned DESC, updated_at DESC')
+      .all() as SessionRow[]
     return rows.map(toSession)
   }
 
@@ -223,6 +238,23 @@ class SqliteSessions implements SessionStore {
 
   async setPermissionMode(id: string, mode: PermissionMode | null): Promise<void> {
     this.db.prepare('UPDATE sessions SET permission_mode = ? WHERE id = ?').run(mode, id)
+  }
+
+  async rename(id: string, title: string): Promise<void> {
+    this.db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(title, id)
+  }
+
+  async setPinned(id: string, pinned: boolean): Promise<void> {
+    this.db.prepare('UPDATE sessions SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id)
+  }
+
+  /**
+   * Delete a session and its log. The event rows reference the session, so
+   * they go first — with foreign keys on, the other order fails.
+   */
+  async remove(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM session_events WHERE session_id = ?').run(id)
+    this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
   }
 
   async touch(id: string): Promise<void> {

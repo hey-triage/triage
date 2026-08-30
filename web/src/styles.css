@@ -51,8 +51,46 @@ body {
 .sess.error .dot { background: var(--red); }
 @keyframes pulse { 50% { opacity: .35; } }
 .sess .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-.sess a { color: var(--dim); text-decoration: none; font-size: 12px; }
-.sess a:hover { color: var(--text); }
+.sess .pinMark { flex: none; color: var(--dim); }
+.sess .renameInput {
+  flex: 1; min-width: 0; padding: 1px 4px; border-radius: 5px;
+  background: var(--bg2); border: 1px solid var(--accent); color: var(--text);
+  font: inherit; font-size: 14px;
+}
+.sess .renameInput:focus { outline: none; }
+
+/* The row's own controls: out of the way until the row is hovered or open. */
+.sess { position: relative; }
+.sessMenuBtn {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
+  background: transparent; border: none; color: var(--dim); opacity: 0;
+}
+.sess:hover .sessMenuBtn, .sess[data-menu-open] .sessMenuBtn { opacity: 1; }
+.sessMenuBtn:hover { background: rgba(255, 255, 255, .08); color: var(--text); }
+.sessMenuBtn:focus-visible { opacity: 1; outline: 1px solid var(--accent); }
+
+.sessMenu {
+  position: absolute; z-index: 40; top: calc(100% + 4px); right: 6px;
+  min-width: 200px; padding: 6px; cursor: default;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
+  font: 13px/1.45 -apple-system, "Segoe UI", sans-serif;
+}
+.sessMenu .row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 10px; border: none; border-radius: 8px; cursor: pointer;
+  background: transparent; color: var(--text); font: inherit; text-align: left;
+  text-decoration: none;
+}
+.sessMenu .row:hover { background: rgba(255, 255, 255, .06); }
+.sessMenu .row svg { flex: none; color: var(--accent); }
+.sessMenu .row.danger, .sessMenu .row.danger svg { color: var(--red); }
+
+#deleteSession { width: 420px; }
+#deleteSession p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--dim); }
+#deleteSession p strong { color: var(--text); font-weight: 600; }
+#deleteSession .danger { background: var(--red); color: #2a0f0f; }
 #connState { padding: 10px 16px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--border); }
 #connState.down { color: var(--red); }
 
@@ -129,6 +167,34 @@ body {
 .perm .verdict { font-size: 12px; font-family: var(--mono); color: var(--dim); }
 .perm .verdict.allow, .perm .verdict.allow_always { color: var(--green); }
 .perm .verdict.deny { color: var(--red); }
+.perm button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* AskUserQuestion: a question to answer, not a blob to approve. */
+.perm.ask .askQ { margin-bottom: 14px; }
+.perm.ask .askHeader {
+  display: inline-block; margin-bottom: 6px; padding: 1px 8px; border-radius: 20px;
+  background: rgba(232, 176, 75, .12); color: var(--accent);
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+}
+.perm.ask .askText { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+.perm.ask .askNote { font-size: 11px; color: var(--dim); margin-bottom: 8px; }
+.perm.ask .askOptions { display: flex; flex-direction: column; gap: 6px; }
+.perm.ask .askOption {
+  display: flex; flex-direction: column; gap: 2px; margin: 0; width: 100%;
+  padding: 8px 12px; border-radius: 8px; text-align: left; font-weight: 400;
+  background: transparent; border: 1px solid var(--border); color: var(--text);
+  transition: border-color .12s, background .12s;
+}
+.perm.ask .askOption:hover { border-color: var(--accent); background: rgba(255, 255, 255, .03); }
+.perm.ask .askOption.on { border-color: var(--accent); background: rgba(232, 176, 75, .14); }
+.perm.ask .askLabel { font-size: 13px; font-weight: 600; }
+.perm.ask .askDesc { font-size: 11px; color: var(--dim); line-height: 1.45; }
+.perm.ask .askOther {
+  margin-top: 8px; width: 100%; padding: 7px 10px; border-radius: 8px;
+  background: var(--bg2); border: 1px solid var(--accent); color: var(--text); font: inherit; font-size: 13px;
+}
+.perm.ask .askOther:focus { outline: none; }
+.perm.ask .askAnswer { font-size: 13px; color: var(--green); }
 
 .meta {
   display: flex; align-items: center; gap: 12px;

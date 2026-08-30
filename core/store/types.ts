@@ -36,6 +36,8 @@ export type StoredSession = {
   effort: EffortLevel | null
   /** How much the session asks before acting; null = 'default' (ask). */
   permissionMode: PermissionMode | null
+  /** Pinned sessions sort above the rest, whatever their last activity. */
+  pinned: boolean
   createdAt: number
   updatedAt: number
 }
@@ -58,13 +60,19 @@ export type StoredEvent = {
 export interface SessionStore {
   create(s: NewSession): Promise<StoredSession>
   get(id: string): Promise<StoredSession | null>
-  /** All sessions, most recently active first. */
+  /** All sessions: pinned first, then most recently active. */
   list(): Promise<StoredSession[]>
   setSdkSessionId(id: string, sdkSessionId: string): Promise<void>
   /** Persist a model/effort switch, so a revived session keeps the choice. */
   setModel(id: string, model: string | null, effort: EffortLevel | null): Promise<void>
   /** Persist a permission-mode switch, so a revived session keeps the choice. */
   setPermissionMode(id: string, mode: PermissionMode | null): Promise<void>
+  /** Give a session a new title. */
+  rename(id: string, title: string): Promise<void>
+  /** Pin or unpin a session. */
+  setPinned(id: string, pinned: boolean): Promise<void>
+  /** Delete a session and its whole event log. Irreversible. */
+  remove(id: string): Promise<void>
   /** Bump updatedAt (a session saw activity). */
   touch(id: string): Promise<void>
 }

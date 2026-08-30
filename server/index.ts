@@ -378,15 +378,31 @@ function summarize(row: StoredSession): SessionSummary {
     model: row.model ?? l?.model,
     effort: row.effort ?? undefined,
     permissionMode: row.permissionMode ?? undefined,
+    pinned: row.pinned || undefined,
     branch: branches.get(row.id),
   }
 }
 
-/** Sorted like the store: most recently active first. */
+/** Sorted like the store: pinned first, then most recently active. */
 function summaries(): SessionSummary[] {
   return [...rows.values()]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
     .map(summarize)
+}
+
+/**
+ * Delete a session for good: its subprocess, its in-memory state, and its
+ * whole log. The subprocess is stopped first so nothing is still writing to a
+ * row that is about to go.
+ */
+async function deleteSession(sessionId: string): Promise<void> {
+  live.get(sessionId)?.stop()
+  live.delete(sessionId)
+  rows.delete(sessionId)
+  branches.delete(sessionId)
+  await store.sessions.remove(sessionId)
+  broadcast({ type: 'session_deleted', sessionId })
+  broadcastSessionList()
 }
 
 async function refreshBranch(row: StoredSession) {
@@ -1176,6 +1192,16 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         ? { type: 'set_permission_mode', sessionId: m.sessionId, mode }
         : null
     }
+    case 'rename_session':
+      return typeof m.sessionId === 'string'
+        ? { type: 'rename_session', sessionId: m.sessionId, title: str(m.title) }
+        : null
+    case 'set_pinned':
+      return typeof m.sessionId === 'string'
+        ? { type: 'set_pinned', sessionId: m.sessionId, pinned: m.pinned === true }
+        : null
+    case 'delete_session':
+      return typeof m.sessionId === 'string' ? { type: 'delete_session', sessionId: m.sessionId } : null
     case 'subscribe':
       return typeof m.sessionId === 'string' ? { type: 'subscribe', sessionId: m.sessionId } : null
     case 'user_message':
@@ -1257,6 +1283,30 @@ wss.on('connection', (ws) => {
           const session = live.get(row.id)
           if (session && !(await session.setPermissionMode(msg.mode))) session.stop()
           broadcastSessionList()
+          break
+        }
+        case 'rename_session': {
+          const row = rows.get(msg.sessionId)
+          const title = msg.title.trim()
+          // An empty title would leave a nameless row in the sidebar; the old
+          // one stays instead.
+          if (!row || !title) break
+          row.title = title
+          await store.sessions.rename(row.id, title)
+          broadcastSessionList()
+          break
+        }
+        case 'set_pinned': {
+          const row = rows.get(msg.sessionId)
+          if (!row) break
+          row.pinned = msg.pinned
+          await store.sessions.setPinned(row.id, msg.pinned)
+          broadcastSessionList()
+          break
+        }
+        case 'delete_session': {
+          if (!rows.has(msg.sessionId)) break
+          await deleteSession(msg.sessionId)
           break
         }
         case 'subscribe': {

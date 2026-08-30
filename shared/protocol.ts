@@ -42,6 +42,8 @@ export type SessionSummary = {
   effort?: EffortLevel
   /** How much this session asks before acting. Absent = 'default'. */
   permissionMode?: PermissionMode
+  /** Pinned to the top of the sidebar. Absent = not pinned. */
+  pinned?: boolean
   /** Current git branch of `cwd`, when it is a repo. Derived, not stored. */
   branch?: string
 }
@@ -296,6 +298,12 @@ export type ClientMessage =
   | { type: 'set_model'; sessionId: string; model?: string; effort?: EffortLevel }
   /** Switch how much a session asks — mid-session, and for every turn after. */
   | { type: 'set_permission_mode'; sessionId: string; mode: PermissionMode }
+  /** Give a session a new title. */
+  | { type: 'rename_session'; sessionId: string; title: string }
+  /** Pin a session to the top of the list, or unpin it. */
+  | { type: 'set_pinned'; sessionId: string; pinned: boolean }
+  /** Delete a session and its transcript. Irreversible — the UI confirms. */
+  | { type: 'delete_session'; sessionId: string }
   | { type: 'subscribe'; sessionId: string }
   | { type: 'user_message'; sessionId: string; text: string }
   | {
@@ -312,6 +320,7 @@ export type ServerMessage =
   | { type: 'hello'; sessions: SessionSummary[] }
   | { type: 'sessions'; sessions: SessionSummary[] }
   | { type: 'session_created'; session: SessionSummary }
+  | { type: 'session_deleted'; sessionId: string }
   | { type: 'history'; sessionId: string; events: SessionEvent[] }
   | { type: 'session_event'; sessionId: string; event: SessionEvent }
   | { type: 'error'; message: string }

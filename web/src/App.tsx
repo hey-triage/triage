@@ -82,6 +82,23 @@ export function App() {
     if (currentId) store.send({ type: 'interrupt', sessionId: currentId })
   }, [currentId])
 
+  const renameSession = useCallback((sessionId: string, title: string) => {
+    store.send({ type: 'rename_session', sessionId, title })
+  }, [])
+
+  const setPinned = useCallback((sessionId: string, pinned: boolean) => {
+    store.send({ type: 'set_pinned', sessionId, pinned })
+  }, [])
+
+  const deleteSession = useCallback(
+    (sessionId: string) => {
+      store.send({ type: 'delete_session', sessionId })
+      // Deleting what you are looking at leaves nothing to look at.
+      if (sessionId === currentId) navigate('')
+    },
+    [currentId, navigate],
+  )
+
   const newSession = useCallback(() => {
     setPreset(null)
     navigate('')
@@ -211,6 +228,9 @@ export function App() {
         onWatches={() => navigate('/watches')}
         onProjects={() => navigate('/projects')}
         onConnectors={() => navigate('/connectors')}
+        onRename={renameSession}
+        onSetPinned={setPinned}
+        onDelete={deleteSession}
       />
 
       <div id="main" className={current?.status === 'running' ? 'running' : undefined}>

@@ -119,6 +119,13 @@ export class Store {
         this.#onSessionCreated?.(msg.session)
         this.#notify()
         break
+      case 'session_deleted':
+        this.#sessions = this.#sessions.filter((s) => s.id !== msg.sessionId)
+        this.#events.delete(msg.sessionId)
+        this.#clearLive(msg.sessionId)
+        if (this.#subscribedTo === msg.sessionId) this.#subscribedTo = null
+        this.#notify()
+        break
       case 'history':
         this.#events.set(msg.sessionId, msg.events)
         this.#clearLive(msg.sessionId)
