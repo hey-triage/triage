@@ -1,0 +1,110 @@
+/**
+ * Deterministic blocking-impact scoring — ported from hey-triage
+ * (src/core/score.ts, decision 007). No LLM, ever (vision principle 3).
+ * Blocking impact ranks above recency: base weight by kind, then how many
+ * humans are waiting, then how long they've waited.
+ */
+import type { Group, ItemKind, ScoredItem, WorkItem } from './types.js'
+
+export const BASE: Record<ItemKind, number> = {
+  'review-requested': 100,
+  'reply-needed': 90,
+  'slack-reply-pending': 85,
+  'own-pr-conflicting': 70,
+  'own-pr-approved': 65,
+  'ticket-assigned': 50,
+  'own-pr-stale': 40,
+  'slack-mention': 35,
+  mention: 30,
+  'own-pr-open': 15,
+  fyi: 5,
+}
+
+const GROUP: Record<ItemKind, Group> = {
+  'review-requested': 'blocking',
+  'reply-needed': 'blocking',
+  'slack-reply-pending': 'blocking',
+  'own-pr-conflicting': 'blocked-stale',
+  'own-pr-approved': 'blocked-stale',
+  'own-pr-stale': 'blocked-stale',
+  'ticket-assigned': 'cycle',
+  'own-pr-open': 'fyi',
+  'slack-mention': 'fyi',
+  mention: 'fyi',
+  fyi: 'fyi',
+}
+
+// Linear priority: 1 urgent, 2 high — planned work jumps within YOUR CYCLE only.
+export const PRIORITY_BOOST: Record<number, number> = { 1: 20, 2: 10 }
+
+/** waiting stops accruing after this many days, so ancient items can't run away */
+export const WAIT_CAP_DAYS = 14
+
+/**
+ * Humans waiting age fast; your own rotting work ages slower, so an old stale PR
+ * can never outrank a fresh review request that blocks a person.
+ */
+export function ageWeightFor(kind: ItemKind): number {
+  return GROUP[kind] === 'blocking' ? 4 : 2
+}
+
+export function daysSince(iso: string, now = Date.now()): number {
+  return Math.max(0, (now - Date.parse(iso)) / 86_400_000)
+}
+
+export function scoreItem(item: WorkItem, now = Date.now()): ScoredItem {
+  const waitDays = daysSince(item.updatedAt, now)
+  const ageWeight = ageWeightFor(item.kind)
+  let score =
+    BASE[item.kind] + item.peopleWaiting * 15 + Math.min(waitDays, WAIT_CAP_DAYS) * ageWeight
+  if (item.ciFailing) score += 10
+  score += PRIORITY_BOOST[item.priority ?? 0] ?? 0
+  if (item.isDraft) score -= 25
+  return {
+    ...item,
+    score: Math.round(score * 10) / 10,
+    group: GROUP[item.kind],
+    reason: reasonFor(item, waitDays),
+  }
+}
+
+export function rank(items: WorkItem[], now = Date.now()): ScoredItem[] {
+  return items
+    .map((i) => scoreItem(i, now))
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+}
+
+function age(waitDays: number): string {
+  if (waitDays < 1) return 'today'
+  return `${Math.floor(waitDays)}d`
+}
+
+function reasonFor(item: WorkItem, waitDays: number): string {
+  const ci = item.ciFailing ? ' · CI failing' : ''
+  switch (item.kind) {
+    case 'review-requested':
+      return `@${item.author} waiting ${age(waitDays)} for your review${ci}`
+    case 'reply-needed':
+      return `changes requested — reviewer waiting ${age(waitDays)}${ci}`
+    case 'own-pr-approved':
+      return `approved, unmerged for ${age(waitDays)} — merge it${ci}`
+    case 'own-pr-conflicting':
+      return `merge conflicts, untouched ${age(waitDays)}${ci}`
+    case 'own-pr-stale':
+      return `your PR, quiet for ${age(waitDays)}${ci}`
+    case 'own-pr-open':
+      return `waiting on review (${age(waitDays)})${ci}`
+    case 'mention':
+      return `mentioned by @${item.author} (${age(waitDays)})${ci}`
+    case 'slack-reply-pending':
+      return `@${item.author} waiting ${age(waitDays)} for your reply in ${item.repo}`
+    case 'slack-mention':
+      return `tagged by @${item.author} in ${item.repo} (${age(waitDays)})`
+    case 'ticket-assigned': {
+      const pri = item.priority === 1 ? 'urgent · ' : item.priority === 2 ? 'high · ' : ''
+      return `${pri}assigned to you, in the current cycle (${age(waitDays)})`
+    }
+    case 'fyi':
+      return `updated ${age(waitDays)}${ci}`
+  }
+}
