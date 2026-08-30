@@ -131,6 +131,47 @@ export type ProjectsResponse =
   | { ok: true; projects: Project[] }
   | { ok: false; error: string }
 
+// ---------------------------------------------------------------------------
+// Watches (GET/POST/PUT/DELETE /api/watches, POST /api/watches/draft,
+// POST /api/watches/preview) — the ingestion engine (.docs/watches.md).
+// Domain types live in core/watch/types.ts; type-only re-exports, so nothing
+// server-side leaks into the browser bundle.
+// ---------------------------------------------------------------------------
+
+export type { NewWatch, Watch, WatchCadence, WatchDraft, WatchPreviewRow } from '../core/watch/types.js'
+
+export type WatchesResponse =
+  | { ok: true; watches: import('../core/watch/types.js').Watch[] }
+  | { ok: false; error: string }
+
+export type WatchDraftResponse =
+  | { ok: true; draft: import('../core/watch/types.js').WatchDraft }
+  | { ok: false; error: string }
+
+export type WatchPreviewResponse =
+  | { ok: true; rows: import('../core/watch/types.js').WatchPreviewRow[]; tokens: number }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
+// Item state (POST /api/items/state) — the user-state overlay: done, snoozed,
+// dismissed. Ingestion never writes it; the re-arm rule reopens items in code.
+// ---------------------------------------------------------------------------
+
+export type { ItemStatus } from '../core/work/state.js'
+
+export type ItemStateResponse = { ok: true } | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
+// Ingestion (POST /api/items/upsert, POST /api/items/resolve) — the contract
+// that makes external scanners first-class; also served over MCP (server/mcp.ts).
+// Idempotent: id-keyed, update-only-if-newer, user-state-preserving. Validates
+// and rejects rather than repairs.
+// ---------------------------------------------------------------------------
+
+export type UpsertResponse =
+  | { ok: true; outcome: 'inserted' | 'updated' | 'unchanged' }
+  | { ok: false; error: string }
+
 /** A `stream_event`'s inner Anthropic streaming event (deltas only, for now). */
 export type StreamEvent = {
   type: string

@@ -29,12 +29,14 @@ export type Route =
   | { page: 'inbox' }
   | { page: 'connectors' }
   | { page: 'projects' }
+  | { page: 'watches' }
 
 function parseRoute(hash: string): Route {
   if (!hash) return { page: 'home' }
   if (hash === '/inbox') return { page: 'inbox' }
   if (hash === '/connectors') return { page: 'connectors' }
   if (hash === '/projects') return { page: 'projects' }
+  if (hash === '/watches') return { page: 'watches' }
   return { page: 'session', id: hash }
 }
 

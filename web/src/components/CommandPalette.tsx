@@ -5,11 +5,13 @@ import type {
   ProjectsResponse,
   ScoredItem,
   SessionSummary,
+  Watch,
+  WatchesResponse,
 } from '../../../shared/protocol.js'
 
 export type Command = {
   id: string
-  section: 'Actions' | 'Pages' | 'Projects' | 'Sessions' | 'Work items'
+  section: 'Actions' | 'Pages' | 'Projects' | 'Sessions' | 'Watches' | 'Work items'
   label: string
   hint?: string
   run: () => void
@@ -24,10 +26,11 @@ type Props = {
   onDispatch: (item: ScoredItem) => void
   onNewSessionIn: (project: Project) => void
   onSyncInbox: () => void
+  onAddWatch: () => void
   onHelp: () => void
 }
 
-const SECTION_ORDER: Command['section'][] = ['Actions', 'Pages', 'Projects', 'Sessions', 'Work items']
+const SECTION_ORDER: Command['section'][] = ['Actions', 'Pages', 'Projects', 'Sessions', 'Watches', 'Work items']
 
 export function CommandPalette({
   open,
@@ -38,6 +41,7 @@ export function CommandPalette({
   onDispatch,
   onNewSessionIn,
   onSyncInbox,
+  onAddWatch,
   onHelp,
 }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -45,6 +49,7 @@ export function CommandPalette({
   const [sel, setSel] = useState(0)
   const [items, setItems] = useState<ScoredItem[]>([])
   const [projects, setProjects] = useState<Project[]>([])
+  const [watches, setWatches] = useState<Watch[]>([])
 
   useEffect(() => {
     const el = dialog.current
@@ -66,6 +71,12 @@ export function CommandPalette({
           if (b.ok) setProjects(b.projects)
         })
         .catch(() => {})
+      void fetch('/api/watches')
+        .then((r) => r.json() as Promise<WatchesResponse>)
+        .then((b) => {
+          if (b.ok) setWatches(b.watches)
+        })
+        .catch(() => {})
     }
     if (!open && el.open) el.close()
   }, [open])
@@ -74,10 +85,25 @@ export function CommandPalette({
     () => [
       { id: 'new', section: 'Actions', label: 'New session', hint: 'n', run: onNewSession },
       { id: 'sync', section: 'Actions', label: 'Sync inbox now', run: onSyncInbox },
+      { id: 'addwatch', section: 'Actions', label: 'Add watch', run: onAddWatch },
       { id: 'help', section: 'Actions', label: 'Keyboard shortcuts', hint: '?', run: onHelp },
       { id: 'inbox', section: 'Pages', label: 'Inbox', hint: 'g i', run: () => onNavigate('/inbox') },
+      { id: 'watches', section: 'Pages', label: 'Watches', hint: 'g w', run: () => onNavigate('/watches') },
       { id: 'projects', section: 'Pages', label: 'Projects', hint: 'g p', run: () => onNavigate('/projects') },
       { id: 'connectors', section: 'Pages', label: 'Connectors', hint: 'g c', run: () => onNavigate('/connectors') },
+      ...watches.map((w): Command => ({
+        id: `wa:${w.id}`,
+        section: 'Watches',
+        label: `${w.enabled ? 'Pause' : 'Resume'} watch: ${w.title}`,
+        hint: w.scope,
+        run: () => {
+          void fetch(`/api/watches?id=${encodeURIComponent(w.id)}`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled: !w.enabled }),
+          })
+        },
+      })),
       ...projects.map((pr): Command => ({
         id: `p:${pr.id}`,
         section: 'Projects',
@@ -100,7 +126,7 @@ export function CommandPalette({
         run: () => onDispatch(i),
       })),
     ],
-    [sessions, items, projects, onNavigate, onNewSession, onDispatch, onNewSessionIn, onSyncInbox, onHelp],
+    [sessions, items, projects, watches, onNavigate, onNewSession, onDispatch, onNewSessionIn, onSyncInbox, onAddWatch, onHelp],
   )
 
   const shown = useMemo(() => {

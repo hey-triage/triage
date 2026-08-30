@@ -59,14 +59,43 @@ npm run build && npm start   # → http://localhost:5178
     even after a restart. A laptop that slept just syncs on the next view.
   - **Dispatch** prefills a new session with the item's context; when a project
     is tied to the item's repo, the session lands in that project's folder.
+- **Watches** (`/#/watches`): user-defined ingestion rules (design:
+  `.docs/watches.md`) — one plain-English sentence, scoped to a `#channel` or
+  `@dm`, on an hourly/daily/weekly cadence. Creation flow: plain text → LLM
+  draft into an editable form → **required preview** against the scope's last
+  week (each match with a why-line) → create. The scanner LLM only answers
+  "does this match — yes/no + why" and extracts refs; identity, de-dupe,
+  scheduling, and scoring are all code. Due watches run as **one composed
+  scan** with the built-in Slack rules (a minute-tick due-checker, not cron —
+  missed runs coalesce and cursor-based reads make the coalesced run lossless).
+  Matches land in the inbox as `watch-hit` items (base 40 — mentions and
+  reviews outrank topical matches) with the watch chip, why-line, and a 👎
+  that appends a correction to the instruction text. Items sharing an
+  extracted ref (e.g. a Slack ask about PR #123) render as **one card, both
+  sources shown**, +10 multi-source bonus — linked by string equality, never
+  by LLM judgment.
+- **Done / snooze / dismiss**: `e` done, `z` snooze until tomorrow, `x` dismiss.
+  User state lives in its own `item_state` table and survives every snapshot
+  rebuild; a done item whose source updates afterwards **re-arms** and returns
+  with a `↩ returned` marker (dismissed never re-arms).
+- **Ingestion API**: `POST /api/items/upsert` (idempotent: id-keyed,
+  update-only-if-newer, user-state-preserving; invalid items are rejected,
+  never repaired) and `POST /api/items/resolve`. Also exposed as MCP tools
+  (`list_work_items` / `upsert_work_item` / `resolve_work_item`) via the
+  dependency-free stdio shim: `claude mcp add triage -- npx tsx
+  <repo>/server/mcp.ts` (set `TRIAGE_URL` if not on :5178). The power-user
+  recipe: any Claude Code routine or cron'd headless session can *be* a
+  watch-runner — "read X, find Y, call `upsert_work_item`" — and cannot create
+  duplicates or clobber user state.
 - **Projects** (`/#/projects`): name + optional repo + local folder. The session
   dialog gets a project picker; dispatch matches `item.repo` → project folder.
   Folder paths are validated server-side (`stat`) at creation.
 - **Keyboard + command center**: `⌘K`/`Ctrl+K` palette (actions, pages, "new
   session in <project>", jump to session, dispatch work items — filterable);
-  `g i`/`g p`/`g c` page navigation, `n` new session, `?` shortcuts overlay;
-  inbox: `j`/`k` select, `Enter`/`o` open, `d` dispatch, `r` refresh. Single-key
-  hotkeys stay quiet while typing or while any dialog is open.
+  `g i`/`g w`/`g p`/`g c` page navigation, `n` new session, `?` shortcuts overlay;
+  inbox: `j`/`k` select, `Enter`/`o` open, `d` dispatch, `e` done, `z` snooze,
+  `x` dismiss, `r` refresh. Single-key hotkeys stay quiet while typing or while
+  any dialog is open.
 - **Connectors page** (`/#/connectors`): every claude.ai connector and local MCP
   server a session will load, with live status (connected / needs auth / failed).
   Probed honestly — the server spawns a throwaway SDK query with the same options

@@ -43,16 +43,26 @@ import type {
 import type {
   InboxResponse,
   InboxSnapshot,
+  ItemStateResponse,
   Project,
   ProjectsResponse,
   ReposResponse,
+  UpsertResponse,
+  WatchDraftResponse,
+  WatchPreviewResponse,
+  WatchesResponse,
   WorkItem,
 } from '../shared/protocol.js'
 import { openSqliteStore } from '../core/store/sqlite.js'
 import type { Store, StoredSession } from '../core/store/types.js'
 import { refreshInbox } from '../core/work/inbox.js'
+import { BASE } from '../core/work/score.js'
+import { canonicalizeRefs } from '../core/work/link.js'
+import type { ItemStatus } from '../core/work/state.js'
 import { listAffiliatedRepos } from '../core/sources/github.js'
-import { scanSlack } from '../core/sources/slack.js'
+import { draftWatch, previewWatch, runSlackScan, type WatchScanSpec } from '../core/sources/slack.js'
+import { isDue } from '../core/watch/schedule.js'
+import type { NewWatch, Watch, WatchCadence } from '../core/watch/types.js'
 
 const PORT = Number(process.env.PORT || 5178)
 const DB_FILE = process.env.TRIAGE_DB || path.join(os.homedir(), '.triage', 'triage-dev.db')
@@ -330,6 +340,8 @@ async function loadSessions() {
 const INBOX_TTL_MS = 5 * 60_000
 const INBOX_KEEP_WARM_MS = 15 * 60_000
 const SLACK_TTL_MS = 30 * 60_000
+const SCHEDULER_TICK_MS = 60_000
+const INGESTED_RETENTION_MS = 30 * 86_400_000
 
 const REPOS_KEY = 'github.repos'
 const SLACK_CACHE_KEY = 'slack.cache'
@@ -353,9 +365,9 @@ function slackConnected(): boolean | null {
 }
 
 /**
- * Slack items for a sync: the cached scan when fresh; otherwise kick a
- * background scan and serve what we have (stale beats blocking — a scan is a
- * whole Claude session). Skipped silently when the connector isn't connected.
+ * Slack items for a sync: the cached scan, always (stale beats blocking — a
+ * scan is a whole Claude session). Scanning itself is the scheduler's job;
+ * this only reports how stale the cache is.
  */
 async function getSlackForSync(): Promise<{ items: WorkItem[]; notice?: string }> {
   const connected = slackConnected()
@@ -364,8 +376,7 @@ async function getSlackForSync(): Promise<{ items: WorkItem[]; notice?: string }
 
   const cache = await store.config.get<SlackCache>(SLACK_CACHE_KEY)
   if (cache && Date.now() - cache.scannedAt < SLACK_TTL_MS) return { items: cache.items }
-
-  kickSlackScan()
+  void runDueScans()
   if (cache) {
     const mins = Math.round((Date.now() - cache.scannedAt) / 60_000)
     return { items: cache.items, notice: `slack: showing scan from ${mins}m ago — rescanning in background` }
@@ -373,13 +384,51 @@ async function getSlackForSync(): Promise<{ items: WorkItem[]; notice?: string }
   return { items: [], notice: 'slack: scanning in background (takes a minute) — refresh shortly' }
 }
 
-function kickSlackScan() {
-  if (slackScanInFlight) return
+/**
+ * The due-checker (.docs/watches.md): no cron, no fire-time queue. Each tick
+ * asks "what is due?" — built-in Slack rules (cache older than its TTL) and
+ * enabled watches per their cadence — and runs ONE composed scan for the lot.
+ * Missed runs are simply due on the first tick after wake, once; scans are
+ * cursor-based, so the coalesced run covers the whole gap losslessly.
+ */
+async function runDueScans(): Promise<void> {
+  if (slackScanInFlight) return slackScanInFlight
+  if (slackConnected() !== true) return
+  const now = new Date()
+  const watches = await store.watches.list()
+  const due = watches.filter((w) => isDue(w, now))
+  const cache = await store.config.get<SlackCache>(SLACK_CACHE_KEY)
+  const builtins = !cache || Date.now() - cache.scannedAt >= SLACK_TTL_MS
+  if (!builtins && due.length === 0) return
+
   slackScanInFlight = (async () => {
     try {
-      const items = await scanSlack()
-      await store.config.set(SLACK_CACHE_KEY, { scannedAt: Date.now(), items } satisfies SlackCache)
-      inboxCache = null // next view rebuilds the snapshot with fresh Slack items
+      const specs: WatchScanSpec[] = due.map((w) => ({
+        id: w.id,
+        scope: w.scope,
+        instruction: w.instruction,
+        cursor: w.cursor,
+        createsItems: w.createsItems,
+      }))
+      const outcome = await runSlackScan({ builtins, watches: specs })
+      if (builtins) {
+        await store.config.set(SLACK_CACHE_KEY, {
+          scannedAt: Date.now(),
+          items: outcome.builtinItems,
+        } satisfies SlackCache)
+      }
+      // Idempotent upsert: id-keyed, update-only-if-newer, state-preserving.
+      for (const item of outcome.watchItems) await store.items.upsert(item)
+      for (const w of due) {
+        await store.watches.recordRun(w.id, {
+          cursor: outcome.startedAt, // the scan covered everything before it started
+          lastRunAt: Date.now(),
+          lastRunTokens: outcome.tokens,
+          lastRunMatches: outcome.matchesByWatch.get(w.id) ?? 0,
+        })
+      }
+      await store.items.prune(Date.now() - INGESTED_RETENTION_MS)
+      inboxCache = null // next view rebuilds the snapshot with the fresh scan
       await syncInbox()
     } catch (err) {
       console.error('[slack] scan failed:', err)
@@ -387,14 +436,25 @@ function kickSlackScan() {
       slackScanInFlight = null
     }
   })()
+  return slackScanInFlight
 }
+
+setInterval(() => {
+  runDueScans().catch((err) => console.error('[watches] tick failed:', err))
+}, SCHEDULER_TICK_MS).unref()
 
 function syncInbox(): Promise<InboxSnapshot> {
   if (inboxInFlight) return inboxInFlight
   inboxInFlight = (async () => {
     try {
-      const [repos, slack] = await Promise.all([connectedRepos(), getSlackForSync()])
-      const { items, notices } = await refreshInbox({ repos, slack })
+      const [repos, slack, ingested, states] = await Promise.all([
+        connectedRepos(),
+        getSlackForSync(),
+        store.items.list(),
+        store.itemState.all(),
+      ])
+      const { items, notices, rearmed } = await refreshInbox({ repos, slack, ingested, states })
+      if (rearmed.length > 0) await store.itemState.reopen(rearmed, Date.now())
       inboxCache = { syncedAt: Date.now(), items, notices }
       void store.inbox.save(inboxCache)
       return inboxCache
@@ -513,6 +573,90 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Input validation — the HTTP surface is untrusted (vision principle 6):
+// bodies are validated into domain shapes, and rejected rather than repaired.
+// ---------------------------------------------------------------------------
+
+const CADENCES = new Set<WatchCadence>(['hourly', 'daily', 'weekly'])
+const ITEM_STATUSES = new Set<ItemStatus>(['open', 'done', 'snoozed', 'dismissed'])
+const VALID_KINDS = new Set(Object.keys(BASE))
+const VALID_SOURCES = new Set(['github', 'slack', 'linear'])
+const ITEM_ID_RE = /^(github|slack|linear):\S+$/
+
+type WatchPatch = Partial<NewWatch> & { enabled?: boolean }
+
+function watchPatchFrom(raw: unknown): { patch: WatchPatch } | { error: string } {
+  if (typeof raw !== 'object' || raw === null) return { error: 'body must be a JSON object' }
+  const r = raw as Record<string, unknown>
+  const patch: WatchPatch = {}
+  if (r.title !== undefined) {
+    if (typeof r.title !== 'string' || !r.title.trim()) return { error: 'title must be a non-empty string' }
+    patch.title = r.title.trim()
+  }
+  if (r.scope !== undefined) {
+    if (typeof r.scope !== 'string' || !/^[#@]\S+$/.test(r.scope.trim())) return { error: 'scope must be "#channel" or "@dm"' }
+    patch.scope = r.scope.trim()
+  }
+  if (r.instruction !== undefined) {
+    if (typeof r.instruction !== 'string' || !r.instruction.trim()) return { error: 'instruction must be a non-empty string' }
+    patch.instruction = r.instruction.trim()
+  }
+  if (r.cadence !== undefined) {
+    if (!CADENCES.has(r.cadence as WatchCadence)) return { error: 'cadence must be hourly | daily | weekly' }
+    patch.cadence = r.cadence as WatchCadence
+  }
+  if (r.windowStart !== undefined && r.windowStart !== null) {
+    if (typeof r.windowStart !== 'string' || !/^\d{1,2}:\d{2}$/.test(r.windowStart)) return { error: 'windowStart must be "HH:MM"' }
+    patch.windowStart = r.windowStart
+  }
+  if (r.windowDay !== undefined && r.windowDay !== null) {
+    if (typeof r.windowDay !== 'number' || !Number.isInteger(r.windowDay) || r.windowDay < 0 || r.windowDay > 6) return { error: 'windowDay must be 0-6' }
+    patch.windowDay = r.windowDay
+  }
+  if (r.createsItems !== undefined) {
+    if (typeof r.createsItems !== 'boolean') return { error: 'createsItems must be a boolean' }
+    patch.createsItems = r.createsItems
+  }
+  if (r.enabled !== undefined) {
+    if (typeof r.enabled !== 'boolean') return { error: 'enabled must be a boolean' }
+    patch.enabled = r.enabled
+  }
+  return { patch }
+}
+
+/** A full ingested WorkItem, validated field by field. Rejects, never repairs. */
+function workItemFrom(raw: unknown): { item: WorkItem } | { error: string } {
+  if (typeof raw !== 'object' || raw === null) return { error: 'body must be a JSON object' }
+  const r = raw as Record<string, unknown>
+  if (typeof r.id !== 'string' || !ITEM_ID_RE.test(r.id)) return { error: 'id must look like "slack:...", "github:owner/repo#123", or "linear:KEY-123"' }
+  const source = r.id.slice(0, r.id.indexOf(':'))
+  if (r.source !== undefined && r.source !== source) return { error: `source must match the id prefix ("${source}")` }
+  if (!VALID_SOURCES.has(source)) return { error: 'unknown source' }
+  if (typeof r.kind !== 'string' || !VALID_KINDS.has(r.kind)) return { error: `kind must be one of: ${[...VALID_KINDS].join(', ')}` }
+  if (typeof r.title !== 'string' || !r.title.trim()) return { error: 'title must be a non-empty string' }
+  if (typeof r.url !== 'string' || !r.url.startsWith('http')) return { error: 'url must be an http(s) URL' }
+  if (typeof r.updatedAt !== 'string' || !Number.isFinite(Date.parse(r.updatedAt))) return { error: 'updatedAt must be an ISO 8601 timestamp' }
+  const createdAt = typeof r.createdAt === 'string' && Number.isFinite(Date.parse(r.createdAt)) ? r.createdAt : r.updatedAt
+  return {
+    item: {
+      id: r.id,
+      source: source as WorkItem['source'],
+      kind: r.kind as WorkItem['kind'],
+      title: r.title.trim(),
+      url: r.url,
+      repo: typeof r.repo === 'string' ? r.repo : '',
+      author: typeof r.author === 'string' ? r.author : '',
+      peopleWaiting: typeof r.peopleWaiting === 'number' && r.peopleWaiting >= 0 ? Math.floor(r.peopleWaiting) : 0,
+      createdAt,
+      updatedAt: r.updatedAt,
+      ...(typeof r.watchId === 'string' ? { watchId: r.watchId } : {}),
+      ...(typeof r.why === 'string' && r.why ? { why: r.why } : {}),
+      ...(canonicalizeRefs(r.refs) ? { refs: canonicalizeRefs(r.refs) } : {}),
+    },
+  }
+}
+
 const NO_BUILD_HTML = `<!doctype html><meta charset="utf-8">
 <title>triage — no build</title>
 <body style="font:14px/1.6 system-ui;max-width:34em;margin:12vh auto;color:#dce3f0;background:#0d1017">
@@ -606,6 +750,142 @@ const server = http.createServer(async (req, res) => {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     res.writeHead(body.ok ? 200 : status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  if (url.pathname === '/api/watches') {
+    let body: WatchesResponse
+    let status = 200
+    try {
+      if (req.method === 'POST') {
+        const parsed = watchPatchFrom(await readJsonBody(req))
+        if ('error' in parsed) throw new Error(parsed.error)
+        const p = parsed.patch
+        if (!p.title || !p.scope || !p.instruction || !p.cadence) {
+          throw new Error('a watch needs title, scope, instruction, and cadence')
+        }
+        const now = Date.now()
+        await store.watches.create({
+          id: randomUUID(),
+          source: 'slack',
+          title: p.title,
+          scope: p.scope,
+          instruction: p.instruction,
+          cadence: p.cadence,
+          windowStart: p.windowStart,
+          windowDay: p.windowDay,
+          enabled: p.enabled ?? true,
+          createsItems: p.createsItems ?? true,
+          createdAt: now,
+          updatedAt: now,
+        })
+        // active on the next scheduler tick (never run → due immediately)
+      } else if (req.method === 'PUT') {
+        const id = url.searchParams.get('id')
+        if (!id || !(await store.watches.get(id))) throw new Error('unknown watch id')
+        const parsed = watchPatchFrom(await readJsonBody(req))
+        if ('error' in parsed) throw new Error(parsed.error)
+        await store.watches.update(id, parsed.patch)
+      } else if (req.method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (id) {
+          await store.watches.remove(id)
+          await store.items.removeByWatch(id)
+          inboxCache = null
+        }
+      }
+      body = { ok: true, watches: await store.watches.list() }
+    } catch (err) {
+      status = 400
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  if (url.pathname === '/api/watches/draft' && req.method === 'POST') {
+    let body: WatchDraftResponse
+    try {
+      const parsed = (await readJsonBody(req)) as { text?: unknown } | null
+      const text = typeof parsed?.text === 'string' ? parsed.text.trim() : ''
+      if (!text) throw new Error('describe the watch in plain text first')
+      const draft = await draftWatch(text)
+      if (!draft) throw new Error('could not parse that into a watch — fill the form manually')
+      body = { ok: true, draft }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  if (url.pathname === '/api/watches/preview' && req.method === 'POST') {
+    let body: WatchPreviewResponse
+    try {
+      const parsed = watchPatchFrom(await readJsonBody(req))
+      if ('error' in parsed) throw new Error(parsed.error)
+      const { scope, instruction } = parsed.patch
+      if (!scope || !instruction) throw new Error('a preview needs scope and instruction')
+      if (slackConnected() === false) throw new Error('the claude.ai Slack connector is not connected')
+      const { rows, tokens } = await previewWatch(scope, instruction)
+      body = { ok: true, rows, tokens }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  if (url.pathname === '/api/items/state' && req.method === 'POST') {
+    let body: ItemStateResponse
+    try {
+      const parsed = (await readJsonBody(req)) as { id?: unknown; status?: unknown; snoozeUntil?: unknown } | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      const statusV = parsed?.status as ItemStatus
+      if (!id || !ITEM_STATUSES.has(statusV)) throw new Error('need an item id and a status (open|done|snoozed|dismissed)')
+      const snoozeUntil = typeof parsed?.snoozeUntil === 'number' ? parsed.snoozeUntil : undefined
+      if (statusV === 'snoozed' && !snoozeUntil) throw new Error('snoozed needs snoozeUntil (epoch ms)')
+      await store.itemState.set({ itemId: id, status: statusV, statusAt: Date.now(), snoozeUntil, pinned: false })
+      inboxCache = null // the overlay changed — next view recomputes
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // The ingestion contract (.docs/watches.md): idempotent upsert + resolve,
+  // shared by external scanners over HTTP and the MCP shim (server/mcp.ts).
+  // User state is never written by upsert; resolve is a normal 'done'.
+  if (url.pathname === '/api/items/upsert' && req.method === 'POST') {
+    let body: UpsertResponse
+    try {
+      const parsed = workItemFrom(await readJsonBody(req))
+      if ('error' in parsed) throw new Error(parsed.error)
+      const outcome = await store.items.upsert(parsed.item)
+      if (outcome !== 'unchanged') inboxCache = null
+      body = { ok: true, outcome }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  if (url.pathname === '/api/items/resolve' && req.method === 'POST') {
+    let body: ItemStateResponse
+    try {
+      const parsed = (await readJsonBody(req)) as { id?: unknown } | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      if (!ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
+      await store.itemState.set({ itemId: id, status: 'done', statusAt: Date.now(), pinned: false })
+      inboxCache = null
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
     return
   }

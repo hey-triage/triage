@@ -14,6 +14,9 @@
  * - JSON is (de)serialized inside the adapter; domain types carry objects.
  */
 import type { InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
+import type { WorkItem } from '../work/types.js'
+import type { ItemState } from '../work/state.js'
+import type { NewWatch, Watch, WatchRunResult } from '../watch/types.js'
 
 export type StoredSession = {
   id: string
@@ -74,11 +77,50 @@ export interface ProjectStore {
   remove(id: string): Promise<void>
 }
 
+export interface WatchStore {
+  list(): Promise<Watch[]>
+  get(id: string): Promise<Watch | null>
+  create(w: Watch): Promise<void>
+  /** Edit the user-authored fields (and enabled). Bumps updatedAt. */
+  update(id: string, patch: Partial<NewWatch> & { enabled?: boolean }): Promise<void>
+  /** What a completed scan writes back: cursor, lastRunAt, cost, matches. */
+  recordRun(id: string, run: WatchRunResult): Promise<void>
+  remove(id: string): Promise<void>
+}
+
+export type UpsertOutcome = 'inserted' | 'updated' | 'unchanged'
+
+/**
+ * Ingested work items (watch hits and external-scanner upserts). Unlike the
+ * snapshot, these persist: scans are cursor-incremental, so earlier hits are
+ * never re-derivable. The idempotent upsert rule lives in the adapter —
+ * correctness in the contract, not the prompt.
+ */
+export interface ItemStore {
+  /** id exists → update only if the incoming updatedAt is newer; new → insert. */
+  upsert(item: WorkItem): Promise<UpsertOutcome>
+  list(): Promise<WorkItem[]>
+  /** Drop items whose source updatedAt is older than `cutoff` (epoch ms). */
+  prune(cutoff: number): Promise<void>
+  removeByWatch(watchId: string): Promise<void>
+}
+
+/** User-state overlay — the user's, never written by ingestion. */
+export interface ItemStateStore {
+  all(): Promise<Map<string, ItemState>>
+  set(state: ItemState): Promise<void>
+  /** The re-arm rule's write-back: these items are open again. */
+  reopen(itemIds: string[], now: number): Promise<void>
+}
+
 export interface Store {
   sessions: SessionStore
   events: EventStore
   inbox: InboxStore
   config: ConfigStore
   projects: ProjectStore
+  watches: WatchStore
+  items: ItemStore
+  itemState: ItemStateStore
   close(): Promise<void>
 }

@@ -1,6 +1,10 @@
 # Watches — ingestion engine design (development handover)
 
-> Status: **designed 2026-09**, from the first-user brainstorm sessions. Companion to
+> Status: **implemented 2026-08-30** (core + server + web + MCP shim; see README
+> "Watches"). Originally designed 2026-09 from the first-user brainstorm sessions.
+> Implementation notes: canonical refs use the item-id scheme (`github:owner/repo#123`,
+> not `gh:`) so a ref links to the item by string equality; timestamps follow the
+> codebase rule (epoch ms) rather than the TEXT sketches below. Companion to
 > `roadmap.md` (v0.2) and `vision.md` ("The brief"). Research grounding lives in the
 > "Triage Wow Map" artifact.
 

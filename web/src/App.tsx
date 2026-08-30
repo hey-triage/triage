@@ -13,6 +13,7 @@ import {
 } from './components/NewSessionDialog.js'
 import { Sidebar } from './components/Sidebar.js'
 import { Transcript } from './components/Transcript.js'
+import { ADD_WATCH_KEY, REFINE_WATCH_KEY, WatchesPage } from './components/WatchesPage.js'
 import { useConn, useEvents, useHashRoute, useSessions } from './hooks.js'
 import { anyDialogOpen, isTypingTarget } from './keys.js'
 import { store } from './store.js'
@@ -95,6 +96,7 @@ export function App() {
         if (e.key === 'i') return navigate('/inbox')
         if (e.key === 'c') return navigate('/connectors')
         if (e.key === 'p') return navigate('/projects')
+        if (e.key === 'w') return navigate('/watches')
         return // unknown sequence — swallow
       }
       if (e.key === 'g') {
@@ -121,6 +123,22 @@ export function App() {
       firstMessage: s.firstMessage || undefined,
     })
   }, [])
+
+  const addWatch = useCallback(() => {
+    sessionStorage.setItem(ADD_WATCH_KEY, '1')
+    navigate('/watches')
+  }, [navigate])
+
+  // Thumbs-down on a matched item: the correction lands as appended text on
+  // the watch's instruction — the rule stays human-readable.
+  const refineWatch = useCallback(
+    (item: ScoredItem) => {
+      if (!item.watchId) return
+      sessionStorage.setItem(REFINE_WATCH_KEY, JSON.stringify({ watchId: item.watchId, note: item.title }))
+      navigate('/watches')
+    },
+    [navigate],
+  )
 
   const dispatch = useCallback((item: ScoredItem) => {
     const openWith = (cwd?: string) => {
@@ -154,19 +172,23 @@ export function App() {
         sessions={sessions}
         currentId={currentId}
         inboxActive={route.page === 'inbox'}
+        watchesActive={route.page === 'watches'}
         projectsActive={route.page === 'projects'}
         connectorsActive={route.page === 'connectors'}
         conn={conn}
         onSelect={navigate}
         onNew={newSession}
         onInbox={() => navigate('/inbox')}
+        onWatches={() => navigate('/watches')}
         onProjects={() => navigate('/projects')}
         onConnectors={() => navigate('/connectors')}
       />
 
       <div id="main" className={current?.status === 'running' ? 'running' : undefined}>
         {route.page === 'inbox' ? (
-          <InboxPage key={inboxNonce} onDispatch={dispatch} />
+          <InboxPage key={inboxNonce} onDispatch={dispatch} onRefineWatch={refineWatch} />
+        ) : route.page === 'watches' ? (
+          <WatchesPage />
         ) : route.page === 'connectors' ? (
           <ConnectorsPage />
         ) : route.page === 'projects' ? (
@@ -213,6 +235,7 @@ export function App() {
         onDispatch={dispatch}
         onNewSessionIn={newSessionIn}
         onSyncInbox={syncInbox}
+        onAddWatch={addWatch}
         onHelp={() => setHelpOpen(true)}
       />
       <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />

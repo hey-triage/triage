@@ -16,6 +16,7 @@ export type ItemKind =
   | 'slack-reply-pending'
   | 'slack-mention'
   | 'ticket-assigned'
+  | 'watch-hit' // a user-defined watch matched this thread (see .docs/watches.md)
   | 'fyi'
 
 export type Group = 'blocking' | 'blocked-stale' | 'cycle' | 'fyi'
@@ -45,6 +46,14 @@ export interface WorkItem {
   ciFailing?: boolean
   /** Linear priority: 1 urgent, 2 high, 3 normal, 4 low (0/absent = none) */
   priority?: number
+  /** canonical refs extracted from content, e.g. "github:org/repo#123", "linear:NOV-456" */
+  refs?: string[]
+  /** which watch produced it (undefined = built-in) */
+  watchId?: string
+  /** scanner's one-line match reason (rendered on the item) */
+  why?: string
+  /** re-armed: was done/snoozed, the source updated afterwards */
+  returned?: boolean
 }
 
 export interface ScoredItem extends WorkItem {
@@ -52,4 +61,6 @@ export interface ScoredItem extends WorkItem {
   group: Group
   /** one human-readable line: why this ranked where it did */
   reason: string
+  /** items sharing a canonical ref, folded into this card (linked, not merged) */
+  linked?: { source: WorkSource; url: string; repo: string }[]
 }

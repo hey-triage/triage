@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Group, InboxResponse, ReposResponse, ScoredItem } from '../../../shared/protocol.js'
+import type {
+  Group,
+  InboxResponse,
+  ItemStatus,
+  ReposResponse,
+  ScoredItem,
+  WatchesResponse,
+} from '../../../shared/protocol.js'
 import { GROUP_LABELS } from '../../../core/work/types.js'
 import { anyDialogOpen, isTypingTarget } from '../keys.js'
 
@@ -21,14 +28,45 @@ const KIND_LABEL: Record<string, string> = {
   'slack-reply-pending': 'slack · reply',
   'slack-mention': 'slack · tag',
   'ticket-assigned': 'ticket',
+  'watch-hit': 'watch',
   fyi: 'fyi',
 }
 
-export function InboxPage({ onDispatch }: { onDispatch: (item: ScoredItem) => void }) {
+export function InboxPage({
+  onDispatch,
+  onRefineWatch,
+}: {
+  onDispatch: (item: ScoredItem) => void
+  onRefineWatch: (item: ScoredItem) => void
+}) {
   const [state, setState] = useState<LoadState>({ phase: 'loading' })
   const [reposOpen, setReposOpen] = useState(false)
   const [repoCount, setRepoCount] = useState<number | null>(null)
+  const [watchTitles, setWatchTitles] = useState<Map<string, string>>(new Map())
   const [sel, setSel] = useState(0)
+
+  // done/snoozed/dismissed live in the user-state overlay; the row disappears
+  // optimistically and the server recomputes the snapshot on its next sync.
+  const setItemState = useCallback(async (item: ScoredItem, status: ItemStatus, snoozeUntil?: number) => {
+    setState((prev) =>
+      prev.phase === 'ready' ? { ...prev, items: prev.items.filter((i) => i.id !== item.id) } : prev,
+    )
+    await fetch('/api/items/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: item.id, status, snoozeUntil }),
+    }).catch(() => {})
+  }, [])
+
+  const snooze1d = useCallback(
+    (item: ScoredItem) => {
+      const t = new Date()
+      t.setDate(t.getDate() + 1)
+      t.setHours(9, 0, 0, 0)
+      void setItemState(item, 'snoozed', t.getTime())
+    },
+    [setItemState],
+  )
 
   const load = useCallback(async (refresh: boolean) => {
     setState({ phase: 'loading' })
@@ -70,6 +108,15 @@ export function InboxPage({ onDispatch }: { onDispatch: (item: ScoredItem) => vo
       } else if (e.key === 'd' && ordered[sel]) {
         e.preventDefault()
         onDispatch(ordered[sel])
+      } else if (e.key === 'e' && ordered[sel]) {
+        e.preventDefault()
+        void setItemState(ordered[sel], 'done')
+      } else if (e.key === 'x' && ordered[sel]) {
+        e.preventDefault()
+        void setItemState(ordered[sel], 'dismissed')
+      } else if (e.key === 'z' && ordered[sel]) {
+        e.preventDefault()
+        snooze1d(ordered[sel])
       } else if (e.key === 'r') {
         e.preventDefault()
         void load(true)
@@ -77,7 +124,7 @@ export function InboxPage({ onDispatch }: { onDispatch: (item: ScoredItem) => vo
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [ordered, sel, onDispatch, load])
+  }, [ordered, sel, onDispatch, load, setItemState, snooze1d])
 
   useEffect(() => {
     void load(false)
@@ -85,6 +132,12 @@ export function InboxPage({ onDispatch }: { onDispatch: (item: ScoredItem) => vo
       .then((r) => r.json() as Promise<ReposResponse>)
       .then((b) => {
         if (b.ok) setRepoCount(b.connected.length)
+      })
+      .catch(() => {})
+    void fetch('/api/watches')
+      .then((r) => r.json() as Promise<WatchesResponse>)
+      .then((b) => {
+        if (b.ok) setWatchTitles(new Map(b.watches.map((w) => [w.id, w.title])))
       })
       .catch(() => {})
   }, [load])
@@ -135,8 +188,11 @@ export function InboxPage({ onDispatch }: { onDispatch: (item: ScoredItem) => vo
                   group={g}
                   items={state.items.filter((i) => i.group === g)}
                   selectedId={ordered[sel]?.id ?? null}
+                  watchTitles={watchTitles}
                   onSelect={(id) => setSel(ordered.findIndex((i) => i.id === id))}
                   onDispatch={onDispatch}
+                  onDone={(item) => void setItemState(item, 'done')}
+                  onRefineWatch={onRefineWatch}
                 />
               ))
             )}
@@ -288,14 +344,20 @@ function ItemGroup({
   group,
   items,
   selectedId,
+  watchTitles,
   onSelect,
   onDispatch,
+  onDone,
+  onRefineWatch,
 }: {
   group: Group
   items: ScoredItem[]
   selectedId: string | null
+  watchTitles: Map<string, string>
   onSelect: (id: string) => void
   onDispatch: (item: ScoredItem) => void
+  onDone: (item: ScoredItem) => void
+  onRefineWatch: (item: ScoredItem) => void
 }) {
   if (items.length === 0) return null
   return (
@@ -313,12 +375,34 @@ function ItemGroup({
             <span className={`itemKind ${item.group}`}>{KIND_LABEL[item.kind] ?? item.kind}</span>
             <div className="itemBody">
               <a className="itemTitle" href={item.url} target="_blank" rel="noreferrer">
+                {item.returned && <span className="itemReturned" title="Was done — the source updated since">↩ returned</span>}
                 {item.title}
               </a>
               <div className="itemMeta">
                 <span className="itemRepo">{item.repo}</span> · {item.reason}
+                {item.why && <span className="itemWhy"> · “{item.why}”</span>}
+                {item.watchId && watchTitles.has(item.watchId) && (
+                  <span className="watchChip" title="Matched by this watch">{watchTitles.get(item.watchId)}</span>
+                )}
+                {item.linked?.map((l) => (
+                  <a key={l.url} className="linkedChip" href={l.url} target="_blank" rel="noreferrer" title="Same work, another source">
+                    + {l.source} · {l.repo}
+                  </a>
+                ))}
               </div>
             </div>
+            {item.watchId && (
+              <button
+                className="thumbsDown"
+                title="Bad match — refine this watch"
+                onClick={() => onRefineWatch(item)}
+              >
+                👎
+              </button>
+            )}
+            <button className="dispatch done" title="Mark done (e)" onClick={() => onDone(item)}>
+              Done
+            </button>
             <button
               className="dispatch"
               title="Start a Claude Code session on this item"

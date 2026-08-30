@@ -6,12 +6,14 @@ type Props = {
   sessions: readonly SessionSummary[]
   currentId: string | null
   inboxActive: boolean
+  watchesActive: boolean
   projectsActive: boolean
   connectorsActive: boolean
   conn: ConnState
   onSelect: (id: string) => void
   onNew: () => void
   onInbox: () => void
+  onWatches: () => void
   onProjects: () => void
   onConnectors: () => void
 }
@@ -26,12 +28,14 @@ export function Sidebar({
   sessions,
   currentId,
   inboxActive,
+  watchesActive,
   projectsActive,
   connectorsActive,
   conn,
   onSelect,
   onNew,
   onInbox,
+  onWatches,
   onProjects,
   onConnectors,
 }: Props) {
@@ -70,6 +74,12 @@ export function Sidebar({
             <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9Zm1.5 0v5h2.6l.9 1.8c.17.34.52.55.9.55h.2c.38 0 .73-.21.9-.55l.9-1.8h2.6v-5h-9Z"/>
           </svg>
           Inbox
+        </button>
+        <button className={`navItem${watchesActive ? ' active' : ''}`} onClick={onWatches}>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 3c3.2 0 5.6 2.2 6.8 4.6a1 1 0 0 1 0 .9C13.6 10.9 11.2 13 8 13S2.4 10.9 1.2 8.5a1 1 0 0 1 0-.9C2.4 5.2 4.8 3 8 3Zm0 1.6C5.6 4.6 3.7 6.2 2.7 8c1 1.8 2.9 3.4 5.3 3.4s4.3-1.6 5.3-3.4c-1-1.8-2.9-3.4-5.3-3.4Zm0 1.4a2 2 0 1 1 0 4 2 2 0 0 1 0-4Z"/>
+          </svg>
+          Watches
         </button>
         <button className={`navItem${projectsActive ? ' active' : ''}`} onClick={onProjects}>
           <svg viewBox="0 0 16 16" aria-hidden="true">

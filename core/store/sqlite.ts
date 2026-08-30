@@ -10,16 +10,23 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import type { InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
+import type { WorkItem } from '../work/types.js'
+import type { ItemState, ItemStatus } from '../work/state.js'
+import type { NewWatch, Watch, WatchCadence, WatchRunResult } from '../watch/types.js'
 import type {
   ConfigStore,
   ProjectStore,
   EventStore,
   InboxStore,
+  ItemStateStore,
+  ItemStore,
   NewSession,
   SessionStore,
   Store,
   StoredEvent,
   StoredSession,
+  UpsertOutcome,
+  WatchStore,
 } from './types.js'
 
 // Numbered, append-only. A new migration is a new entry — never edit an old one.
@@ -61,6 +68,39 @@ const MIGRATIONS: string[] = [
      path       TEXT NOT NULL,
      created_at INTEGER NOT NULL
    );`,
+  // 5: the watches engine (.docs/watches.md) — user-defined watches, the
+  // persistent ingested items they (and external scanners) produce, and the
+  // user-state overlay that survives every snapshot rebuild.
+  `CREATE TABLE watches (
+     id               TEXT PRIMARY KEY,
+     source           TEXT NOT NULL,
+     title            TEXT NOT NULL,
+     scope            TEXT NOT NULL,
+     instruction      TEXT NOT NULL,
+     cadence          TEXT NOT NULL,
+     window_start     TEXT,
+     window_day       INTEGER,
+     enabled          INTEGER NOT NULL DEFAULT 1,
+     creates_items    INTEGER NOT NULL DEFAULT 1,
+     cursor           TEXT,
+     last_run_at      INTEGER,
+     last_run_tokens  INTEGER,
+     last_run_matches INTEGER,
+     created_at       INTEGER NOT NULL,
+     updated_at       INTEGER NOT NULL
+   );
+   CREATE TABLE ingested_items (
+     id         TEXT PRIMARY KEY,
+     updated_at INTEGER NOT NULL,
+     payload    TEXT NOT NULL
+   );
+   CREATE TABLE item_state (
+     item_id      TEXT PRIMARY KEY,
+     status       TEXT NOT NULL,
+     status_at    INTEGER NOT NULL,
+     snooze_until INTEGER,
+     pinned       INTEGER NOT NULL DEFAULT 0
+   );`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -76,6 +116,9 @@ export function openSqliteStore(file: string): Store {
     inbox: new SqliteInbox(db),
     config: new SqliteConfig(db),
     projects: new SqliteProjects(db),
+    watches: new SqliteWatches(db),
+    items: new SqliteItems(db),
+    itemState: new SqliteItemState(db),
     close: async () => db.close(),
   }
 }
@@ -207,6 +250,185 @@ class SqliteConfig implements ConfigStore {
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       )
       .run(key, JSON.stringify(value))
+  }
+}
+
+type WatchRow = {
+  id: string
+  source: string
+  title: string
+  scope: string
+  instruction: string
+  cadence: string
+  window_start: string | null
+  window_day: number | null
+  enabled: number
+  creates_items: number
+  cursor: string | null
+  last_run_at: number | null
+  last_run_tokens: number | null
+  last_run_matches: number | null
+  created_at: number
+  updated_at: number
+}
+
+const toWatch = (r: WatchRow): Watch => ({
+  id: r.id,
+  source: 'slack',
+  title: r.title,
+  scope: r.scope,
+  instruction: r.instruction,
+  cadence: r.cadence as WatchCadence,
+  windowStart: r.window_start ?? undefined,
+  windowDay: r.window_day ?? undefined,
+  enabled: r.enabled === 1,
+  createsItems: r.creates_items === 1,
+  cursor: r.cursor ?? undefined,
+  lastRunAt: r.last_run_at ?? undefined,
+  lastRunTokens: r.last_run_tokens ?? undefined,
+  lastRunMatches: r.last_run_matches ?? undefined,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+})
+
+class SqliteWatches implements WatchStore {
+  constructor(private db: DatabaseSync) {}
+
+  async list(): Promise<Watch[]> {
+    const rows = this.db.prepare('SELECT * FROM watches ORDER BY created_at').all() as WatchRow[]
+    return rows.map(toWatch)
+  }
+
+  async get(id: string): Promise<Watch | null> {
+    const r = this.db.prepare('SELECT * FROM watches WHERE id = ?').get(id) as WatchRow | undefined
+    return r ? toWatch(r) : null
+  }
+
+  async create(w: Watch): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO watches (id, source, title, scope, instruction, cadence, window_start, window_day,
+           enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+      )
+      .run(
+        w.id, w.source, w.title, w.scope, w.instruction, w.cadence,
+        w.windowStart ?? null, w.windowDay ?? null,
+        w.enabled ? 1 : 0, w.createsItems ? 1 : 0,
+        w.createdAt, w.updatedAt,
+      )
+  }
+
+  async update(id: string, patch: Partial<NewWatch> & { enabled?: boolean }): Promise<void> {
+    const current = await this.get(id)
+    if (!current) return
+    const next = { ...current, ...patch }
+    this.db
+      .prepare(
+        `UPDATE watches SET title = ?, scope = ?, instruction = ?, cadence = ?, window_start = ?,
+           window_day = ?, enabled = ?, creates_items = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        next.title, next.scope, next.instruction, next.cadence,
+        next.windowStart ?? null, next.windowDay ?? null,
+        next.enabled ? 1 : 0, next.createsItems ? 1 : 0,
+        Date.now(), id,
+      )
+  }
+
+  async recordRun(id: string, run: WatchRunResult): Promise<void> {
+    this.db
+      .prepare(
+        'UPDATE watches SET cursor = ?, last_run_at = ?, last_run_tokens = ?, last_run_matches = ? WHERE id = ?',
+      )
+      .run(run.cursor, run.lastRunAt, run.lastRunTokens, run.lastRunMatches, id)
+  }
+
+  async remove(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM watches WHERE id = ?').run(id)
+  }
+}
+
+class SqliteItems implements ItemStore {
+  constructor(private db: DatabaseSync) {}
+
+  async upsert(item: WorkItem): Promise<UpsertOutcome> {
+    const incoming = Date.parse(item.updatedAt)
+    if (!Number.isFinite(incoming)) return 'unchanged'
+    const existing = this.db.prepare('SELECT updated_at FROM ingested_items WHERE id = ?').get(item.id) as
+      | { updated_at: number }
+      | undefined
+    if (!existing) {
+      this.db
+        .prepare('INSERT INTO ingested_items (id, updated_at, payload) VALUES (?, ?, ?)')
+        .run(item.id, incoming, JSON.stringify(item))
+      return 'inserted'
+    }
+    // update only if newer — re-ranking is correct, waiting time grew;
+    // an equal-or-older write touches nothing (idempotence).
+    if (incoming <= existing.updated_at) return 'unchanged'
+    this.db
+      .prepare('UPDATE ingested_items SET updated_at = ?, payload = ? WHERE id = ?')
+      .run(incoming, JSON.stringify(item), item.id)
+    return 'updated'
+  }
+
+  async list(): Promise<WorkItem[]> {
+    const rows = this.db.prepare('SELECT payload FROM ingested_items ORDER BY updated_at DESC').all() as { payload: string }[]
+    return rows.map((r) => JSON.parse(r.payload) as WorkItem)
+  }
+
+  async prune(cutoff: number): Promise<void> {
+    this.db.prepare('DELETE FROM ingested_items WHERE updated_at < ?').run(cutoff)
+  }
+
+  async removeByWatch(watchId: string): Promise<void> {
+    this.db
+      .prepare(`DELETE FROM ingested_items WHERE json_extract(payload, '$.watchId') = ?`)
+      .run(watchId)
+  }
+}
+
+class SqliteItemState implements ItemStateStore {
+  constructor(private db: DatabaseSync) {}
+
+  async all(): Promise<Map<string, ItemState>> {
+    const rows = this.db.prepare('SELECT * FROM item_state').all() as {
+      item_id: string
+      status: string
+      status_at: number
+      snooze_until: number | null
+      pinned: number
+    }[]
+    return new Map(
+      rows.map((r) => [
+        r.item_id,
+        {
+          itemId: r.item_id,
+          status: r.status as ItemStatus,
+          statusAt: r.status_at,
+          snoozeUntil: r.snooze_until ?? undefined,
+          pinned: r.pinned === 1,
+        },
+      ]),
+    )
+  }
+
+  async set(state: ItemState): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO item_state (item_id, status, status_at, snooze_until, pinned) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (item_id) DO UPDATE SET status = excluded.status, status_at = excluded.status_at,
+           snooze_until = excluded.snooze_until, pinned = excluded.pinned`,
+      )
+      .run(state.itemId, state.status, state.statusAt, state.snoozeUntil ?? null, state.pinned ? 1 : 0)
+  }
+
+  async reopen(itemIds: string[], now: number): Promise<void> {
+    const stmt = this.db.prepare(
+      'UPDATE item_state SET status = ?, status_at = ?, snooze_until = NULL WHERE item_id = ?',
+    )
+    for (const id of itemIds) stmt.run('open', now, id)
   }
 }
 

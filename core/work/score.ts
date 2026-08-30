@@ -14,6 +14,8 @@ export const BASE: Record<ItemKind, number> = {
   'own-pr-approved': 65,
   'ticket-assigned': 50,
   'own-pr-stale': 40,
+  // deliberately modest: mentions and reviews must outrank topical matches
+  'watch-hit': 40,
   'slack-mention': 35,
   mention: 30,
   'own-pr-open': 15,
@@ -28,6 +30,7 @@ const GROUP: Record<ItemKind, Group> = {
   'own-pr-approved': 'blocked-stale',
   'own-pr-stale': 'blocked-stale',
   'ticket-assigned': 'cycle',
+  'watch-hit': 'fyi',
   'own-pr-open': 'fyi',
   'slack-mention': 'fyi',
   mention: 'fyi',
@@ -104,6 +107,8 @@ function reasonFor(item: WorkItem, waitDays: number): string {
       const pri = item.priority === 1 ? 'urgent · ' : item.priority === 2 ? 'high · ' : ''
       return `${pri}assigned to you, in the current cycle (${age(waitDays)})`
     }
+    case 'watch-hit':
+      return `matched a watch in ${item.repo} (${age(waitDays)})`
     case 'fyi':
       return `updated ${age(waitDays)}${ci}`
   }

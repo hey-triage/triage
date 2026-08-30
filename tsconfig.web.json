@@ -21,6 +21,8 @@
   "include": [
     "web/src",
     "shared",
-    "core/work/types.ts"
+    "core/work/types.ts",
+    "core/work/state.ts",
+    "core/watch/types.ts"
   ]
 }
