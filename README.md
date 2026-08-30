@@ -21,8 +21,29 @@ Claude subprocess. Restart it by hand when you change `server/`.
 For a production-style run on a single port:
 
 ```sh
-npm run build && npm start   # → http://localhost:5178
+npm run build && npm start   # → http://localhost:5178 (foreground)
 ```
+
+## The `triage` CLI (installed package)
+
+When installed via npm, the `triage` bin (`server/cli.ts`) manages the server as a
+background process:
+
+```sh
+triage             # start in the background if not running, print the URL (idempotent)
+triage stop        # stop it (ends any live Claude sessions)
+triage restart     # stop + start — also how an `npm i -g` upgrade takes effect
+triage status      # running? version, pid, port, live sessions, db
+triage logs        # tail ~/.triage/server.log
+triage serve       # run in the foreground instead (debugging, launchd/systemd)
+triage --port 5179 # non-default port (PORT env works too)
+```
+
+"Is triage running" is decided by `GET /api/health`, never by the pid file alone;
+`~/.triage/server.json` only records the port/pid of the last start so `stop`/`status`
+can find a `--port` server. If the port is held by something that isn't triage, the
+CLI fails fast with a message rather than auto-picking another port — the MCP shim
+and bookmarks assume a stable port.
 
 ## What it does
 

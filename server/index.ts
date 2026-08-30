@@ -70,8 +70,10 @@ import { listAffiliatedRepos } from '../core/sources/github.js'
 import { draftWatch, previewWatch, runSlackScan, type WatchScanSpec } from '../core/sources/slack.js'
 import { isDue } from '../core/watch/schedule.js'
 import type { NewWatch, Watch, WatchCadence } from '../core/watch/types.js'
+import { clearState, pkgVersion, writeState } from './state.js'
 
 const PORT = Number(process.env.PORT || 5178)
+const VERSION = pkgVersion()
 const DB_FILE = process.env.TRIAGE_DB || path.join(os.homedir(), '.triage', 'triage-dev.db')
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /**
@@ -879,6 +881,21 @@ async function serveWeb(pathname: string, res: http.ServerResponse) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`)
+  if (url.pathname === '/api/health') {
+    // The CLI's "is triage running" probe — see server/state.ts.
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        app: 'triage',
+        version: VERSION,
+        pid: process.pid,
+        port: PORT,
+        db: DB_FILE,
+        liveSessions: live.size,
+      }),
+    )
+    return
+  }
   if (url.pathname === '/api/sessions') {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(summaries()))
@@ -1346,6 +1363,29 @@ probeConnectors().catch((err) => console.error('[connectors] startup probe faile
 // Same idea for the model list: the composer's picker should be populated by
 // the time anyone opens it.
 probeModels().catch((err) => console.error('[models] startup probe failed:', err))
+// The wss wraps the http server and re-emits its errors, so the handler has
+// to sit on both — an unhandled 'error' on either one crashes with a raw stack.
+for (const emitter of [server, wss]) emitter.on('error', onListenError)
+function onListenError(err: NodeJS.ErrnoException) {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `triage: port ${PORT} is already in use — \`triage status\` shows whether it's another triage; ` +
+        `otherwise pick a port with \`triage --port ${PORT + 1}\``,
+    )
+    process.exit(1)
+  }
+  throw err
+}
 server.listen(PORT, () => {
   console.log(`triage-dev server → http://localhost:${PORT}  (db: ${DB_FILE})`)
+  // Record where we are so `triage stop/status` can find a --port server.
+  writeState({ pid: process.pid, port: PORT, version: VERSION, startedAt: new Date().toISOString() }).catch(
+    (err) => console.error('[state] could not write server.json:', err),
+  )
 })
+
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    clearState(process.pid).finally(() => process.exit(0))
+  })
+}
