@@ -1,7 +1,6 @@
 {
   "name": "@hey-triage/triage",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
   "type": "module",
   "description": "Ranked work inbox for engineers — every item arrives with its action drafted, dispatch straight into your local Claude Code",
   "repository": {
@@ -12,6 +11,16 @@
   "publishConfig": {
     "access": "public"
   },
+  "bin": {
+    "triage": "dist/server/index.js",
+    "triage-mcp": "dist/server/mcp.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "smoke": "node scripts/smoke.mjs",
@@ -19,8 +28,9 @@
     "dev:server": "tsx server/index.ts",
     "mcp": "tsx server/mcp.ts",
     "dev:web": "vite",
-    "build": "vite build",
-    "start": "tsx server/index.ts"
+    "build": "rm -rf dist && vite build && tsc -p tsconfig.publish.json",
+    "start": "tsx server/index.ts",
+    "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.251",

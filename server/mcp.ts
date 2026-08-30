@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Triage MCP server (stdio) — the ingestion contract as MCP tools, so any
  * external scanner (a Claude Code routine, a cron'd headless session, a gh-aw

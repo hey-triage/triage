@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * triage-dev POC server
  *
@@ -67,8 +68,16 @@ import type { NewWatch, Watch, WatchCadence } from '../core/watch/types.js'
 const PORT = Number(process.env.PORT || 5178)
 const DB_FILE = process.env.TRIAGE_DB || path.join(os.homedir(), '.triage', 'triage-dev.db')
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-/** Vite build output — see vite.config.ts. Absent until `npm run build`. */
-const WEB_DIR = path.join(__dirname, '..', 'dist', 'web')
+/**
+ * Vite build output — see vite.config.ts. Absent until `npm run build`.
+ * Two layouts: from source this file is <repo>/server/index.ts and the build
+ * is <repo>/dist/web; in the published package it is <pkg>/dist/server/index.js
+ * sitting next to <pkg>/dist/web.
+ */
+const WEB_DIR =
+  path.basename(path.dirname(__dirname)) === 'dist'
+    ? path.join(__dirname, '..', 'web')
+    : path.join(__dirname, '..', 'dist', 'web')
 
 const pExecFile = promisify(execFile)
 
