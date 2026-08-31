@@ -16,6 +16,7 @@ import {
   type QuestionAnswers,
   type RawBlock,
   type SessionEvent,
+  type ToolEffect,
 } from '../../shared/protocol.js'
 
 export type ToolResult = { text: string; isError: boolean }
@@ -42,6 +43,7 @@ export type TranscriptItem =
       input: Record<string, unknown>
       title?: string
       canAlwaysAllow?: boolean
+      effect?: ToolEffect
       resolved?: PermissionBehavior | 'expired'
       /** AskUserQuestion only: what the user picked, for the replayed card. */
       answers?: QuestionAnswers
@@ -74,6 +76,7 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
           input: ev.input,
           title: ev.title,
           canAlwaysAllow: ev.canAlwaysAllow,
+          effect: ev.effect,
         }
         permsById.set(ev.id, item)
         items.push(item)

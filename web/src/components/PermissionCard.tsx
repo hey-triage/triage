@@ -9,11 +9,23 @@ type Props = {
   onRespond: (requestId: string, behavior: PermissionBehavior) => void
 }
 
+/** A one-line why-you're-asked, shown for the calls a write-gating mode stops on. */
+const EFFECT_BADGE: Record<string, { label: string; hint: string }> = {
+  'external-write': { label: 'external', hint: 'Reaches outside this machine' },
+  'local-write': { label: 'writes', hint: 'Changes files or state on this machine' },
+}
+
 export const PermissionCard = memo(function PermissionCard({ item, onRespond }: Props) {
+  const badge = item.effect ? EFFECT_BADGE[item.effect] : undefined
   return (
     <div className="perm">
       <div className="q">
         Claude wants to use <b>{item.toolName}</b>
+        {badge && (
+          <span className={`effect ${item.effect}`} title={badge.hint}>
+            {badge.label}
+          </span>
+        )}
         {item.title && (
           <>
             <br />
