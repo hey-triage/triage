@@ -58,6 +58,39 @@ const TOOLS = [
     },
   },
   {
+    name: 'create_work_item',
+    description:
+      'Add a manual to-do to the inbox (a user-authored item). Title is required; note, url, priority (1–4), and projectId are optional.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'what the to-do is' },
+        note: { type: 'string' },
+        url: { type: 'string', description: 'an http(s) link' },
+        priority: { type: 'number', description: '1 urgent … 4 low' },
+        projectId: { type: 'string', description: 'an existing project id' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'edit_work_item',
+    description:
+      'Edit a manual to-do by id (id must start with "manual:"). Only the fields you pass change; priority 0/null clears it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'the manual item id, e.g. "manual:<uuid>"' },
+        title: { type: 'string' },
+        note: { type: 'string' },
+        url: { type: 'string' },
+        priority: { type: 'number', description: '1–4, or 0/null to clear' },
+        projectId: { type: 'string' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'resolve_work_item',
     description:
       'Mark one work item done (by id). Subject to the re-arm rule like any done: if the source updates afterwards, the item returns to the inbox.',
@@ -69,9 +102,9 @@ const TOOLS = [
   },
 ]
 
-async function api(path: string, body?: unknown): Promise<unknown> {
+async function api(path: string, body?: unknown, method?: string): Promise<unknown> {
   const res = await fetch(`${BASE_URL}${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
+    method: method ?? (body === undefined ? 'GET' : 'POST'),
     headers: { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
@@ -92,6 +125,19 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<{ 
     return body.ok
       ? { text: `ok: ${body.outcome}`, isError: false }
       : { text: `rejected: ${body.error}`, isError: true }
+  }
+  if (name === 'create_work_item') {
+    const body = (await api('/api/items/manual', args)) as { ok: boolean; error?: string }
+    return body.ok ? { text: 'ok: created', isError: false } : { text: `rejected: ${body.error}`, isError: true }
+  }
+  if (name === 'edit_work_item') {
+    const { id, ...patch } = args
+    if (typeof id !== 'string' || !id) return { text: 'rejected: need a manual item id', isError: true }
+    const body = (await api(`/api/items/manual?id=${encodeURIComponent(id)}`, patch, 'PUT')) as {
+      ok: boolean
+      error?: string
+    }
+    return body.ok ? { text: 'ok: edited', isError: false } : { text: `rejected: ${body.error}`, isError: true }
   }
   if (name === 'resolve_work_item') {
     const body = (await api('/api/items/resolve', { id: args.id })) as { ok: boolean; error?: string }

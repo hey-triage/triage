@@ -26,11 +26,14 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
   query,
+  createSdkMcpServer,
+  tool,
   type Query,
   type SDKUserMessage,
   type PermissionResult,
   type PermissionUpdate,
 } from '@anthropic-ai/claude-agent-sdk'
+import { z } from 'zod'
 import type {
   ClientMessage,
   Connector,
@@ -63,7 +66,7 @@ import type {
   WorkItem,
 } from '../shared/protocol.js'
 import { openSqliteStore } from '../core/store/sqlite.js'
-import type { Store, StoredSession } from '../core/store/types.js'
+import type { Store, StoredSession, UpsertOutcome } from '../core/store/types.js'
 import { refreshInbox } from '../core/work/inbox.js'
 import { BASE } from '../core/work/score.js'
 import { canonicalizeRefs } from '../core/work/link.js'
@@ -165,6 +168,10 @@ class LiveSession {
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         settingSources: ['user', 'project', 'local'],
         includePartialMessages: true,
+        // The triage inbox as in-process tools, so a chat can list/create/edit
+        // work items directly — same tool surface as the stdio shim external
+        // Claude Code sessions get (server/mcp.ts).
+        mcpServers: { triage: triageMcp },
         // Omitted when the user never picked: Claude Code's own default is a
         // real choice (an org can move it), not a model we should pin here.
         ...(row.model ? { model: row.model } : {}),
@@ -251,6 +258,11 @@ class LiveSession {
     toolInput: Record<string, unknown>,
     opts: { title?: string; description?: string; suggestions?: PermissionUpdate[] },
   ): Promise<PermissionResult> {
+    // Reading our own inbox is harmless — never prompt for it. Every triage
+    // write (create/edit/upsert/resolve) still goes through the prompt below.
+    if (toolName === 'mcp__triage__list_work_items') {
+      return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+    }
     const id = randomUUID()
     const suggestions = opts.suggestions ?? []
     return new Promise<PermissionResult>((resolve) => {
@@ -853,15 +865,21 @@ function workItemFrom(raw: unknown): { item: WorkItem } | { error: string } {
 }
 
 /**
- * A manual to-do's fields, validated. Title is required; project (if given)
- * must exist; url (if given) must be http(s); priority (if given) is 1–4.
+ * A manual to-do's fields, validated. Project (if given) must exist; url (if
+ * given) must be http(s); priority (if given) is 1–4. Title is required on
+ * create; with `{ partial: true }` (an edit) only the fields present are
+ * validated and returned, so a caller can patch one field without resending
+ * the rest.
  */
-async function manualItemFrom(raw: unknown): Promise<ManualItemInput> {
+async function manualItemFrom(raw: unknown): Promise<ManualItemInput>
+async function manualItemFrom(raw: unknown, opts: { partial: true }): Promise<Partial<ManualItemInput>>
+async function manualItemFrom(raw: unknown, opts: { partial?: boolean } = {}): Promise<Partial<ManualItemInput>> {
   if (typeof raw !== 'object' || raw === null) throw new Error('body must be a JSON object')
   const r = raw as Record<string, unknown>
   const title = typeof r.title === 'string' ? r.title.trim() : ''
-  if (!title) throw new Error('a work item needs a title')
-  const input: ManualItemInput = { title }
+  if (!title && !opts.partial) throw new Error('a work item needs a title')
+  const input: Partial<ManualItemInput> = {}
+  if (title) input.title = title
   if (typeof r.projectId === 'string' && r.projectId) {
     const projects = await store.projects.list()
     if (!projects.some((p) => p.id === r.projectId)) throw new Error('unknown project')
@@ -882,6 +900,166 @@ async function manualItemFrom(raw: unknown): Promise<ManualItemInput> {
   }
   return input
 }
+
+// ---------------------------------------------------------------------------
+// Work-item operations — one core, three callers: the HTTP routes below, the
+// in-process MCP server that web chats get (triageMcp), and the stdio shim
+// (server/mcp.ts) which reaches them over HTTP. Every transport funnels through
+// these functions, so list/create/edit/upsert/resolve behave identically no
+// matter who calls them. Validation stays in workItemFrom/manualItemFrom — the
+// single source of truth, never duplicated per transport.
+// ---------------------------------------------------------------------------
+async function listItemsOp(filter: { source?: string; kind?: string } = {}): Promise<InboxSnapshot['items']> {
+  const snap = await getInbox(false)
+  let items = snap.items
+  if (filter.source) items = items.filter((i) => i.source === filter.source)
+  if (filter.kind) items = items.filter((i) => i.kind === filter.kind)
+  return items
+}
+
+async function upsertItemOp(raw: unknown): Promise<UpsertOutcome> {
+  const parsed = workItemFrom(raw)
+  if ('error' in parsed) throw new Error(parsed.error)
+  const outcome = await store.items.upsert(parsed.item)
+  if (outcome !== 'unchanged') inboxCache = null
+  return outcome
+}
+
+async function resolveItemOp(rawId: unknown): Promise<void> {
+  const id = typeof rawId === 'string' ? rawId : ''
+  if (!ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
+  await store.itemState.set({ itemId: id, status: 'done', statusAt: Date.now(), pinned: false })
+  inboxCache = null
+}
+
+async function createManualOp(raw: unknown): Promise<string> {
+  const input = await manualItemFrom(raw)
+  const id = `manual:${randomUUID()}`
+  await store.manual.create({ id, ...input })
+  inboxCache = null
+  return id
+}
+
+// Edits target manual (user-authored) items only. Ingested items are
+// upsert-newer-wins, so a free-form edit would be clobbered by the next scan —
+// reject those with a clear message rather than silently no-op'ing.
+async function editManualOp(id: string, raw: unknown): Promise<void> {
+  if (!id || !id.startsWith('manual:'))
+    throw new Error('edit_work_item only edits manual items (id must start with "manual:")')
+  const patch = await manualItemFrom(raw, { partial: true })
+  await store.manual.update(id, patch)
+  inboxCache = null
+}
+
+// The same tool surface every session gets in-process, matching the stdio
+// shim's names/schemas one-for-one (server/mcp.ts) so a web chat and a local
+// Claude Code session drive the inbox identically. Handlers call the ops above
+// directly — no HTTP round-trip. Reads are auto-allowed in requestPermission;
+// writes surface a permission prompt in the web UI.
+const okResult = (text: string) => ({ content: [{ type: 'text' as const, text }] })
+const errResult = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true })
+
+const triageMcp = createSdkMcpServer({
+  name: 'triage',
+  version: VERSION,
+  tools: [
+    tool(
+      'list_work_items',
+      'Read the ranked triage queue: every open work item with its score, group, and reason. Optional filters narrow by source or kind.',
+      {
+        source: z.enum(['github', 'slack', 'linear', 'manual']).optional().describe('only items from this source'),
+        kind: z.string().optional().describe('only items of this kind, e.g. "watch-hit"'),
+      },
+      async (args) => {
+        try {
+          const items = await listItemsOp({ source: args.source, kind: args.kind })
+          return okResult(JSON.stringify(items, null, 2))
+        } catch (err) {
+          return errResult(err instanceof Error ? err.message : String(err))
+        }
+      },
+    ),
+    tool(
+      'create_work_item',
+      'Add a manual to-do to the inbox (a user-authored item). Title is required; note, url, priority (1–4), and projectId are optional.',
+      {
+        title: z.string().describe('what the to-do is'),
+        note: z.string().optional(),
+        url: z.string().optional().describe('an http(s) link'),
+        priority: z.number().int().min(1).max(4).optional(),
+        projectId: z.string().optional().describe('an existing project id'),
+      },
+      async (args) => {
+        try {
+          const id = await createManualOp(args)
+          return okResult(`ok: created ${id}`)
+        } catch (err) {
+          return errResult(err instanceof Error ? err.message : String(err))
+        }
+      },
+    ),
+    tool(
+      'edit_work_item',
+      'Edit a manual to-do by id (id must start with "manual:"). Only the fields you pass change; priority 0/null clears it.',
+      {
+        id: z.string().describe('the manual item id, e.g. "manual:<uuid>"'),
+        title: z.string().optional(),
+        note: z.string().optional(),
+        url: z.string().optional(),
+        priority: z.number().int().min(0).max(4).nullable().optional(),
+        projectId: z.string().optional(),
+      },
+      async (args) => {
+        try {
+          const { id, ...patch } = args
+          await editManualOp(id, patch)
+          return okResult(`ok: edited ${id}`)
+        } catch (err) {
+          return errResult(err instanceof Error ? err.message : String(err))
+        }
+      },
+    ),
+    tool(
+      'upsert_work_item',
+      'Idempotently upsert one ingested work item (for scanners). Id-keyed, update-only-if-newer by updatedAt, user-state-preserving: repeated calls never create duplicates or clobber done/snoozed/dismissed state. Invalid items are rejected, never repaired.',
+      {
+        id: z.string().describe('stable id: "slack:...", "github:owner/repo#123", or "linear:KEY-123"'),
+        kind: z.string().describe('item kind, e.g. "watch-hit", "mention", "fyi"'),
+        title: z.string(),
+        url: z.string(),
+        updatedAt: z.string().describe('ISO 8601 — the upsert applies only if newer than what is stored'),
+        repo: z.string().optional(),
+        author: z.string().optional(),
+        peopleWaiting: z.number().optional(),
+        createdAt: z.string().optional(),
+        watchId: z.string().optional(),
+        why: z.string().optional(),
+        refs: z.array(z.string()).optional(),
+      },
+      async (args) => {
+        try {
+          const outcome = await upsertItemOp(args)
+          return okResult(`ok: ${outcome}`)
+        } catch (err) {
+          return errResult(err instanceof Error ? err.message : String(err))
+        }
+      },
+    ),
+    tool(
+      'resolve_work_item',
+      'Mark one work item done (by id). Subject to the re-arm rule: if the source updates afterwards, the item returns to the inbox.',
+      { id: z.string() },
+      async (args) => {
+        try {
+          await resolveItemOp(args.id)
+          return okResult('ok: done')
+        } catch (err) {
+          return errResult(err instanceof Error ? err.message : String(err))
+        }
+      },
+    ),
+  ],
+})
 
 const NO_BUILD_HTML = `<!doctype html><meta charset="utf-8">
 <title>triage — no build</title>
@@ -1102,10 +1280,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/items/upsert' && req.method === 'POST') {
     let body: UpsertResponse
     try {
-      const parsed = workItemFrom(await readJsonBody(req))
-      if ('error' in parsed) throw new Error(parsed.error)
-      const outcome = await store.items.upsert(parsed.item)
-      if (outcome !== 'unchanged') inboxCache = null
+      const outcome = await upsertItemOp(await readJsonBody(req))
       body = { ok: true, outcome }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1118,10 +1293,7 @@ const server = http.createServer(async (req, res) => {
     let body: ItemStateResponse
     try {
       const parsed = (await readJsonBody(req)) as { id?: unknown } | null
-      const id = typeof parsed?.id === 'string' ? parsed.id : ''
-      if (!ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
-      await store.itemState.set({ itemId: id, status: 'done', statusAt: Date.now(), pinned: false })
-      inboxCache = null
+      await resolveItemOp(parsed?.id)
       body = { ok: true }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1137,15 +1309,11 @@ const server = http.createServer(async (req, res) => {
     let status = 200
     try {
       if (req.method === 'POST') {
-        const input = await manualItemFrom(await readJsonBody(req))
-        await store.manual.create({ id: `manual:${randomUUID()}`, ...input })
-        inboxCache = null
+        await createManualOp(await readJsonBody(req))
       } else if (req.method === 'PUT') {
         const id = url.searchParams.get('id')
         if (!id) throw new Error('need a manual item id')
-        const input = await manualItemFrom(await readJsonBody(req))
-        await store.manual.update(id, input)
-        inboxCache = null
+        await editManualOp(id, await readJsonBody(req))
       } else if (req.method === 'DELETE') {
         const id = url.searchParams.get('id')
         if (id) {
