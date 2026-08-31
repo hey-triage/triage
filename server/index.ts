@@ -49,6 +49,7 @@ import type {
   SessionEvent,
   SessionStatus,
   SessionSummary,
+  ToolEffect,
 } from '../shared/protocol.js'
 import type {
   InboxResponse,
@@ -132,6 +133,72 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 const sessionScoped = (u: PermissionUpdate): PermissionUpdate => ({ ...u, destination: 'session' })
 
 // ---------------------------------------------------------------------------
+// Effect classifier — the heart of 'gated' mode.
+//
+// Before a tool runs, we place it on a blast-radius scale (read / local-write /
+// external-write) so 'gated' can wave through reads and still stop on anything
+// that writes. Two rules keep it safe:
+//   1. Unknown ⇒ write. Only a call we can *prove* is a read runs unattended;
+//      everything else prompts, so a newly connected tool is gated by default.
+//   2. Any write verb wins over any read verb. A connector call is a read only
+//      when its name signals a read and signals no write — so a mutating tool
+//      can never sneak through on a "get"/"list" substring.
+// Classification is by tool *name*, per tool, never per MCP server: Slack read
+// and Slack send share one connector but must land on opposite sides.
+// ---------------------------------------------------------------------------
+
+/** Built-in tools whose only effect is reading. */
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch'])
+
+// Verb tokens that mark a connector call's intent. Written as word sets and
+// matched against the tokens of a tool's leaf name, so both `slack_read_channel`
+// (snake) and `getJiraIssue` (camel) classify the same way.
+const READ_VERBS = new Set([
+  'read', 'search', 'list', 'get', 'fetch', 'lookup', 'view', 'query', 'describe', 'find', 'count', 'show', 'history', 'info',
+])
+const WRITE_VERBS = new Set([
+  'send', 'post', 'create', 'update', 'edit', 'delete', 'remove', 'add', 'schedule', 'transition', 'resolve',
+  'comment', 'upsert', 'write', 'set', 'assign', 'merge', 'close', 'reopen', 'archive', 'move', 'upload',
+  'publish', 'reply', 'draft', 'star', 'pin', 'react', 'approve', 'complete', 'cancel',
+])
+
+/** Lowercased word tokens of a tool's leaf name (splits camelCase and snake_case). */
+const wordsOf = (leaf: string): string[] => (leaf.match(/[A-Za-z][a-z]*/g) ?? []).map((w) => w.toLowerCase())
+
+function classifyEffect(toolName: string): ToolEffect {
+  // Our own inbox: reading it is harmless; every other triage tool writes local
+  // SQLite (create/edit/upsert/resolve).
+  if (toolName === 'mcp__triage__list_work_items') return 'read'
+  if (toolName.startsWith('mcp__triage__')) return 'local-write'
+
+  if (READ_TOOLS.has(toolName)) return 'read'
+  // TodoWrite is the session's own scratch list — no effect past this session.
+  if (toolName === 'TodoWrite') return 'read'
+
+  // Connector (MCP) tools reach outside this machine unless they are plainly a
+  // read. `mcp__<server>__<leaf>` — classify by the leaf's verbs (rule 2).
+  if (toolName.startsWith('mcp__')) {
+    const words = wordsOf(toolName.slice(toolName.lastIndexOf('__') + 2))
+    const isRead = words.some((w) => READ_VERBS.has(w)) && !words.some((w) => WRITE_VERBS.has(w))
+    return isRead ? 'read' : 'external-write'
+  }
+
+  // Everything else built in — Write/Edit/MultiEdit/NotebookEdit and Bash —
+  // touches this machine. Bash can be read-only, but its command cannot be
+  // classified safely from here, so it is a write and asks.
+  return 'local-write'
+}
+
+// The permission modes the SDK understands and can be handed straight through.
+// 'gated' and 'default' are absent: 'default' is the SDK's own baseline (pinning
+// it would say nothing), and 'gated' is enforced by us with the SDK left at that
+// baseline so every call reaches canUseTool, where classifyEffect decides.
+type SdkPermissionMode = Exclude<PermissionMode, 'default' | 'gated'>
+const SDK_MODES: SdkPermissionMode[] = ['acceptEdits', 'auto', 'bypassPermissions']
+const sdkMode = (m: PermissionMode | null | undefined): SdkPermissionMode | undefined =>
+  m && (SDK_MODES as PermissionMode[]).includes(m) ? (m as SdkPermissionMode) : undefined
+
+// ---------------------------------------------------------------------------
 // Live session: one running Claude subprocess bound to a stored session row.
 // ---------------------------------------------------------------------------
 class LiveSession {
@@ -176,11 +243,10 @@ class LiveSession {
         // real choice (an org can move it), not a model we should pin here.
         ...(row.model ? { model: row.model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
-        // How much this session asks. Omitted for 'default' so the SDK keeps
-        // its own default rather than us pinning a value that means the same.
-        ...(row.permissionMode && row.permissionMode !== 'default'
-          ? { permissionMode: row.permissionMode }
-          : {}),
+        // How much this session asks. Only the SDK's own modes are passed; for
+        // 'default' (its baseline) and 'gated' (ours, enforced in canUseTool)
+        // the SDK is left at that baseline so every call reaches the gate.
+        ...(sdkMode(row.permissionMode) ? { permissionMode: sdkMode(row.permissionMode) } : {}),
         // The SDK refuses 'bypassPermissions' without this explicit opt-in.
         ...(row.permissionMode === 'bypassPermissions'
           ? { allowDangerouslySkipPermissions: true }
@@ -258,9 +324,16 @@ class LiveSession {
     toolInput: Record<string, unknown>,
     opts: { title?: string; description?: string; suggestions?: PermissionUpdate[] },
   ): Promise<PermissionResult> {
-    // Reading our own inbox is harmless — never prompt for it. Every triage
-    // write (create/edit/upsert/resolve) still goes through the prompt below.
+    const effect = classifyEffect(toolName)
+    // Reading our own inbox is harmless in any mode — never prompt for it. Every
+    // triage write (create/edit/upsert/resolve) still goes through the prompt.
     if (toolName === 'mcp__triage__list_work_items') {
+      return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+    }
+    // 'gated': reads and lookups run unattended; anything that writes — a file,
+    // the shell, or an outward connector call — still surfaces a prompt. The
+    // subprocess runs at the SDK default, so this is the one gate it can't skip.
+    if (this.row.permissionMode === 'gated' && effect === 'read') {
       return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
     }
     const id = randomUUID()
@@ -276,6 +349,7 @@ class LiveSession {
           title: opts.title,
           description: opts.description,
           canAlwaysAllow: suggestions.length > 0,
+          effect,
         },
         true,
       )
@@ -325,7 +399,11 @@ class LiveSession {
   async setPermissionMode(mode: PermissionMode): Promise<boolean> {
     if (mode === 'bypassPermissions' && !this.bypassArmed) return false
     try {
-      await this.q.setPermissionMode(mode)
+      // 'gated' (and 'default') run the subprocess at the SDK's baseline; the
+      // gate lives in requestPermission, which reads the live row's mode. The
+      // row is already updated by the caller, so this switch takes effect at
+      // once without a restart.
+      await this.q.setPermissionMode(sdkMode(mode) ?? 'default')
       return true
     } catch {
       return false
@@ -1416,7 +1494,7 @@ const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const effort = (v: unknown): EffortLevel | undefined =>
   EFFORT_LEVELS.includes(v as EffortLevel) ? (v as EffortLevel) : undefined
 
-const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions']
+const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'gated']
 
 /**
  * Unrecognized modes fall through to `undefined`, i.e. ask — a frame the

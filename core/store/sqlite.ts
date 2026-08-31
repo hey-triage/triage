@@ -180,7 +180,7 @@ type SessionRow = {
 
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
-const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions']
+const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'gated']
 
 /** Storage is text; anything the app no longer recognizes reads back as null. */
 const toEffort = (v: string | null): EffortLevel | null =>

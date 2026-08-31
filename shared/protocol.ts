@@ -21,12 +21,37 @@ export type SessionStatus = 'starting' | 'idle' | 'running' | 'error'
 export type PermissionBehavior = 'allow' | 'allow_always' | 'deny'
 
 /**
- * How much the session asks before acting. A subset of the SDK's own
- * `PermissionMode`: the four that answer "how often am I interrupted".
- * ('plan' and 'dontAsk' are the SDK's other two — deliberately not offered,
- * they change what the agent does rather than how much it asks.)
+ * How much the session asks before acting. Mostly a subset of the SDK's own
+ * `PermissionMode` — the ones that answer "how often am I interrupted" — plus
+ * one triage-native mode:
+ *
+ * - `'default' | 'acceptEdits' | 'auto' | 'bypassPermissions'` are the SDK's,
+ *   passed straight through. ('plan' and 'dontAsk' are the SDK's other two —
+ *   deliberately not offered, they change what the agent does, not how much it
+ *   asks.)
+ * - `'gated'` is ours: reads and lookups run without asking; anything that
+ *   writes — a file, the shell, or an outward connector call — still prompts.
+ *   The SDK has no equivalent, so the server runs at its `'default'` and
+ *   enforces the gate itself in `canUseTool` (see `ToolEffect`), which a
+ *   subprocess cannot opt out of.
  */
-export type PermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions'
+export type PermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'gated'
+
+/**
+ * A tool's blast radius, as the server classifies it before deciding whether
+ * `'gated'` mode lets it run unattended:
+ *
+ * - `read` — reads/lookups only (file reads, greps, `list_work_items`, and
+ *   connector calls whose name is clearly a read). Auto-allowed under `gated`.
+ * - `local-write` — side effects confined to this machine (file edits, shell,
+ *   the triage inbox's own writes).
+ * - `external-write` — a call that reaches outside this machine (post to
+ *   Slack, open a Jira/Linear/GitHub item, …).
+ *
+ * Under `gated`, only `read` runs unattended; the other two prompt. Surfaced
+ * on the permission card so a prompt says *why* it is asking.
+ */
+export type ToolEffect = 'read' | 'local-write' | 'external-write'
 
 /** How much thinking the model puts into a turn. The SDK's own scale. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -278,6 +303,8 @@ export type SessionEvent =
        * show that button. Not every prompt has them (a one-off path, say).
        */
       canAlwaysAllow?: boolean
+      /** The tool's blast radius, so the card can say why it is asking. */
+      effect?: ToolEffect
     }
   // 'expired' = the request outlived its subprocess (interrupt, crash, server
   // restart) and can no longer be answered.

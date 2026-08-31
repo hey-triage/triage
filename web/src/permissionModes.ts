@@ -1,9 +1,9 @@
 /**
  * The permission modes a session can run in, as the UI describes them.
  *
- * The wire values are the SDK's own; only the copy lives here. Order is the
- * cycle order — least to most permissive — so Shift+Tab walks it the way
- * Claude Code's own does.
+ * The wire values are mostly the SDK's own ('gated' is triage's, enforced
+ * server-side); only the copy lives here. Order is the cycle order — least to
+ * most permissive — so Shift+Tab walks it the way Claude Code's own does.
  */
 import type { PermissionMode } from '../../shared/protocol.js'
 
@@ -23,6 +23,12 @@ export const PERMISSION_MODES: PermissionModeInfo[] = [
     name: 'Ask every time',
     description: 'Nothing runs until you say so.',
     risk: 'none',
+  },
+  {
+    id: 'gated',
+    name: 'Reads run, writes ask',
+    description: 'Lookups and file reads go through on their own; anything that writes, runs, or posts still asks.',
+    risk: 'some',
   },
   {
     id: 'acceptEdits',

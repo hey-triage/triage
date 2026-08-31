@@ -236,6 +236,9 @@ body {
 .perm { border: 1px solid var(--accent-dim); border-radius: var(--r); padding: 13px 15px; background: linear-gradient(var(--accent-tint), transparent), var(--panel); }
 .perm .q { font-size: 13px; margin-bottom: 9px; color: var(--text2); }
 .perm .q b { color: var(--accent); font-family: var(--mono); font-weight: 500; }
+.perm .q .effect { display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 999px; font-family: var(--mono); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; vertical-align: 1px; }
+.perm .q .effect.external-write { background: var(--red-tint); color: var(--red); border: 1px solid rgba(235, 92, 92, 0.28); }
+.perm .q .effect.local-write { background: var(--amber-tint); color: var(--amber); border: 1px solid rgba(224, 163, 78, 0.28); }
 .perm pre { font-family: var(--mono); font-size: 11px; color: var(--dim); max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 12px; }
 .perm button { padding: 6px 15px; border-radius: var(--r-sm); border: none; cursor: pointer; font-family: inherit; font-weight: 500; font-size: 13px; margin-right: 8px; transition: filter 0.1s ease, background 0.1s ease; }
 .perm .allow { background: var(--green); color: #06210f; }
