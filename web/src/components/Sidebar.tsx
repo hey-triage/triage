@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { SessionSummary } from '../../../shared/protocol.js'
 import { MOD_LABEL } from '../keys.js'
 import type { ConnState } from '../store.js'
+import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
 
 type Props = {
   sessions: readonly SessionSummary[]
@@ -58,9 +59,8 @@ export function Sidebar({
   onSetPinned,
   onDelete,
 }: Props) {
-  // At most one row is in a menu or a rename at a time — the sidebar is a list,
-  // not a form.
-  const [menuFor, setMenuFor] = useState<string | null>(null)
+  // At most one row is being renamed at a time — the sidebar is a list, not a
+  // form. (The row menu now manages its own open state via Radix.)
   const [renaming, setRenaming] = useState<string | null>(null)
   // Deleting is irreversible, so it is confirmed in a modal rather than on the
   // row — the session it would destroy is named in the question.
@@ -102,26 +102,15 @@ export function Sidebar({
             key={s.id}
             session={s}
             active={s.id === currentId}
-            menuOpen={menuFor === s.id}
             renaming={renaming === s.id}
             onSelect={() => onSelect(s.id)}
-            onOpenMenu={(open) => setMenuFor(open ? s.id : null)}
-            onStartRename={() => {
-              setMenuFor(null)
-              setRenaming(s.id)
-            }}
+            onStartRename={() => setRenaming(s.id)}
             onEndRename={(title) => {
               setRenaming(null)
               if (title !== undefined && title !== s.title) onRename(s.id, title)
             }}
-            onSetPinned={(pinned) => {
-              setMenuFor(null)
-              onSetPinned(s.id, pinned)
-            }}
-            onDelete={() => {
-              setMenuFor(null)
-              setDeleting(s)
-            }}
+            onSetPinned={(pinned) => onSetPinned(s.id, pinned)}
+            onDelete={() => setDeleting(s)}
           />
         ))}
       </div>
@@ -191,10 +180,8 @@ function DeleteSessionDialog({
 type RowProps = {
   session: SessionSummary
   active: boolean
-  menuOpen: boolean
   renaming: boolean
   onSelect: () => void
-  onOpenMenu: (open: boolean) => void
   onStartRename: () => void
   /** `undefined` = cancelled; a string = the committed title. */
   onEndRename: (title?: string) => void
@@ -205,37 +192,14 @@ type RowProps = {
 function SessionRow({
   session: s,
   active,
-  menuOpen,
   renaming,
   onSelect,
-  onOpenMenu,
   onStartRename,
   onEndRename,
   onSetPinned,
   onDelete,
 }: RowProps) {
-  const root = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLInputElement>(null)
-
-  // Same dismissal rules as the composer's pickers: click outside, or Escape.
-  useEffect(() => {
-    if (!menuOpen) return
-    function onDown(e: MouseEvent) {
-      if (!root.current?.contains(e.target as Node)) onOpenMenu(false)
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onOpenMenu(false)
-      }
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey, true)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey, true)
-    }
-  }, [menuOpen, onOpenMenu])
 
   useEffect(() => {
     if (renaming) input.current?.select()
@@ -263,50 +227,44 @@ function SessionRow({
   }
 
   return (
-    <div
-      ref={root}
-      className={`sess ${s.status}${active ? ' active' : ''}`}
-      data-menu-open={menuOpen || undefined}
-      onClick={onSelect}
-    >
+    <div className={`sess ${s.status}${active ? ' active' : ''}`} onClick={onSelect}>
       <span className="dot" />
       <span className="name">{s.title}</span>
       {s.pinned && <Pin className="pinMark" size={11} aria-label="Pinned" />}
-      <button
-        type="button"
-        className="sessMenuBtn"
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        aria-label={`Session options for ${s.title}`}
-        title="Session options"
-        onClick={(e) => {
-          e.stopPropagation()
-          onOpenMenu(!menuOpen)
-        }}
-      >
-        <MoreHorizontal size={14} aria-hidden="true" />
-      </button>
-
-      {menuOpen && (
-        <div className="sessMenu" role="menu" onClick={(e) => e.stopPropagation()}>
-          <a className="row" href={`#${s.id}`} target="_blank" rel="noreferrer" role="menuitem">
-            <ExternalLink size={14} aria-hidden="true" />
-            Open in new tab
-          </a>
-          <button type="button" className="row" role="menuitem" onClick={() => onSetPinned(!s.pinned)}>
+      <Menu>
+        <MenuTrigger asChild>
+          <button
+            type="button"
+            className="sessMenuBtn"
+            aria-label={`Session options for ${s.title}`}
+            title="Session options"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreHorizontal size={14} aria-hidden="true" />
+          </button>
+        </MenuTrigger>
+        <MenuContent align="end">
+          <MenuItem asChild>
+            <a href={`#${s.id}`} target="_blank" rel="noreferrer">
+              <ExternalLink size={14} aria-hidden="true" />
+              Open in new tab
+            </a>
+          </MenuItem>
+          <MenuItem onSelect={() => onSetPinned(!s.pinned)}>
             {s.pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
             {s.pinned ? 'Unpin' : 'Pin to top'}
-          </button>
-          <button type="button" className="row" role="menuitem" onClick={onStartRename}>
+          </MenuItem>
+          <MenuItem onSelect={onStartRename}>
             <Pencil size={14} aria-hidden="true" />
             Rename
-          </button>
-          <button type="button" className="row danger" role="menuitem" onClick={onDelete}>
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem className="danger" onSelect={onDelete}>
             <Trash2 size={14} aria-hidden="true" />
             Delete
-          </button>
-        </div>
-      )}
+          </MenuItem>
+        </MenuContent>
+      </Menu>
     </div>
   )
 }

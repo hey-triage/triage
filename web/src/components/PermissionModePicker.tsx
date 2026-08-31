@@ -1,7 +1,8 @@
 import { Check, ChevronDown, ShieldCheck } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { PermissionMode } from '../../../shared/protocol.js'
 import { findMode, PERMISSION_MODES } from '../permissionModes.js'
+import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
 
 type Props = {
   mode?: PermissionMode
@@ -13,84 +14,60 @@ type Props = {
 export function PermissionModePicker({ mode, onChange, disabled }: Props) {
   const [open, setOpen] = useState(false)
   const [confirming, setConfirming] = useState<PermissionMode | null>(null)
-  const root = useRef<HTMLDivElement>(null)
 
   const selected = findMode(mode)
 
-  // Dismissal: anywhere outside, or Escape — matching ModelPicker, so the two
-  // chips in one statusline behave the same way.
-  useEffect(() => {
-    if (!open) return
-    function onDown(e: MouseEvent) {
-      if (!root.current?.contains(e.target as Node)) close()
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        close()
-      }
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey, true)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey, true)
-    }
-  }, [open])
-
-  function close() {
-    setOpen(false)
-    setConfirming(null)
-  }
-
-  function pick(id: PermissionMode) {
+  function pick(id: PermissionMode, e: Event) {
     // Turning off every check is the one choice that gets a second question:
     // it is the only mode where a mis-click has no later chance to be caught.
+    // preventDefault keeps the menu open so the confirm can render in place.
     if (id === 'bypassPermissions' && mode !== id) {
+      e.preventDefault()
       setConfirming(id)
       return
     }
     onChange(id)
-    close()
   }
 
   return (
-    <div className="permPicker" ref={root} data-popover-open={open || undefined}>
-      <button
-        type="button"
-        className={`chip perm risk-${selected.risk}`}
-        disabled={disabled}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`${selected.name} — ${selected.description}`}
-        onClick={() => (open ? close() : setOpen(true))}
+    <div className="permPicker">
+      <Menu
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o)
+          if (!o) setConfirming(null)
+        }}
       >
-        <ShieldCheck size={14} aria-hidden="true" />
-        <span className="name">{selected.name}</span>
-        <ChevronDown size={12} aria-hidden="true" />
-      </button>
+        <MenuTrigger asChild>
+          <button
+            type="button"
+            className={`chip perm risk-${selected.risk}`}
+            disabled={disabled}
+            title={`${selected.name} — ${selected.description}`}
+          >
+            <ShieldCheck size={14} aria-hidden="true" />
+            <span className="name">{selected.name}</span>
+            <ChevronDown size={12} aria-hidden="true" />
+          </button>
+        </MenuTrigger>
 
-      {open && (
-        <div className="menu" role="menu">
+        <MenuContent className="perm" side="top" align="start">
           {PERMISSION_MODES.map((m) => (
-            <button
+            <MenuItem
               key={m.id}
-              type="button"
-              role="menuitemradio"
-              aria-checked={m.id === selected.id}
-              className={`row risk-${m.risk}${m.id === selected.id ? ' on' : ''}`}
-              onClick={() => pick(m.id)}
+              className={`wrap risk-${m.risk}`}
+              onSelect={(e) => pick(m.id, e)}
             >
               <span className="text">
                 <span className="name">{m.name}</span>
                 <span className="desc">{m.description}</span>
               </span>
-              {m.id === selected.id && <Check size={14} aria-hidden="true" />}
-            </button>
+              {m.id === selected.id && <Check className="check" size={14} aria-hidden="true" />}
+            </MenuItem>
           ))}
 
           {confirming ? (
-            <div className="confirm">
+            <div className="uiMenuConfirm">
               <p>
                 Bypass runs every command and edit without asking — including ones that delete work
                 or reach the network. Turn it on only where you can afford the worst case.
@@ -100,7 +77,7 @@ export function PermissionModePicker({ mode, onChange, disabled }: Props) {
                 className="danger"
                 onClick={() => {
                   onChange(confirming)
-                  close()
+                  setOpen(false)
                 }}
               >
                 Turn off all checks
@@ -110,12 +87,12 @@ export function PermissionModePicker({ mode, onChange, disabled }: Props) {
               </button>
             </div>
           ) : (
-            <p className="blurb">
+            <p className="uiMenuBlurb">
               Applies to this session, from the next tool call on. <kbd>Shift+Tab</kbd> cycles.
             </p>
           )}
-        </div>
-      )}
+        </MenuContent>
+      </Menu>
     </div>
   )
 }

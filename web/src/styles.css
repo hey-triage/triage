@@ -154,29 +154,9 @@ body {
   background: transparent; border: none; color: var(--dim); opacity: 0;
   transition: opacity 0.1s ease, background 0.1s ease, color 0.1s ease;
 }
-.sess:hover .sessMenuBtn, .sess[data-menu-open] .sessMenuBtn { opacity: 1; }
+.sess:hover .sessMenuBtn, .sessMenuBtn[data-state="open"] { opacity: 1; }
 .sessMenuBtn:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
 .sessMenuBtn:focus-visible { opacity: 1; outline: 1px solid var(--accent); }
-
-.sessMenu {
-  position: absolute; z-index: 40; top: calc(100% + 4px); right: 6px;
-  min-width: 204px; padding: 5px; cursor: default;
-  background: var(--elevated); border: 1px solid var(--border-hi); border-radius: var(--r);
-  box-shadow: var(--shadow-lg);
-  font-family: var(--sans); font-size: 13px; line-height: 1.45;
-}
-.sessMenu .row {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  padding: 7px 9px; border: none; border-radius: var(--r-sm); cursor: pointer;
-  background: transparent; color: var(--text2); font: inherit; text-align: left;
-  text-decoration: none; transition: background 0.1s ease, color 0.1s ease;
-}
-.sessMenu .row:hover { background: var(--panel-hi); color: var(--text); }
-.sessMenu .row svg { flex: none; color: var(--dim); }
-.sessMenu .row:hover svg { color: var(--text2); }
-.sessMenu .row.danger { color: var(--red); }
-.sessMenu .row.danger svg { color: var(--red); }
-.sessMenu .row.danger:hover { background: var(--red-tint); color: var(--red); }
 
 #deleteSession { width: 420px; }
 #deleteSession p { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text2); }
@@ -411,41 +391,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
 .statusline .chip.model .name { overflow: hidden; text-overflow: ellipsis; }
 .statusline .chip.model .eff { color: var(--dim); }
 .statusline .chip.model svg { fill: none; stroke: currentColor; color: var(--dim); }
-
-/* The menu opens upward: the composer lives at the bottom of the window. */
-.modelPicker .menu {
-  position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 0;
-  min-width: 300px; padding: 5px;
-  background: var(--elevated); border: 1px solid var(--border-hi); border-radius: var(--r);
-  box-shadow: var(--shadow-lg);
-  font-family: var(--sans); font-size: 13px; line-height: 1.45;
-}
-.modelPicker .row {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  padding: 7px 9px; border: none; border-radius: var(--r-sm); cursor: pointer;
-  background: transparent; color: var(--text2); text-align: left; font: inherit;
-  transition: background 0.1s ease, color 0.1s ease;
-}
-.modelPicker .row:hover, .modelPicker .row.open { background: var(--panel-hi); color: var(--text); }
-.modelPicker .row .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.modelPicker .row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.modelPicker .row .desc { font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.modelPicker .row svg { flex: none; color: var(--accent); }
-.modelPicker .row.nav .name { flex: 1; }
-.modelPicker .row.nav .val { color: var(--dim); font-size: 12px; }
-.modelPicker .row.nav svg { color: var(--dim); }
-.modelPicker .sep { height: 1px; margin: 5px 6px; background: var(--border); }
-.modelPicker .sub { position: relative; }
-.modelPicker .submenu {
-  position: absolute; z-index: 41; left: calc(100% + 6px); bottom: -6px;
-  min-width: 230px; padding: 5px;
-  background: var(--elevated); border: 1px solid var(--border-hi); border-radius: var(--r);
-  box-shadow: var(--shadow-lg);
-}
-.modelPicker .submenu.wide { min-width: 300px; }
-.modelPicker .submenu .blurb {
-  margin: 4px 8px 8px; font-size: 11.5px; line-height: 1.4; color: var(--dim);
-}
+.statusline .chip.model[data-state="open"] { border-color: var(--border-hi); color: var(--text); }
 
 /* ---------- permission-mode picker ---------- */
 .permPicker { position: relative; flex: none; }
@@ -459,37 +405,74 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
 .statusline .chip.perm.risk-some svg { color: var(--accent); }
 .statusline .chip.perm.risk-high { border-color: rgba(235, 92, 92, 0.5); color: var(--red); }
 .statusline .chip.perm.risk-high svg { color: var(--red); }
+.statusline .chip.perm[data-state="open"] { border-color: var(--border-hi); color: var(--text); }
 
-.permPicker .menu {
-  position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 0;
-  min-width: 330px; padding: 5px;
+/* ---------- menus (Radix dropdown-menu — shared by session row, model, perm) ---------- */
+/* One portaled surface; positioning, focus and keyboard are Radix's, pixels are ours. */
+.uiMenu {
+  z-index: 60; min-width: 204px; padding: 5px;
   background: var(--elevated); border: 1px solid var(--border-hi); border-radius: var(--r);
   box-shadow: var(--shadow-lg);
-  font-family: var(--sans); font-size: 13px; line-height: 1.45;
+  font-family: var(--sans); font-size: 13px; line-height: 1.45; color: var(--text2);
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin);
 }
-.permPicker .row {
+.uiMenu:focus, .uiMenu:focus-visible { outline: none; }
+.uiMenu.models { min-width: 300px; }
+.uiMenu.perm { min-width: 330px; }
+.uiMenu.wide { min-width: 300px; }
+.uiMenu[data-state="open"] { animation: menuIn 0.12s ease; }
+@keyframes menuIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+
+.uiMenuItem {
   display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 7px 9px; border: none; border-radius: var(--r-sm); cursor: pointer;
   background: transparent; color: var(--text2); text-align: left; font: inherit;
+  text-decoration: none; outline: none; user-select: none;
   transition: background 0.1s ease, color 0.1s ease;
 }
-.permPicker .row:hover { background: var(--panel-hi); color: var(--text); }
-.permPicker .row .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.permPicker .row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.permPicker .row .desc { font-size: 11.5px; color: var(--dim); white-space: normal; }
-.permPicker .row svg { flex: none; color: var(--accent); }
-.permPicker .row.risk-high .name { color: var(--red); }
-.permPicker .blurb { margin: 6px 10px 4px; font-size: 11.5px; line-height: 1.4; color: var(--dim); }
-.permPicker .blurb kbd { font-family: var(--mono); font-size: 10.5px; }
+.uiMenuItem[data-highlighted] { background: var(--panel-hi); color: var(--text); }
+.uiMenuItem[data-disabled] { opacity: 0.5; pointer-events: none; }
+.uiMenuItem svg { flex: none; color: var(--dim); }
+.uiMenuItem[data-highlighted] svg { color: var(--text2); }
+.uiMenuItem .check { margin-left: auto; color: var(--accent); }
+.uiMenuItem .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.uiMenuItem .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uiMenuItem .desc { font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uiMenuItem.wrap .desc { white-space: normal; }
+/* nav / submenu-trigger rows that show a current value on the right */
+.uiMenuItem.nav .name { flex: 1; }
+.uiMenuItem .val { color: var(--dim); font-size: 12px; }
+.uiMenuSubTrigger svg { color: var(--dim); }
+.uiMenuSubTrigger[data-state="open"] { background: var(--panel-hi); color: var(--text); }
+/* danger action */
+.uiMenuItem.danger { color: var(--red); }
+.uiMenuItem.danger svg { color: var(--red); }
+.uiMenuItem.danger[data-highlighted] { background: var(--red-tint); color: var(--red); }
+.uiMenuItem.danger[data-highlighted] svg { color: var(--red); }
+/* model rows lead their accent icon in indigo */
+.uiMenu.models .uiMenuItem svg:not(.check) { color: var(--accent); }
+/* permission risk colouring on the name */
+.uiMenuItem.risk-high .name { color: var(--red); }
 
-.permPicker .confirm { margin: 5px; padding: 11px; border: 1px solid rgba(235, 92, 92, 0.4); border-radius: var(--r-sm); background: var(--red-tint); }
-.permPicker .confirm p { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--text); }
-.permPicker .confirm button {
+.uiMenuSep { height: 1px; margin: 5px 6px; background: var(--border); }
+.uiMenuBlurb { margin: 4px 8px 8px; font-size: 11.5px; line-height: 1.4; color: var(--dim); }
+.uiMenuBlurb kbd {
+  font-family: var(--mono); font-size: 10.5px; color: var(--text2);
+  border: 1px solid var(--border); border-radius: var(--r-xs); padding: 0 4px; background: var(--bg2);
+}
+
+.uiMenuConfirm { margin: 5px; padding: 11px; border: 1px solid rgba(235, 92, 92, 0.4); border-radius: var(--r-sm); background: var(--red-tint); }
+.uiMenuConfirm p { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--text); }
+.uiMenuConfirm button {
   padding: 6px 12px; border-radius: var(--r-sm); cursor: pointer; font-family: inherit; font-weight: 500;
   font-size: 12px; margin-right: 8px; border: none;
 }
-.permPicker .confirm .danger { background: var(--red); color: #180909; }
-.permPicker .confirm .cancel { background: transparent; color: var(--dim); border: 1px solid var(--border); }
+.uiMenuConfirm .danger { background: var(--red); color: #180909; }
+.uiMenuConfirm .cancel { background: transparent; color: var(--dim); border: 1px solid var(--border); }
+
+@media (prefers-reduced-motion: reduce) {
+  .uiMenu[data-state="open"] { animation: none; }
+}
 
 /* ---------- empty / modal ---------- */
 #empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--dim); }
