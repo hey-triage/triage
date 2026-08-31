@@ -870,14 +870,99 @@ dialog.watchDialog { width: 560px; max-height: 84vh; overflow-y: auto; }
 .itemTitle.plain { cursor: default; }
 .itemTitle.plain:hover { color: var(--text); }
 
-/* ---------- item composer ---------- */
-dialog.itemComposer { width: 480px; }
-.itemComposer .composerField { display: block; margin: 0; }
-.itemComposer .composerField > span { display: block; font-size: 12px; color: var(--dim); margin: 14px 0 5px; }
-.itemComposer .composerField:first-of-type > span { margin-top: 0; }
-.itemComposer .composerRow { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.itemComposer textarea { resize: vertical; min-height: 60px; }
-.itemComposer .msg.error { margin-top: 12px; }
+/* ---------- item composer (Linear-style new-item sheet) ---------- */
+dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
+.itemComposer form { display: flex; flex-direction: column; }
+
+.composerHead {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 16px 9px;
+}
+.composerHead .crumbs { display: flex; align-items: center; gap: 7px; font-size: 12.5px; min-width: 0; }
+.composerHead .crumb { color: var(--dim); white-space: nowrap; }
+.composerHead .crumb.now {
+  color: var(--text2); background: var(--panel-hi); border: 1px solid var(--border);
+  border-radius: var(--r-xs); padding: 2px 8px;
+}
+.composerHead .crumbSep { color: var(--dim); opacity: 0.7; }
+.composerClose {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border: none; border-radius: var(--r-sm);
+  background: transparent; color: var(--dim); cursor: pointer; transition: background 0.1s, color 0.1s;
+}
+.composerClose:hover { background: var(--panel-hi); color: var(--text); }
+
+.itemComposer .titleInput {
+  width: 100%; border: none; background: transparent; outline: none;
+  padding: 6px 18px 2px; margin: 0; color: var(--text);
+  font-family: inherit; font-size: 19px; font-weight: 500; letter-spacing: -0.01em;
+}
+.itemComposer .titleInput::placeholder { color: var(--dim); font-weight: 500; }
+.itemComposer .titleInput:focus { box-shadow: none; border: none; }
+
+.itemComposer .descInput {
+  width: 100%; border: none; background: transparent; outline: none; resize: none;
+  padding: 4px 18px 8px; margin: 0; color: var(--text2);
+  font-family: inherit; font-size: 14px; line-height: 1.55; min-height: 46px; max-height: 260px;
+}
+.itemComposer .descInput::placeholder { color: var(--dim); }
+.itemComposer .descInput:focus { box-shadow: none; border: none; }
+
+.pillRow { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 18px 16px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 4px 10px 4px 11px; border: 1px solid var(--border); border-radius: 20px;
+  background: transparent; color: var(--text2); cursor: pointer;
+  transition: border-color 0.1s, background 0.1s, color 0.1s;
+}
+.pill:hover { border-color: var(--border-hi); background: var(--panel-hi); }
+.pill:focus-within { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-tint); }
+.pill svg { flex: none; color: var(--dim); }
+.pill select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  border: none; outline: none; background: transparent; cursor: pointer;
+  color: inherit; font: inherit; font-size: 12.5px; padding: 0; margin: 0; max-width: 200px;
+}
+.pill select:focus { box-shadow: none; }
+.pill select option { background: var(--elevated); color: var(--text); }
+/* a set project reads as active */
+.pill.set { color: var(--text); border-color: var(--border-hi); }
+.pill.set svg { color: var(--accent); }
+/* priority colouring mirrors the inbox-row chips */
+.pill.prio1 { color: var(--red); border-color: rgba(235, 92, 92, 0.45); background: var(--red-tint); }
+.pill.prio1 svg { color: var(--red); }
+.pill.prio2 { color: var(--amber); border-color: rgba(224, 163, 78, 0.45); background: var(--amber-tint); }
+.pill.prio2 svg { color: var(--amber); }
+.pill.prio3 { color: var(--blue); border-color: rgba(91, 157, 255, 0.4); background: var(--blue-tint); }
+.pill.prio3 svg { color: var(--blue); }
+.pill.prio4 { color: var(--text2); }
+
+.itemComposer .msg.error { margin: 0 18px 12px; }
+
+.composerFoot {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 16px; border-top: 1px solid var(--border); background: var(--bg2);
+}
+.composerFoot .footActions { display: flex; gap: 8px; margin-left: auto; }
+
+/* "Add more": keep the sheet open to log another. A compact toggle switch. */
+.addMore {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 12.5px; color: var(--text2); user-select: none;
+}
+.addMore input { position: absolute; opacity: 0; width: 0; height: 0; }
+.addMore .switch {
+  position: relative; width: 30px; height: 17px; flex: none; border-radius: 20px;
+  background: var(--panel-hi); border: 1px solid var(--border);
+  transition: background 0.12s, border-color 0.12s;
+}
+.addMore .switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px;
+  border-radius: 50%; background: var(--dim); transition: transform 0.14s ease, background 0.12s;
+}
+.addMore input:checked + .switch { background: var(--accent-solid); border-color: transparent; }
+.addMore input:checked + .switch::after { transform: translateX(13px); background: #fff; }
+.addMore input:focus-visible + .switch { box-shadow: 0 0 0 3px var(--accent-tint); }
 
 /* ---------- projects page ---------- */
 .projList { border: 1px solid var(--border); border-radius: var(--r); background: var(--panel); overflow: hidden; margin-bottom: 22px; }

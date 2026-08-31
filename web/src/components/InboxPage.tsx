@@ -1,3 +1,4 @@
+import { Flag, Folder, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Group,
@@ -290,6 +291,7 @@ export function InboxPage({
           setComposer({ open: false, editing: null })
           void load(false) // include the new/edited item
         }}
+        onSavedMore={() => void load(false)} // "Add more" — refresh, stay open
       />
     </div>
   )
@@ -305,20 +307,25 @@ function ItemComposer({
   projects,
   onClose,
   onSaved,
+  onSavedMore,
 }: {
   open: boolean
   editing: ScoredItem | null
   projects: Project[]
   onClose: () => void
   onSaved: () => void
+  /** Saved with "Add more" on: refresh the inbox, but keep the composer open. */
+  onSavedMore: () => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const titleInput = useRef<HTMLInputElement>(null)
   const [title, setTitle] = useState('')
   const [projectId, setProjectId] = useState('')
   const [priority, setPriority] = useState(0)
   const [note, setNote] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [addMore, setAddMore] = useState(false)
 
   useEffect(() => {
     const el = dialog.current
@@ -348,8 +355,19 @@ function ItemComposer({
         body: JSON.stringify(payload),
       })
       const body = (await res.json()) as ManualItemResponse
-      if (body.ok) onSaved()
-      else setError(body.error)
+      if (!body.ok) {
+        setError(body.error)
+      } else if (addMore && !editing) {
+        // keep the composer open for the next one; clear all but the project
+        onSavedMore()
+        setTitle('')
+        setNote('')
+        setPriority(0)
+        setError(null)
+        titleInput.current?.focus()
+      } else {
+        onSaved()
+      }
     } catch (err) {
       setError(String(err))
     } finally {
@@ -359,27 +377,54 @@ function ItemComposer({
 
   return (
     <dialog ref={dialog} className="itemComposer" onClose={onClose}>
-      <h3>{editing ? 'Edit work item' : 'Add work item'}</h3>
       <form
         onSubmit={(e) => {
           e.preventDefault()
           void save()
         }}
       >
-        <label className="composerField">
-          <span>Title</span>
-          <input
-            autoFocus
-            placeholder="What needs doing?"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </label>
-        <div className="composerRow">
-          <label className="composerField">
-            <span>Project</span>
+        <div className="composerHead">
+          <div className="crumbs">
+            <span className="crumb">Inbox</span>
+            <span className="crumbSep">›</span>
+            <span className="crumb now">{editing ? 'Edit work item' : 'New work item'}</span>
+          </div>
+          <button type="button" className="composerClose" onClick={onClose} aria-label="Close">
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+
+        <input
+          ref={titleInput}
+          className="titleInput"
+          autoFocus
+          placeholder="What needs doing?"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        <textarea
+          className="descInput"
+          rows={2}
+          placeholder="Add context, links, or acceptance criteria…"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+
+        <div className="pillRow">
+          <label className={`pill prio${priority}`} title="Priority">
+            <Flag size={13} aria-hidden="true" />
+            <select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
+              {PRIORITY_VALUES.map((v) => (
+                <option key={v} value={v}>
+                  {v === 0 ? 'Priority' : PRIORITY_LABEL[v]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className={`pill${projectId ? ' set' : ''}`} title="Project">
+            <Folder size={13} aria-hidden="true" />
             <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-              <option value="">No project</option>
+              <option value="">Project</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -387,34 +432,30 @@ function ItemComposer({
               ))}
             </select>
           </label>
-          <label className="composerField">
-            <span>Priority</span>
-            <select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
-              {PRIORITY_VALUES.map((v) => (
-                <option key={v} value={v}>
-                  {v === 0 ? 'None' : PRIORITY_LABEL[v]}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
-        <label className="composerField">
-          <span>Note (optional)</span>
-          <textarea
-            rows={3}
-            placeholder="Context, links, acceptance criteria…"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-          />
-        </label>
+
         {error && <div className="msg error">{error}</div>}
-        <div className="row">
-          <button type="button" className="cancel" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="go" disabled={saving || !title.trim()}>
-            {saving ? 'Saving…' : editing ? 'Save' : 'Add item'}
-          </button>
+
+        <div className="composerFoot">
+          {!editing && (
+            <label className="addMore" title="Keep this open to add another after saving">
+              <input
+                type="checkbox"
+                checked={addMore}
+                onChange={(e) => setAddMore(e.target.checked)}
+              />
+              <span className="switch" aria-hidden="true" />
+              Add more
+            </label>
+          )}
+          <div className="footActions">
+            <button type="button" className="cancel" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="go" disabled={saving || !title.trim()}>
+              {saving ? 'Saving…' : editing ? 'Save changes' : 'Add item'}
+            </button>
+          </div>
         </div>
       </form>
     </dialog>
