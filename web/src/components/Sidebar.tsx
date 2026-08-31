@@ -69,7 +69,11 @@ export function Sidebar({
   return (
     <div id="sidebar">
       <header>
-        triage <small>local sessions · claude code harness</small>
+        <span className="logoMark" aria-hidden="true" />
+        <span className="brand">
+          triage
+          <small>ranked work inbox</small>
+        </span>
       </header>
       <nav id="sideNav">
         <button className={`navItem${inboxActive ? ' active' : ''}`} onClick={onInbox}>
