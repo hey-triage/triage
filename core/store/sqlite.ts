@@ -21,6 +21,8 @@ import type {
   InboxStore,
   ItemStateStore,
   ItemStore,
+  ManualItemStore,
+  NewManualItem,
   NewSession,
   SessionStore,
   Store,
@@ -111,6 +113,19 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE sessions ADD COLUMN permission_mode TEXT;`,
   // 8: pinned sessions — they sort above the rest, regardless of activity.
   `ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;`,
+  // 9: user priority overrides (any item, survives re-sync) + manual items —
+  // to-dos the user adds by hand, in their own editable table.
+  `ALTER TABLE item_state ADD COLUMN priority INTEGER;
+   CREATE TABLE manual_items (
+     id         TEXT PRIMARY KEY,
+     title      TEXT NOT NULL,
+     project_id TEXT,
+     note       TEXT,
+     url        TEXT,
+     priority   INTEGER,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   );`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -129,6 +144,7 @@ export function openSqliteStore(file: string): Store {
     watches: new SqliteWatches(db),
     items: new SqliteItems(db),
     itemState: new SqliteItemState(db),
+    manual: new SqliteManualItems(db),
     close: async () => db.close(),
   }
 }
@@ -473,6 +489,7 @@ class SqliteItemState implements ItemStateStore {
       status: string
       status_at: number
       snooze_until: number | null
+      priority: number | null
       pinned: number
     }[]
     return new Map(
@@ -483,20 +500,32 @@ class SqliteItemState implements ItemStateStore {
           status: r.status as ItemStatus,
           statusAt: r.status_at,
           snoozeUntil: r.snooze_until ?? undefined,
+          priority: r.priority ?? undefined,
           pinned: r.pinned === 1,
         },
       ]),
     )
   }
 
+  /** Status/snooze only — a priority override already on the row is preserved. */
   async set(state: ItemState): Promise<void> {
     this.db
       .prepare(
         `INSERT INTO item_state (item_id, status, status_at, snooze_until, pinned) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT (item_id) DO UPDATE SET status = excluded.status, status_at = excluded.status_at,
-           snooze_until = excluded.snooze_until, pinned = excluded.pinned`,
+           snooze_until = excluded.snooze_until`,
       )
       .run(state.itemId, state.status, state.statusAt, state.snoozeUntil ?? null, state.pinned ? 1 : 0)
+  }
+
+  /** Priority override only — status/snooze on the row are preserved. */
+  async setPriority(itemId: string, priority: number | null): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO item_state (item_id, status, status_at, priority) VALUES (?, 'open', ?, ?)
+         ON CONFLICT (item_id) DO UPDATE SET priority = excluded.priority`,
+      )
+      .run(itemId, Date.now(), priority)
   }
 
   async reopen(itemIds: string[], now: number): Promise<void> {
@@ -504,6 +533,86 @@ class SqliteItemState implements ItemStateStore {
       'UPDATE item_state SET status = ?, status_at = ?, snooze_until = NULL WHERE item_id = ?',
     )
     for (const id of itemIds) stmt.run('open', now, id)
+  }
+}
+
+type ManualRow = {
+  id: string
+  title: string
+  project_id: string | null
+  note: string | null
+  url: string | null
+  priority: number | null
+  created_at: number
+  updated_at: number
+}
+
+/** A stored manual to-do, projected into the WorkItem shape the inbox merges. */
+const toManualItem = (r: ManualRow): WorkItem => ({
+  id: r.id,
+  source: 'manual',
+  kind: 'manual',
+  title: r.title,
+  url: r.url ?? '',
+  repo: '',
+  author: '',
+  peopleWaiting: 0,
+  createdAt: new Date(r.created_at).toISOString(),
+  updatedAt: new Date(r.updated_at).toISOString(),
+  ...(r.project_id ? { projectId: r.project_id } : {}),
+  ...(r.priority != null ? { priority: r.priority } : {}),
+  ...(r.note ? { why: r.note } : {}), // the note renders on the card via `why`
+})
+
+class SqliteManualItems implements ManualItemStore {
+  constructor(private db: DatabaseSync) {}
+
+  async list(): Promise<WorkItem[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM manual_items ORDER BY updated_at DESC')
+      .all() as ManualRow[]
+    return rows.map(toManualItem)
+  }
+
+  async create(item: NewManualItem): Promise<void> {
+    const now = Date.now()
+    this.db
+      .prepare(
+        `INSERT INTO manual_items (id, title, project_id, note, url, priority, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        item.id,
+        item.title,
+        item.projectId ?? null,
+        item.note ?? null,
+        item.url ?? null,
+        item.priority || null, // 0 ("none") stores as NULL
+        now,
+        now,
+      )
+  }
+
+  async update(id: string, patch: Partial<Omit<NewManualItem, 'id'>>): Promise<void> {
+    const current = this.db.prepare('SELECT * FROM manual_items WHERE id = ?').get(id) as
+      | ManualRow
+      | undefined
+    if (!current) return
+    const title = patch.title ?? current.title
+    const projectId = patch.projectId !== undefined ? patch.projectId : current.project_id
+    const note = patch.note !== undefined ? patch.note : current.note
+    const url = patch.url !== undefined ? patch.url : current.url
+    const priority = patch.priority !== undefined ? patch.priority : current.priority
+    this.db
+      .prepare(
+        `UPDATE manual_items SET title = ?, project_id = ?, note = ?, url = ?, priority = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(title, projectId ?? null, note ?? null, url ?? null, priority || null, Date.now(), id)
+  }
+
+  async remove(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM manual_items WHERE id = ?').run(id)
   }
 }
 

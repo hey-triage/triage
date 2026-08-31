@@ -210,6 +210,22 @@ export type { ItemStatus } from '../core/work/state.js'
 export type ItemStateResponse = { ok: true } | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
+// Manual items (POST/PUT/DELETE /api/items/manual) — to-dos the user adds by
+// hand in the inbox. Their own table; source/kind 'manual'. Also POST
+// /api/items/priority — a user priority override for any item (source or manual).
+// ---------------------------------------------------------------------------
+
+export type ManualItemInput = {
+  title: string
+  projectId?: string
+  note?: string
+  url?: string
+  priority?: number
+}
+
+export type ManualItemResponse = { ok: true } | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
 // Ingestion (POST /api/items/upsert, POST /api/items/resolve) — the contract
 // that makes external scanners first-class; also served over MCP (server/mcp.ts).
 // Idempotent: id-keyed, update-only-if-newer, user-state-preserving. Validates

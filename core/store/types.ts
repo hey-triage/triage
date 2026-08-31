@@ -135,9 +135,34 @@ export interface ItemStore {
 /** User-state overlay — the user's, never written by ingestion. */
 export interface ItemStateStore {
   all(): Promise<Map<string, ItemState>>
+  /** Set status/snooze; leaves any priority override on the row untouched. */
   set(state: ItemState): Promise<void>
+  /** Set (or clear, with null) the priority override; leaves status untouched. */
+  setPriority(itemId: string, priority: number | null): Promise<void>
   /** The re-arm rule's write-back: these items are open again. */
   reopen(itemIds: string[], now: number): Promise<void>
+}
+
+export type NewManualItem = {
+  id: string
+  title: string
+  projectId?: string
+  note?: string
+  url?: string
+  priority?: number
+}
+
+/**
+ * User-authored work items (added by hand in the inbox). Their own table, not
+ * `ingested_items`: they are edited in place and must survive pruning, which
+ * the ingestion table's upsert-newer-wins + prune rules would fight.
+ */
+export interface ManualItemStore {
+  /** As WorkItems, ready to merge into the inbox (source/kind 'manual'). */
+  list(): Promise<WorkItem[]>
+  create(item: NewManualItem): Promise<void>
+  update(id: string, patch: Partial<Omit<NewManualItem, 'id'>>): Promise<void>
+  remove(id: string): Promise<void>
 }
 
 export interface Store {
@@ -149,5 +174,6 @@ export interface Store {
   watches: WatchStore
   items: ItemStore
   itemState: ItemStateStore
+  manual: ManualItemStore
   close(): Promise<void>
 }

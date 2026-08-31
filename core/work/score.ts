@@ -13,6 +13,8 @@ export const BASE: Record<ItemKind, number> = {
   'own-pr-conflicting': 70,
   'own-pr-approved': 65,
   'ticket-assigned': 50,
+  // a to-do the user chose to add — it sits in YOUR CYCLE and leans on priority
+  manual: 45,
   'own-pr-stale': 40,
   // deliberately modest: mentions and reviews must outrank topical matches
   'watch-hit': 40,
@@ -30,6 +32,7 @@ const GROUP: Record<ItemKind, Group> = {
   'own-pr-approved': 'blocked-stale',
   'own-pr-stale': 'blocked-stale',
   'ticket-assigned': 'cycle',
+  manual: 'cycle',
   'watch-hit': 'fyi',
   'own-pr-open': 'fyi',
   'slack-mention': 'fyi',
@@ -37,8 +40,9 @@ const GROUP: Record<ItemKind, Group> = {
   fyi: 'fyi',
 }
 
-// Linear priority: 1 urgent, 2 high — planned work jumps within YOUR CYCLE only.
-export const PRIORITY_BOOST: Record<number, number> = { 1: 20, 2: 10 }
+// Priority (1 urgent … 4 low), source-derived or a user override. Planned work
+// jumps within YOUR CYCLE; low priority sinks a little. 0/absent = neutral.
+export const PRIORITY_BOOST: Record<number, number> = { 1: 24, 2: 12, 3: 0, 4: -8 }
 
 /** waiting stops accruing after this many days, so ancient items can't run away */
 export const WAIT_CAP_DAYS = 14
@@ -109,6 +113,11 @@ function reasonFor(item: WorkItem, waitDays: number): string {
     }
     case 'watch-hit':
       return `matched a watch in ${item.repo} (${age(waitDays)})`
+    case 'manual': {
+      const pri =
+        item.priority === 1 ? 'urgent · ' : item.priority === 2 ? 'high · ' : item.priority === 4 ? 'low · ' : ''
+      return `${pri}added by you (${age(waitDays)})`
+    }
     case 'fyi':
       return `updated ${age(waitDays)}${ci}`
   }

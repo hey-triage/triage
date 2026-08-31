@@ -51,6 +51,8 @@ import type {
   InboxResponse,
   InboxSnapshot,
   ItemStateResponse,
+  ManualItemInput,
+  ManualItemResponse,
   Project,
   ProjectsResponse,
   ReposResponse,
@@ -595,13 +597,14 @@ function syncInbox(): Promise<InboxSnapshot> {
   if (inboxInFlight) return inboxInFlight
   inboxInFlight = (async () => {
     try {
-      const [repos, slack, ingested, states] = await Promise.all([
+      const [repos, slack, ingested, manual, states] = await Promise.all([
         connectedRepos(),
         getSlackForSync(),
         store.items.list(),
+        store.manual.list(),
         store.itemState.all(),
       ])
-      const { items, notices, rearmed } = await refreshInbox({ repos, slack, ingested, states })
+      const { items, notices, rearmed } = await refreshInbox({ repos, slack, ingested, manual, states })
       if (rearmed.length > 0) await store.itemState.reopen(rearmed, Date.now())
       inboxCache = { syncedAt: Date.now(), items, notices }
       void store.inbox.save(inboxCache)
@@ -849,6 +852,37 @@ function workItemFrom(raw: unknown): { item: WorkItem } | { error: string } {
   }
 }
 
+/**
+ * A manual to-do's fields, validated. Title is required; project (if given)
+ * must exist; url (if given) must be http(s); priority (if given) is 1–4.
+ */
+async function manualItemFrom(raw: unknown): Promise<ManualItemInput> {
+  if (typeof raw !== 'object' || raw === null) throw new Error('body must be a JSON object')
+  const r = raw as Record<string, unknown>
+  const title = typeof r.title === 'string' ? r.title.trim() : ''
+  if (!title) throw new Error('a work item needs a title')
+  const input: ManualItemInput = { title }
+  if (typeof r.projectId === 'string' && r.projectId) {
+    const projects = await store.projects.list()
+    if (!projects.some((p) => p.id === r.projectId)) throw new Error('unknown project')
+    input.projectId = r.projectId
+  }
+  if (typeof r.note === 'string' && r.note.trim()) input.note = r.note.trim()
+  if (typeof r.url === 'string' && r.url.trim()) {
+    if (!/^https?:\/\//.test(r.url.trim())) throw new Error('link must be an http(s) URL')
+    input.url = r.url.trim()
+  }
+  // When the key is present, 0/null means "none" (0) so an edit can clear it;
+  // when absent, priority is left untouched on update.
+  if ('priority' in r) {
+    const p = r.priority
+    if (p === null || p === 0) input.priority = 0
+    else if (typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 4) input.priority = p
+    else throw new Error('priority must be 1–4')
+  }
+  return input
+}
+
 const NO_BUILD_HTML = `<!doctype html><meta charset="utf-8">
 <title>triage — no build</title>
 <body style="font:14px/1.6 system-ui;max-width:34em;margin:12vh auto;color:#dce3f0;background:#0d1017">
@@ -1087,6 +1121,62 @@ const server = http.createServer(async (req, res) => {
       const id = typeof parsed?.id === 'string' ? parsed.id : ''
       if (!ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
       await store.itemState.set({ itemId: id, status: 'done', statusAt: Date.now(), pinned: false })
+      inboxCache = null
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // Manual items — to-dos the user adds by hand. Create/edit/delete; they merge
+  // into the inbox like any other source and share the done/snooze overlay.
+  if (url.pathname === '/api/items/manual') {
+    let body: ManualItemResponse
+    let status = 200
+    try {
+      if (req.method === 'POST') {
+        const input = await manualItemFrom(await readJsonBody(req))
+        await store.manual.create({ id: `manual:${randomUUID()}`, ...input })
+        inboxCache = null
+      } else if (req.method === 'PUT') {
+        const id = url.searchParams.get('id')
+        if (!id) throw new Error('need a manual item id')
+        const input = await manualItemFrom(await readJsonBody(req))
+        await store.manual.update(id, input)
+        inboxCache = null
+      } else if (req.method === 'DELETE') {
+        const id = url.searchParams.get('id')
+        if (id) {
+          await store.manual.remove(id)
+          inboxCache = null
+        }
+      } else {
+        throw new Error('unsupported method')
+      }
+      body = { ok: true }
+    } catch (err) {
+      status = 400
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // A user priority override for any item (source or manual). null clears it.
+  if (url.pathname === '/api/items/priority' && req.method === 'POST') {
+    let body: ItemStateResponse
+    try {
+      const parsed = (await readJsonBody(req)) as { id?: unknown; priority?: unknown } | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      if (!id) throw new Error('need an item id')
+      const raw = parsed?.priority
+      let priority: number | null
+      if (raw === null || raw === 0 || raw === undefined) priority = null
+      else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 4) priority = raw
+      else throw new Error('priority must be 1–4, or null/0 to clear')
+      await store.itemState.setPriority(id, priority)
       inboxCache = null
       body = { ok: true }
     } catch (err) {

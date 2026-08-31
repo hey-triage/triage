@@ -188,26 +188,35 @@ export function App() {
 
   const dispatch = useCallback((item: ScoredItem) => {
     const openWith = (cwd?: string) => {
-      setPreset({
-        title: item.title.slice(0, 80),
-        cwd,
-        firstMessage: [
-          `Work item from the triage inbox — ${item.kind}:`,
-          `${item.title}`,
-          item.url,
-          `Why it ranked: ${item.reason}`,
-          '',
-          'Use `gh` to pull the full context (diff, comments, CI) and get started.',
-        ].join('\n'),
-      })
+      const isManual = item.source === 'manual'
+      const lines = isManual
+        ? [
+            'Work item from the triage inbox — a to-do you added:',
+            item.title,
+            ...(item.url ? [item.url] : []),
+            ...(item.why ? [`Note: ${item.why}`] : []),
+          ]
+        : [
+            `Work item from the triage inbox — ${item.kind}:`,
+            item.title,
+            item.url,
+            `Why it ranked: ${item.reason}`,
+            '',
+            'Use `gh` to pull the full context (diff, comments, CI) and get started.',
+          ]
+      setPreset({ title: item.title.slice(0, 80), cwd, firstMessage: lines.join('\n') })
       navigate('')
     }
-    // A project tied to the item's repo decides where the session runs.
+    // An explicit project (manual items) decides the folder; otherwise a project
+    // tied to the item's repo does.
     void fetch('/api/projects')
       .then((r) => r.json() as Promise<ProjectsResponse>)
       .then((b) => {
-        const match = b.ok ? b.projects.find((p) => p.repo && p.repo === item.repo) : undefined
-        openWith(match?.path)
+        if (!b.ok) return openWith()
+        const match =
+          (item.projectId && b.projects.find((p) => p.id === item.projectId)) ||
+          (item.repo && b.projects.find((p) => p.repo && p.repo === item.repo))
+        openWith(match ? match.path : undefined)
       })
       .catch(() => openWith())
   }, [navigate])

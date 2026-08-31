@@ -22,6 +22,8 @@ export interface InboxOptions {
   slack: { items: WorkItem[]; notice?: string }
   /** persisted ingested items: watch hits + external-scanner upserts */
   ingested: WorkItem[]
+  /** user-authored to-dos added by hand in the inbox */
+  manual: WorkItem[]
   /** the user-state overlay, keyed by item id */
   states: Map<string, ItemState>
   now?: number
@@ -71,6 +73,7 @@ export async function refreshInbox(opts: InboxOptions): Promise<InboxResult> {
   items.push(...opts.slack.items)
   if (opts.slack.notice) notices.push(opts.slack.notice)
   items.push(...opts.ingested)
+  items.push(...opts.manual)
 
   const { visible, rearmed } = applyOverlay(mergeById(items), opts.states, now)
   return { items: linkByRefs(rank(visible, now)), notices, rearmed }

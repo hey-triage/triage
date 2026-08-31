@@ -3,6 +3,9 @@ import type {
   Group,
   InboxResponse,
   ItemStatus,
+  ManualItemResponse,
+  Project,
+  ProjectsResponse,
   ReposResponse,
   ScoredItem,
   WatchesResponse,
@@ -29,8 +32,13 @@ const KIND_LABEL: Record<string, string> = {
   'slack-mention': 'slack · tag',
   'ticket-assigned': 'ticket',
   'watch-hit': 'watch',
+  manual: 'task',
   fyi: 'fyi',
 }
+
+// Priority, source-derived or a user override (1 urgent … 4 low; 0 = none).
+const PRIORITY_LABEL: Record<number, string> = { 0: 'none', 1: 'Urgent', 2: 'High', 3: 'Normal', 4: 'Low' }
+const PRIORITY_VALUES = [0, 1, 2, 3, 4]
 
 export function InboxPage({
   onDispatch,
@@ -43,7 +51,17 @@ export function InboxPage({
   const [reposOpen, setReposOpen] = useState(false)
   const [repoCount, setRepoCount] = useState<number | null>(null)
   const [watchTitles, setWatchTitles] = useState<Map<string, string>>(new Map())
+  const [projects, setProjects] = useState<Project[]>([])
+  const [composer, setComposer] = useState<{ open: boolean; editing: ScoredItem | null }>({
+    open: false,
+    editing: null,
+  })
   const [sel, setSel] = useState(0)
+
+  const projectName = useCallback(
+    (id?: string) => (id ? projects.find((p) => p.id === id)?.name : undefined),
+    [projects],
+  )
 
   // done/snoozed/dismissed live in the user-state overlay; the row disappears
   // optimistically and the server recomputes the snapshot on its next sync.
@@ -56,6 +74,33 @@ export function InboxPage({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: item.id, status, snoozeUntil }),
     }).catch(() => {})
+  }, [])
+
+  // A priority override applies to any item and survives re-sync. Reflect the
+  // chip immediately; re-ranking lands on the next refresh (like done/dismiss).
+  const setPriority = useCallback((item: ScoredItem, priority: number) => {
+    setState((prev) =>
+      prev.phase === 'ready'
+        ? {
+            ...prev,
+            items: prev.items.map((i) =>
+              i.id === item.id ? { ...i, priority: priority || undefined } : i,
+            ),
+          }
+        : prev,
+    )
+    void fetch('/api/items/priority', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: item.id, priority: priority || null }),
+    }).catch(() => {})
+  }, [])
+
+  const deleteManual = useCallback((item: ScoredItem) => {
+    setState((prev) =>
+      prev.phase === 'ready' ? { ...prev, items: prev.items.filter((i) => i.id !== item.id) } : prev,
+    )
+    void fetch(`/api/items/manual?id=${encodeURIComponent(item.id)}`, { method: 'DELETE' }).catch(() => {})
   }, [])
 
   const snooze1d = useCallback(
@@ -102,7 +147,7 @@ export function InboxPage({
       } else if (e.key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault()
         setSel((v) => Math.max(v - 1, 0))
-      } else if ((e.key === 'o' || e.key === 'Enter') && ordered[sel]) {
+      } else if ((e.key === 'o' || e.key === 'Enter') && ordered[sel]?.url) {
         e.preventDefault()
         window.open(ordered[sel].url, '_blank', 'noopener')
       } else if (e.key === 'd' && ordered[sel]) {
@@ -117,6 +162,9 @@ export function InboxPage({
       } else if (e.key === 'z' && ordered[sel]) {
         e.preventDefault()
         snooze1d(ordered[sel])
+      } else if (e.key === 'n') {
+        e.preventDefault()
+        setComposer({ open: true, editing: null })
       } else if (e.key === 'r') {
         e.preventDefault()
         void load(true)
@@ -126,8 +174,18 @@ export function InboxPage({
     return () => document.removeEventListener('keydown', onKey)
   }, [ordered, sel, onDispatch, load, setItemState, snooze1d])
 
+  const loadProjects = useCallback(() => {
+    void fetch('/api/projects')
+      .then((r) => r.json() as Promise<ProjectsResponse>)
+      .then((b) => {
+        if (b.ok) setProjects(b.projects)
+      })
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     void load(false)
+    loadProjects()
     void fetch('/api/repos')
       .then((r) => r.json() as Promise<ReposResponse>)
       .then((b) => {
@@ -140,7 +198,7 @@ export function InboxPage({
         if (b.ok) setWatchTitles(new Map(b.watches.map((w) => [w.id, w.title])))
       })
       .catch(() => {})
-  }, [load])
+  }, [load, loadProjects])
 
   return (
     <div id="inboxPage">
@@ -152,6 +210,9 @@ export function InboxPage({
               The work already waiting on you — ranked by who it blocks, not by recency.
             </p>
           </div>
+          <button className="refresh add" onClick={() => setComposer({ open: true, editing: null })}>
+            + Add item
+          </button>
           <button className="refresh repos" onClick={() => setReposOpen(true)}>
             {repoCount == null ? 'Repos' : repoCount === 0 ? 'Repos: all' : `Repos: ${repoCount}`}
           </button>
@@ -180,7 +241,12 @@ export function InboxPage({
               </div>
             ))}
             {state.items.length === 0 ? (
-              <div className="inboxEmpty">Inbox zero — nothing is waiting on you.</div>
+              <div className="inboxEmpty">
+                Inbox zero — nothing is waiting on you.
+                <button className="emptyAdd" onClick={() => setComposer({ open: true, editing: null })}>
+                  Add a work item
+                </button>
+              </div>
             ) : (
               GROUP_ORDER.map((g) => (
                 <ItemGroup
@@ -189,10 +255,14 @@ export function InboxPage({
                   items={state.items.filter((i) => i.group === g)}
                   selectedId={ordered[sel]?.id ?? null}
                   watchTitles={watchTitles}
+                  projectName={projectName}
                   onSelect={(id) => setSel(ordered.findIndex((i) => i.id === id))}
                   onDispatch={onDispatch}
                   onDone={(item) => void setItemState(item, 'done')}
                   onRefineWatch={onRefineWatch}
+                  onSetPriority={setPriority}
+                  onEdit={(item) => setComposer({ open: true, editing: item })}
+                  onDelete={deleteManual}
                 />
               ))
             )}
@@ -210,7 +280,144 @@ export function InboxPage({
           void load(true) // scope changed — resync now
         }}
       />
+
+      <ItemComposer
+        open={composer.open}
+        editing={composer.editing}
+        projects={projects}
+        onClose={() => setComposer({ open: false, editing: null })}
+        onSaved={() => {
+          setComposer({ open: false, editing: null })
+          void load(false) // include the new/edited item
+        }}
+      />
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Item composer: add or edit a manual work item (title, project, priority, note).
+// ---------------------------------------------------------------------------
+
+function ItemComposer({
+  open,
+  editing,
+  projects,
+  onClose,
+  onSaved,
+}: {
+  open: boolean
+  editing: ScoredItem | null
+  projects: Project[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const [title, setTitle] = useState('')
+  const [projectId, setProjectId] = useState('')
+  const [priority, setPriority] = useState(0)
+  const [note, setNote] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    const el = dialog.current
+    if (!el) return
+    if (open && !el.open) {
+      el.showModal()
+      setTitle(editing?.title ?? '')
+      setProjectId(editing?.projectId ?? '')
+      setPriority(editing?.priority ?? 0)
+      setNote(editing?.why ?? '')
+      setError(null)
+    }
+    if (!open && el.open) el.close()
+  }, [open, editing])
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      const payload = { title, projectId: projectId || undefined, priority, note: note || undefined }
+      const path = editing
+        ? `/api/items/manual?id=${encodeURIComponent(editing.id)}`
+        : '/api/items/manual'
+      const res = await fetch(path, {
+        method: editing ? 'PUT' : 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const body = (await res.json()) as ManualItemResponse
+      if (body.ok) onSaved()
+      else setError(body.error)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <dialog ref={dialog} className="itemComposer" onClose={onClose}>
+      <h3>{editing ? 'Edit work item' : 'Add work item'}</h3>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void save()
+        }}
+      >
+        <label className="composerField">
+          <span>Title</span>
+          <input
+            autoFocus
+            placeholder="What needs doing?"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </label>
+        <div className="composerRow">
+          <label className="composerField">
+            <span>Project</span>
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">No project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="composerField">
+            <span>Priority</span>
+            <select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
+              {PRIORITY_VALUES.map((v) => (
+                <option key={v} value={v}>
+                  {v === 0 ? 'None' : PRIORITY_LABEL[v]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <label className="composerField">
+          <span>Note (optional)</span>
+          <textarea
+            rows={3}
+            placeholder="Context, links, acceptance criteria…"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </label>
+        {error && <div className="msg error">{error}</div>}
+        <div className="row">
+          <button type="button" className="cancel" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="go" disabled={saving || !title.trim()}>
+            {saving ? 'Saving…' : editing ? 'Save' : 'Add item'}
+          </button>
+        </div>
+      </form>
+    </dialog>
   )
 }
 
@@ -345,73 +552,117 @@ function ItemGroup({
   items,
   selectedId,
   watchTitles,
+  projectName,
   onSelect,
   onDispatch,
   onDone,
   onRefineWatch,
+  onSetPriority,
+  onEdit,
+  onDelete,
 }: {
   group: Group
   items: ScoredItem[]
   selectedId: string | null
   watchTitles: Map<string, string>
+  projectName: (id?: string) => string | undefined
   onSelect: (id: string) => void
   onDispatch: (item: ScoredItem) => void
   onDone: (item: ScoredItem) => void
   onRefineWatch: (item: ScoredItem) => void
+  onSetPriority: (item: ScoredItem, priority: number) => void
+  onEdit: (item: ScoredItem) => void
+  onDelete: (item: ScoredItem) => void
 }) {
   if (items.length === 0) return null
   return (
     <section className="itemGroup">
       <h3 className={group}>{GROUP_LABELS[group]}</h3>
       <div className="itemList">
-        {items.map((item) => (
-          <div
-            key={item.id}
-            className={`itemRow${item.id === selectedId ? ' sel' : ''}`}
-            ref={item.id === selectedId ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
-            onMouseMove={() => item.id !== selectedId && onSelect(item.id)}
-          >
-            <span className="itemScore">{Math.round(item.score)}</span>
-            <span className={`itemKind ${item.group}`}>{KIND_LABEL[item.kind] ?? item.kind}</span>
-            <div className="itemBody">
-              <a className="itemTitle" href={item.url} target="_blank" rel="noreferrer">
-                {item.returned && <span className="itemReturned" title="Was done — the source updated since">↩ returned</span>}
-                {item.title}
-              </a>
-              <div className="itemMeta">
-                <span className="itemRepo">{item.repo}</span> · {item.reason}
-                {item.why && <span className="itemWhy"> · “{item.why}”</span>}
-                {item.watchId && watchTitles.has(item.watchId) && (
-                  <span className="watchChip" title="Matched by this watch">{watchTitles.get(item.watchId)}</span>
-                )}
-                {item.linked?.map((l) => (
-                  <a key={l.url} className="linkedChip" href={l.url} target="_blank" rel="noreferrer" title="Same work, another source">
-                    + {l.source} · {l.repo}
-                  </a>
-                ))}
-              </div>
-            </div>
-            {item.watchId && (
-              <button
-                className="thumbsDown"
-                title="Bad match — refine this watch"
-                onClick={() => onRefineWatch(item)}
-              >
-                👎
-              </button>
-            )}
-            <button className="dispatch done" title="Mark done (e)" onClick={() => onDone(item)}>
-              Done
-            </button>
-            <button
-              className="dispatch"
-              title="Start a Claude Code session on this item"
-              onClick={() => onDispatch(item)}
+        {items.map((item) => {
+          const isManual = item.source === 'manual'
+          const proj = projectName(item.projectId)
+          const pri = item.priority ?? 0
+          return (
+            <div
+              key={item.id}
+              className={`itemRow${item.id === selectedId ? ' sel' : ''}`}
+              ref={item.id === selectedId ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+              onMouseMove={() => item.id !== selectedId && onSelect(item.id)}
             >
-              Dispatch
-            </button>
-          </div>
-        ))}
+              <span className="itemScore">{Math.round(item.score)}</span>
+              <span className={`itemKind ${item.group}`}>{KIND_LABEL[item.kind] ?? item.kind}</span>
+              <div className="itemBody">
+                {item.url ? (
+                  <a className="itemTitle" href={item.url} target="_blank" rel="noreferrer">
+                    {item.returned && <span className="itemReturned" title="Was done — the source updated since">↩ returned</span>}
+                    {item.title}
+                  </a>
+                ) : (
+                  <span className="itemTitle plain">
+                    {item.returned && <span className="itemReturned" title="Was done — updated since">↩ returned</span>}
+                    {item.title}
+                  </span>
+                )}
+                <div className="itemMeta">
+                  {item.repo && <><span className="itemRepo">{item.repo}</span> · </>}
+                  {item.reason}
+                  {proj && <span className="projChip" title="Project">{proj}</span>}
+                  {item.why && <span className="itemWhy"> · “{item.why}”</span>}
+                  {item.watchId && watchTitles.has(item.watchId) && (
+                    <span className="watchChip" title="Matched by this watch">{watchTitles.get(item.watchId)}</span>
+                  )}
+                  {item.linked?.map((l) => (
+                    <a key={l.url} className="linkedChip" href={l.url} target="_blank" rel="noreferrer" title="Same work, another source">
+                      + {l.source} · {l.repo}
+                    </a>
+                  ))}
+                </div>
+              </div>
+              <select
+                className={`prioSelect prio${pri}`}
+                title="Set priority"
+                value={pri}
+                onChange={(e) => onSetPriority(item, Number(e.target.value))}
+              >
+                {PRIORITY_VALUES.map((v) => (
+                  <option key={v} value={v}>
+                    {v === 0 ? '— priority' : PRIORITY_LABEL[v]}
+                  </option>
+                ))}
+              </select>
+              {isManual && (
+                <button className="rowIcon" title="Edit" onClick={() => onEdit(item)}>
+                  Edit
+                </button>
+              )}
+              {isManual && (
+                <button className="rowIcon" title="Delete" onClick={() => onDelete(item)}>
+                  ✕
+                </button>
+              )}
+              {item.watchId && (
+                <button
+                  className="thumbsDown"
+                  title="Bad match — refine this watch"
+                  onClick={() => onRefineWatch(item)}
+                >
+                  👎
+                </button>
+              )}
+              <button className="dispatch done" title="Mark done (e)" onClick={() => onDone(item)}>
+                Done
+              </button>
+              <button
+                className="dispatch"
+                title="Start a Claude Code session on this item"
+                onClick={() => onDispatch(item)}
+              >
+                Dispatch
+              </button>
+            </div>
+          )
+        })}
       </div>
     </section>
   )

@@ -3,7 +3,7 @@
  * the web inbox renders. Kinds for sources not yet ported (slack, linear)
  * are kept: scoring is source-agnostic and the ids/kinds are settled.
  */
-export type WorkSource = 'github' | 'slack' | 'linear'
+export type WorkSource = 'github' | 'slack' | 'linear' | 'manual'
 
 export type ItemKind =
   | 'review-requested' // someone asked you to review their PR
@@ -17,6 +17,7 @@ export type ItemKind =
   | 'slack-mention'
   | 'ticket-assigned'
   | 'watch-hit' // a user-defined watch matched this thread (see .docs/watches.md)
+  | 'manual' // a to-do the user added by hand, in the inbox
   | 'fyi'
 
 export type Group = 'blocking' | 'blocked-stale' | 'cycle' | 'fyi'
@@ -50,6 +51,8 @@ export interface WorkItem {
   refs?: string[]
   /** which watch produced it (undefined = built-in) */
   watchId?: string
+  /** the project this item belongs to (manual items; empty = none) */
+  projectId?: string
   /** scanner's one-line match reason (rendered on the item) */
   why?: string
   /** re-armed: was done/snoozed, the source updated afterwards */

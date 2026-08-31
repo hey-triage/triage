@@ -15,6 +15,8 @@ export interface ItemState {
   statusAt: number
   /** epoch ms; only for status 'snoozed' */
   snoozeUntil?: number
+  /** user priority override (1 urgent … 4 low); overrides the item's own priority */
+  priority?: number
   pinned: boolean
 }
 
@@ -38,8 +40,10 @@ export function applyOverlay(
 ): OverlayResult {
   const visible: WorkItem[] = []
   const rearmed: string[] = []
-  for (const item of items) {
-    const state = states.get(item.id)
+  for (const rawItem of items) {
+    const state = states.get(rawItem.id)
+    // A user priority override wins over whatever the source reported.
+    const item = state?.priority != null ? { ...rawItem, priority: state.priority } : rawItem
     if (!state || state.status === 'open') {
       visible.push(item)
       continue
