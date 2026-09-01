@@ -11,7 +11,17 @@
 // Domain
 // ---------------------------------------------------------------------------
 
+import type { WatchRunStatus } from '../core/watch/types.js'
+
 export type SessionStatus = 'starting' | 'idle' | 'running' | 'error'
+
+/**
+ * What kind of session a row is. `chat` = a normal user conversation (the
+ * default). `watch-run` = one watch's scan, run as a real session so its
+ * transcript is the run's observability (.docs/watches-v2.md); the sidebar
+ * filters these out of the chat list.
+ */
+export type SessionKind = 'chat' | 'watch-run'
 
 /**
  * What the user did with one prompt. `allow_always` is `allow` plus the SDK's
@@ -71,6 +81,10 @@ export type SessionSummary = {
   pinned?: boolean
   /** Current git branch of `cwd`, when it is a repo. Derived, not stored. */
   branch?: string
+  /** chat (default, absent) or watch-run. */
+  kind?: SessionKind
+  /** the watch a watch-run session belongs to. */
+  watchId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +176,7 @@ export type ModelsResponse =
 // re-exported here so frontends keep importing one contract file.
 // ---------------------------------------------------------------------------
 
-export type { Group, ItemKind, ScoredItem, WorkItem, WorkSource } from '../core/work/types.js'
+export type { Group, ItemKind, Provenance, ScoredItem, WorkItem, WorkSource } from '../core/work/types.js'
 
 export type InboxSnapshot = {
   syncedAt: number
@@ -171,6 +185,58 @@ export type InboxSnapshot = {
 }
 
 export type InboxResponse = ({ ok: true } & InboxSnapshot) | { ok: false; error: string }
+
+// A status tab other than the open inbox (done / snoozed / archived). Ranked
+// like the inbox but read straight from the durable store — no scan, no cache.
+export type ItemListResponse =
+  | { ok: true; items: import('../core/work/types.js').ScoredItem[] }
+  | { ok: false; error: string }
+
+// The append-only transition log for one item (GET /api/items/events?id=…).
+export type { ItemEvent, ItemEventKind } from '../core/work/state.js'
+
+export type ItemEventsResponse =
+  | { ok: true; events: import('../core/work/state.js').ItemEvent[] }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
+// Activity (GET /api/activity) — watch runs, each a real session, as a browsable
+// history. Each run links to the transcript (its sessionId) and its produced
+// items (.docs/watches-v2.md).
+// ---------------------------------------------------------------------------
+export type ActivityRun = {
+  sessionId: string
+  watchId?: string
+  watchTitle: string
+  status?: WatchRunStatus
+  matches?: number
+  tokens?: number
+  startedAt: number
+  finishedAt: number
+  error?: string
+}
+
+export type ActivityResponse =
+  | { ok: true; runs: ActivityRun[] }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
+// Coverage probe (GET /api/coverage?scope=…) — the trust ritual: is this channel
+// watched, and are its watches healthy? (.docs/watches-v2.md)
+// ---------------------------------------------------------------------------
+export type CoverageWatch = {
+  id: string
+  title: string
+  scope: string
+  enabled: boolean
+  lastRunStatus?: WatchRunStatus
+  lastRunAt?: number
+  cursor?: string
+}
+
+export type CoverageResponse =
+  | { ok: true; scope: string; watches: CoverageWatch[] }
+  | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
 // Connected repos (GET /api/repos, PUT /api/repos)
@@ -211,7 +277,7 @@ export type ProjectsResponse =
 // server-side leaks into the browser bundle.
 // ---------------------------------------------------------------------------
 
-export type { NewWatch, Watch, WatchCadence, WatchDraft, WatchPreviewRow } from '../core/watch/types.js'
+export type { NewWatch, Watch, WatchCadence, WatchDraft, WatchPreviewRow, WatchRunStatus } from '../core/watch/types.js'
 
 export type WatchesResponse =
   | { ok: true; watches: import('../core/watch/types.js').Watch[] }

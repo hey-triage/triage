@@ -121,6 +121,61 @@ export async function fetchGitHub(repos: string[] = [], now = Date.now()): Promi
   return clientFilter ? all.filter((i) => repos.includes(i.repo)) : all
 }
 
+// Closed/merged PRs the user is involved in, for source-side completion
+// (.docs/watches-v2.md): a tracked open item whose PR merged/closed is
+// auto-done with evidence, never silently removed. `involves:` covers authored,
+// mentioned, review-requested, and commented — broad enough to catch anything
+// the open searches surfaced.
+const closedQuery = (first: number) => `
+query($closedQ: String!) {
+  closed: search(query: $closedQ, type: ISSUE, first: ${first}) {
+    nodes { ... on PullRequest { number url state repository { nameWithOwner } } }
+  }
+}`
+
+export interface ClosedPr {
+  /** the work-item id this PR would have — "github:owner/repo#123" */
+  id: string
+  state: 'closed' | 'merged'
+  url: string
+  repo: string
+}
+
+/**
+ * PRs closed or merged since `sinceIso` that the user is involved in. Used to
+ * transition tracked open items to done; a bounded, dated search keeps it cheap.
+ */
+export async function fetchGitHubClosed(repos: string[] = [], sinceIso: string): Promise<ClosedPr[]> {
+  const login = await ghLogin()
+  const qualifier = repos.map((r) => `repo:${r}`).join(' ')
+  const useQualifier = repos.length > 0 && qualifier.length + 80 <= 256
+  const scope = useQualifier ? ` ${qualifier}` : ''
+  const clientFilter = repos.length > 0 && !useQualifier
+  const since = sinceIso.slice(0, 10) // YYYY-MM-DD
+
+  const out = await gh([
+    'api',
+    'graphql',
+    '-f', `query=${closedQuery(clientFilter ? 50 : 40)}`,
+    '-f', `closedQ=is:pr is:closed involves:${login} archived:false updated:>=${since}${scope}`,
+  ])
+  const nodes = (
+    JSON.parse(out) as {
+      data: { closed: { nodes: Array<{ number: number; url: string; state: string; repository: { nameWithOwner: string } }> } }
+    }
+  ).data.closed.nodes
+
+  const items = nodes
+    .filter((n) => n.number)
+    .map((n): ClosedPr => ({
+      id: `github:${n.repository.nameWithOwner}#${n.number}`,
+      state: n.state === 'MERGED' ? 'merged' : 'closed',
+      url: n.url,
+      repo: n.repository.nameWithOwner,
+    }))
+  return clientFilter ? items.filter((i) => repos.includes(i.repo)) : items
+}
+
 /** repos the user can pull from, for the repo picker */
 export async function listAffiliatedRepos(): Promise<string[]> {
   const out = await gh([

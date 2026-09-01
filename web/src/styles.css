@@ -986,3 +986,66 @@ dialog select:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var
 
 /* dialogs: our border is the focus indicator; kill the UA blue ring */
 dialog:focus-visible, dialog:focus { outline: none; }
+
+/* Inbox status tabs (open / snoozed / done / archived) — durable items, viewable
+   in every state, not write-only (.docs/watches-v2.md). */
+.inboxTabs { display: flex; gap: 2px; margin: 0 0 14px; border-bottom: 1px solid var(--border); }
+.inboxTab {
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  color: var(--dim); font: inherit; font-size: 13px; font-weight: 500;
+  padding: 7px 12px; margin-bottom: -1px; cursor: pointer;
+}
+.inboxTab:hover { color: var(--text); }
+.inboxTab.active { color: var(--accent); border-bottom-color: var(--accent-solid); }
+
+/* Honest per-watch run status in the meta line. */
+.watchFailed { color: var(--red); font-weight: 500; }
+.watchSkipped { color: var(--dim); }
+
+/* Activity — watch runs as a browsable history (.docs/watches-v2.md). */
+.activityRun { border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 8px; background: var(--panel); overflow: hidden; }
+.activityRunHead {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: transparent; border: none; color: var(--text); font: inherit; padding: 10px 14px; cursor: pointer;
+}
+.activityRunHead:hover { background: var(--panel-hi); }
+.runStatus { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.03em; }
+.runStatus.ok { background: rgba(88, 190, 130, 0.16); color: #6bd39a; }
+.runStatus.failed { background: var(--red-tint); color: var(--red); }
+.runStatus.skipped, .runStatus.running { background: var(--panel-hi); color: var(--dim); }
+.runTitle { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runMeta { color: var(--dim); font-size: 12px; flex: none; }
+.runError { color: var(--red); font-size: 12px; padding: 0 14px 10px; }
+.runDetail { border-top: 1px solid var(--border); padding: 10px 14px; }
+.runItems { margin-bottom: 10px; }
+.runItemsHead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); margin-bottom: 6px; }
+.runItem { display: block; color: var(--text); text-decoration: none; padding: 4px 0; font-size: 13px; }
+.runItem:hover { color: var(--accent); }
+.runItemRepo { color: var(--dim); margin-right: 6px; font-family: var(--mono); font-size: 11.5px; }
+.runTranscript { max-height: 420px; overflow: auto; border-top: 1px dashed var(--border); padding-top: 8px; }
+
+/* Item timeline (the per-item transition log). */
+.timelineTitle { font-weight: 600; margin: 4px 0 12px; }
+.timeline { list-style: none; margin: 0; padding: 0; }
+.timelineRow { display: flex; gap: 10px; padding: 6px 0; }
+.timelineDot { width: 8px; height: 8px; min-width: 8px; border-radius: 50%; margin-top: 6px; background: var(--dim); }
+.timelineDot.created { background: var(--accent); }
+.timelineDot.reopened, .timelineDot.updated { background: #d6a44a; }
+.timelineDot.done { background: #6bd39a; }
+.timelineDot.archived { background: var(--dim); }
+.timelineHead { font-size: 13px; }
+.timelineWhen { color: var(--dim); font-size: 11.5px; margin-left: 8px; }
+.timelineWhy { color: var(--dim); font-size: 12.5px; margin-top: 2px; }
+.timelineWatch { color: var(--dim); font-size: 11.5px; margin-top: 1px; }
+
+/* Coverage probe. */
+.coverageProbe { margin: 0 0 16px; }
+.coverageForm { display: flex; gap: 8px; }
+.coverageInput {
+  flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm);
+  color: var(--text); font: inherit; font-size: 13px; padding: 7px 10px;
+}
+.coverageInput:focus { outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-tint); }
+.coverageResult { margin-top: 8px; padding: 8px 12px; border-radius: var(--r-sm); font-size: 13px; border: 1px solid var(--border); }
+.coverageResult.covered { border-color: rgba(88, 190, 130, 0.35); background: rgba(88, 190, 130, 0.08); }
+.coverageResult.uncovered { border-color: rgba(214, 164, 74, 0.35); background: rgba(214, 164, 74, 0.08); }

@@ -1,4 +1,5 @@
 import {
+  Activity,
   Eye,
   ExternalLink,
   Folder,
@@ -21,6 +22,7 @@ type Props = {
   currentId: string | null
   inboxActive: boolean
   watchesActive: boolean
+  activityActive: boolean
   projectsActive: boolean
   connectorsActive: boolean
   conn: ConnState
@@ -28,6 +30,7 @@ type Props = {
   onNew: () => void
   onInbox: () => void
   onWatches: () => void
+  onActivity: () => void
   onProjects: () => void
   onConnectors: () => void
   onRename: (id: string, title: string) => void
@@ -46,6 +49,7 @@ export function Sidebar({
   currentId,
   inboxActive,
   watchesActive,
+  activityActive,
   projectsActive,
   connectorsActive,
   conn,
@@ -53,6 +57,7 @@ export function Sidebar({
   onNew,
   onInbox,
   onWatches,
+  onActivity,
   onProjects,
   onConnectors,
   onRename,
@@ -83,6 +88,10 @@ export function Sidebar({
         <button className={`navItem${watchesActive ? ' active' : ''}`} onClick={onWatches}>
           <Eye size={16} aria-hidden="true" />
           Watches
+        </button>
+        <button className={`navItem${activityActive ? ' active' : ''}`} onClick={onActivity}>
+          <Activity size={16} aria-hidden="true" />
+          Activity
         </button>
         <button className={`navItem${projectsActive ? ' active' : ''}`} onClick={onProjects}>
           <Folder size={16} aria-hidden="true" />

@@ -30,6 +30,7 @@ export type Route =
   | { page: 'connectors' }
   | { page: 'projects' }
   | { page: 'watches' }
+  | { page: 'activity' }
 
 function parseRoute(hash: string): Route {
   if (!hash) return { page: 'home' }
@@ -37,6 +38,7 @@ function parseRoute(hash: string): Route {
   if (hash === '/connectors') return { page: 'connectors' }
   if (hash === '/projects') return { page: 'projects' }
   if (hash === '/watches') return { page: 'watches' }
+  if (hash === '/activity') return { page: 'activity' }
   return { page: 'session', id: hash }
 }
 

@@ -1,68 +1,97 @@
 /**
- * User-state overlay (.docs/watches.md): the snapshot stays a replaced-
- * wholesale cache of what sources said; user state (done/snoozed/dismissed)
- * survives it in its own table keyed by item id. Ingestion never writes it —
- * the only ingestion-triggered transition is the re-arm rule, applied here.
+ * Item lifecycle (.docs/watches-v2.md). A work item is a durable fact: once
+ * created it is never hard-deleted and never silently removed. It moves between
+ * four states only via recorded transitions, and every transition is appended
+ * to a per-item event log — the item's `status` is just a materialization of
+ * the latest event. Current state is always derivable from the log; any
+ * mismatch is a visible bug.
+ *
+ * The LLM decides relevance, never lifecycle: existence, reopen, and expiry are
+ * deterministic code operating on ingestion/source timestamps, applied here and
+ * in the store adapter, never inferred from model output.
  */
 import type { WorkItem } from './types.js'
 
-export type ItemStatus = 'open' | 'done' | 'snoozed' | 'dismissed'
+export type ItemStatus = 'open' | 'snoozed' | 'done' | 'archived'
 
-export interface ItemState {
-  itemId: string
-  status: ItemStatus
-  /** epoch ms of the last status change */
-  statusAt: number
-  /** epoch ms; only for status 'snoozed' */
-  snoozeUntil?: number
-  /** user priority override (1 urgent … 4 low); overrides the item's own priority */
-  priority?: number
-  pinned: boolean
-}
+/**
+ * A recorded transition on one item. `created`/`updated`/`reopened` are written
+ * by ingestion (the reopen rule below); `done`/`archived`/`snoozed`/`woken` by
+ * the user, an agent, or the system. Kept append-only, keyed `(item_id, seq)`,
+ * exactly like `session_events`.
+ */
+export type ItemEventKind =
+  | 'created'
+  | 'updated'
+  | 'reopened'
+  | 'done'
+  | 'archived'
+  | 'snoozed'
+  | 'woken'
 
-export interface OverlayResult {
-  /** items the inbox should show, `returned` marked where re-armed */
-  visible: WorkItem[]
-  /** ids whose status must reset to 'open' in the store (re-arm rule) */
-  rearmed: string[]
+/**
+ * Who caused a transition. `user` = a click in the web UI; `agent:<sessionId>`
+ * = a chat/dispatch session's tool call; `watch:<runId>` = a watch run;
+ * `system` = deterministic reconciliation (a merged PR auto-done, a snooze that
+ * elapsed).
+ */
+export type ItemActor = string
+
+export interface ItemEvent {
+  seq: number
+  at: number
+  actor: ItemActor
+  event: ItemEventKind
+  /** evidence ref, archive reason, snoozeUntil, provenance — event-specific */
+  detail?: Record<string, unknown>
 }
 
 /**
- * Re-arm rule (code, deterministic): status 'done' — or a snooze that elapsed —
- * with source `updatedAt > statusAt` → open again, marked "returned". A plain
- * elapsed snooze also returns (that is what snooze means), without the marker
- * unless the item moved. Dismissed items never re-arm.
+ * A user/agent-driven status change. Snooze carries a wake time; archive may
+ * carry a reason (kept for the later refine-the-watch feedback loop).
  */
-export function applyOverlay(
-  items: WorkItem[],
-  states: Map<string, ItemState>,
-  now = Date.now(),
-): OverlayResult {
-  const visible: WorkItem[] = []
-  const rearmed: string[] = []
-  for (const rawItem of items) {
-    const state = states.get(rawItem.id)
-    // A user priority override wins over whatever the source reported.
-    const item = state?.priority != null ? { ...rawItem, priority: state.priority } : rawItem
-    if (!state || state.status === 'open') {
-      visible.push(item)
-      continue
-    }
-    if (state.status === 'dismissed') continue
-    const updatedSince = Date.parse(item.updatedAt) > state.statusAt
-    if (state.status === 'done') {
-      if (updatedSince) {
-        visible.push({ ...item, returned: true })
-        rearmed.push(item.id)
-      }
-      continue
-    }
-    // snoozed: back when the snooze elapses or the item moves
-    const elapsed = state.snoozeUntil == null || now >= state.snoozeUntil
-    if (elapsed || updatedSince) {
-      visible.push(updatedSince ? { ...item, returned: true } : item)
-      rearmed.push(item.id)
-    }
+export interface StatusChange {
+  status: ItemStatus
+  actor: ItemActor
+  /** epoch ms; required when status is 'snoozed' */
+  snoozeUntil?: number
+  detail?: Record<string, unknown>
+}
+
+/** The event kind a status transition appends. */
+export function eventForStatus(status: ItemStatus): ItemEventKind {
+  switch (status) {
+    case 'open':
+      return 'reopened'
+    case 'snoozed':
+      return 'snoozed'
+    case 'done':
+      return 'done'
+    case 'archived':
+      return 'archived'
   }
-  return { visible, rearmed }
+}
+
+/**
+ * The reopen rule (deterministic). A run/upsert touches a thread whose item is
+ * `done` and the source has a message newer than the moment it was marked done
+ * → the item returns to `open`, marked `returned`. Archived items never reopen.
+ * Snoozed items are woken by the snooze timer, not this rule. Never decided from
+ * an LLM-reported timestamp — the caller passes the stored `done` time.
+ */
+export function shouldReopen(
+  status: ItemStatus,
+  incomingSourceUpdatedAt: number,
+  statusAt: number,
+): boolean {
+  return status === 'done' && incomingSourceUpdatedAt > statusAt
+}
+
+/** Project the stored lifecycle fields onto the rendered item. */
+export function withLifecycle(
+  item: WorkItem,
+  status: ItemStatus,
+  returned: boolean,
+): WorkItem {
+  return { ...item, status, ...(returned ? { returned: true } : {}) }
 }

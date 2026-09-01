@@ -22,6 +22,23 @@ export type ItemKind =
 
 export type Group = 'blocking' | 'blocked-stale' | 'cycle' | 'fyi'
 
+/**
+ * One record of a scan finding (or refinding) an item (.docs/watches-v2.md).
+ * Provenance is a list, so a thread matched by two watches keeps both — "found
+ * by Mentions (run 41), also matched Onboarding (run 42)" — rather than the
+ * inbox doubling up or a later find clobbering the first.
+ */
+export interface Provenance {
+  /** the watch that produced this find; absent = a deterministic source (github) */
+  watchId?: string
+  /** the run/session that produced it, for linking to the transcript */
+  runId?: string
+  /** epoch ms of the find */
+  at: number
+  /** the scanner's one-line match reason for this find */
+  why?: string
+}
+
 export const GROUP_LABELS: Record<Group, string> = {
   blocking: 'YOU ARE BLOCKING',
   'blocked-stale': 'YOUR WORK — STALE',
@@ -53,10 +70,18 @@ export interface WorkItem {
   watchId?: string
   /** the project this item belongs to (manual items; empty = none) */
   projectId?: string
-  /** scanner's one-line match reason (rendered on the item) */
+  /** scanner's one-line match reason (rendered on the item) — the latest find's */
   why?: string
-  /** re-armed: was done/snoozed, the source updated afterwards */
+  /** re-armed: was done, the source updated afterwards (reopen rule) */
   returned?: boolean
+  /** every scan that found (or refound) this item; the card explains itself */
+  foundBy?: Provenance[]
+  /** epoch ms this item first entered the store */
+  ingestedAt?: number
+  /** current lifecycle state; set by the store on projection */
+  status?: import('./state.js').ItemStatus
+  /** a free-form note (manual items) */
+  note?: string
 }
 
 export interface ScoredItem extends WorkItem {

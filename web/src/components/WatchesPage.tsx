@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
+  CoverageResponse,
+  CoverageWatch,
   Watch,
   WatchCadence,
   WatchDraftResponse,
@@ -45,6 +47,7 @@ type LoadState =
 export function WatchesPage() {
   const [state, setState] = useState<LoadState>({ phase: 'loading' })
   const [modal, setModal] = useState<{ editing: Watch | null; refineNote?: string } | null>(null)
+  const [running, setRunning] = useState<Set<string>>(new Set())
 
   const load = useCallback(async () => {
     try {
@@ -92,9 +95,28 @@ export function WatchesPage() {
   }
 
   async function remove(w: Watch) {
-    if (!confirm(`Delete watch "${w.title}"? Its inbox items go with it.`)) return
+    if (!confirm(`Delete watch "${w.title}"? Its open items move to Archived (nothing is deleted).`)) return
     await fetch(`/api/watches?id=${encodeURIComponent(w.id)}`, { method: 'DELETE' })
     void load()
+  }
+
+  // Force-run one watch now (independent of its cadence). The run shows up under
+  // Activity; we refresh the list a few times to reflect its outcome when done.
+  async function run(w: Watch) {
+    setRunning((prev) => new Set(prev).add(w.id))
+    try {
+      const res = await fetch(`/api/watches/run?id=${encodeURIComponent(w.id)}`, { method: 'POST' })
+      const body = (await res.json()) as { ok: boolean; error?: string }
+      if (!body.ok) alert(body.error ?? 'could not start the run')
+    } catch (err) {
+      alert(String(err))
+    }
+    for (const ms of [5000, 12000, 30000]) setTimeout(() => void load(), ms)
+    setTimeout(() => setRunning((prev) => {
+      const next = new Set(prev)
+      next.delete(w.id)
+      return next
+    }), 12000)
   }
 
   return (
@@ -112,6 +134,8 @@ export function WatchesPage() {
             + Add watch
           </button>
         </div>
+
+        <CoverageProbe />
 
         {state.phase === 'loading' && (
           <div className="probing">
@@ -140,7 +164,13 @@ export function WatchesPage() {
                     </div>
                     <div className="watchMeta">
                       {cadenceLabel(w)} · last run {relTime(w.lastRunAt)}
-                      {w.lastRunAt != null && (
+                      {w.lastRunStatus === 'failed' && (
+                        <span className="watchFailed" title={w.lastRunError ?? 'the last run failed'}>
+                          {' '}· failed
+                        </span>
+                      )}
+                      {w.lastRunStatus === 'skipped' && <span className="watchSkipped">{' '}· skipped</span>}
+                      {w.lastRunAt != null && w.lastRunStatus !== 'failed' && (
                         <>
                           {' '}· {w.lastRunMatches ?? 0} match{(w.lastRunMatches ?? 0) === 1 ? '' : 'es'}
                           {w.lastRunTokens != null && ` · ${Math.round(w.lastRunTokens / 1000)}k tok`}
@@ -149,6 +179,14 @@ export function WatchesPage() {
                     </div>
                     <div className="watchInstruction">{w.instruction}</div>
                   </div>
+                  <button
+                    className="watchEdit"
+                    title="Run this watch now"
+                    disabled={running.has(w.id)}
+                    onClick={() => void run(w)}
+                  >
+                    {running.has(w.id) ? 'Running…' : 'Run'}
+                  </button>
                   <button className="watchEdit" onClick={() => setModal({ editing: w })}>
                     Edit
                   </button>
@@ -501,5 +539,80 @@ function WatchDialog({
         </>
       )}
     </dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Coverage probe (.docs/watches-v2.md): the trust ritual — "is this channel
+// watched?" Type a scope and see which watches cover it and whether they are
+// healthy, so "will triage catch it?" becomes checkable in seconds.
+// ---------------------------------------------------------------------------
+function CoverageProbe() {
+  const [scope, setScope] = useState('')
+  const [result, setResult] = useState<{ scope: string; watches: CoverageWatch[] } | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  async function check() {
+    const s = scope.trim()
+    if (!s) return
+    setChecking(true)
+    try {
+      const res = await fetch(`/api/coverage?scope=${encodeURIComponent(s)}`)
+      const body = (await res.json()) as CoverageResponse
+      setResult(body.ok ? { scope: body.scope, watches: body.watches } : { scope: s, watches: [] })
+    } catch {
+      setResult({ scope: s, watches: [] })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  return (
+    <div className="coverageProbe">
+      <form
+        className="coverageForm"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void check()
+        }}
+      >
+        <input
+          className="coverageInput"
+          placeholder="Is a channel covered? e.g. #novus-px or @dm"
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
+        />
+        <button className="refresh" type="submit" disabled={checking || !scope.trim()}>
+          {checking ? 'Checking…' : 'Check coverage'}
+        </button>
+      </form>
+      {result && (
+        <div className={`coverageResult${result.watches.some((w) => w.enabled) ? ' covered' : ' uncovered'}`}>
+          {result.watches.filter((w) => w.enabled).length === 0 ? (
+            <>
+              <b>{result.scope}</b> is not covered — no enabled watch scans it.{' '}
+              {result.watches.length > 0 && `(${result.watches.length} disabled watch here.)`}
+            </>
+          ) : (
+            <>
+              <b>{result.scope}</b> is covered by{' '}
+              {result.watches
+                .filter((w) => w.enabled)
+                .map((w) => {
+                  const health =
+                    w.lastRunStatus === 'failed'
+                      ? ' (last run failed)'
+                      : w.lastRunStatus === 'ok'
+                        ? ` (caught up${w.cursor ? ` to ${new Date(w.cursor).toLocaleString()}` : ''})`
+                        : ' (not run yet)'
+                  return `“${w.title}”${health}`
+                })
+                .join(', ')}
+              .
+            </>
+          )}
+        </div>
+      )}
+    </div>
   )
 }

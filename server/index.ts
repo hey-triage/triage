@@ -52,8 +52,12 @@ import type {
   ToolEffect,
 } from '../shared/protocol.js'
 import type {
+  ActivityResponse,
+  CoverageResponse,
   InboxResponse,
   InboxSnapshot,
+  ItemEventsResponse,
+  ItemListResponse,
   ItemStateResponse,
   ManualItemInput,
   ManualItemResponse,
@@ -68,14 +72,23 @@ import type {
 } from '../shared/protocol.js'
 import { openSqliteStore } from '../core/store/sqlite.js'
 import type { Store, StoredSession, UpsertOutcome } from '../core/store/types.js'
-import { refreshInbox } from '../core/work/inbox.js'
-import { BASE } from '../core/work/score.js'
-import { canonicalizeRefs } from '../core/work/link.js'
+import { buildInbox } from '../core/work/inbox.js'
+import { BASE, rank } from '../core/work/score.js'
+import { canonicalizeRefs, linkByRefs } from '../core/work/link.js'
 import type { ItemStatus } from '../core/work/state.js'
-import { listAffiliatedRepos } from '../core/sources/github.js'
-import { draftWatch, previewWatch, runSlackScan, type WatchScanSpec } from '../core/sources/slack.js'
+import type { Provenance, WorkItem as CoreWorkItem } from '../core/work/types.js'
+import { fetchGitHub, fetchGitHubClosed, listAffiliatedRepos } from '../core/sources/github.js'
+import {
+  composeWatchRunPrompt,
+  draftWatch,
+  MAX_ROWS_PER_WATCH,
+  permalinkId,
+  previewWatch,
+  READ_ONLY_SLACK_TOOLS,
+  safeWhen,
+} from '../core/sources/slack.js'
 import { isDue } from '../core/watch/schedule.js'
-import type { NewWatch, Watch, WatchCadence } from '../core/watch/types.js'
+import type { NewWatch, Watch, WatchCadence, WatchRunStatus } from '../core/watch/types.js'
 import { clearState, pkgVersion, writeState } from './state.js'
 
 const PORT = Number(process.env.PORT || 5178)
@@ -474,12 +487,19 @@ function summarize(row: StoredSession): SessionSummary {
     permissionMode: row.permissionMode ?? undefined,
     pinned: row.pinned || undefined,
     branch: branches.get(row.id),
+    ...(row.kind === 'watch-run' ? { kind: 'watch-run' as const } : {}),
+    ...(row.watchId ? { watchId: row.watchId } : {}),
   }
 }
 
-/** Sorted like the store: pinned first, then most recently active. */
+/**
+ * The chat session list: pinned first, then most recently active. Watch-run
+ * sessions are real sessions but not chats — they are excluded here and reached
+ * through the watch that owns them (.docs/watches-v2.md).
+ */
 function summaries(): SessionSummary[] {
   return [...rows.values()]
+    .filter((r) => r.kind !== 'watch-run')
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
     .map(summarize)
 }
@@ -579,18 +599,22 @@ async function loadSessions() {
 // ---------------------------------------------------------------------------
 const INBOX_TTL_MS = 5 * 60_000
 const INBOX_KEEP_WARM_MS = 15 * 60_000
-const SLACK_TTL_MS = 30 * 60_000
 const SCHEDULER_TICK_MS = 60_000
-const INGESTED_RETENTION_MS = 30 * 86_400_000
+const GITHUB_TTL_MS = 5 * 60_000
+const GITHUB_LOOKBACK_MS = 14 * 86_400_000
+/** how many watch runs may execute at once (avoid the top-of-hour stampede) */
+const WATCH_CONCURRENCY = 2
+const WATCH_TIMEOUT_MS = 240_000
 
 const REPOS_KEY = 'github.repos'
-const SLACK_CACHE_KEY = 'slack.cache'
-
-type SlackCache = { scannedAt: number; items: WorkItem[] }
+const WATCHES_SEEDED_KEY = 'watches.seeded'
 
 let inboxCache: InboxSnapshot | null = null
 let inboxInFlight: Promise<InboxSnapshot> | null = null
-let slackScanInFlight: Promise<void> | null = null
+/** last GitHub source error, surfaced as an inbox notice until the next clean sync */
+let githubNotice: string | null = null
+let githubReconcileAt = 0
+let githubReconcileInFlight: Promise<void> | null = null
 
 async function connectedRepos(): Promise<string[]> {
   return (await store.config.get<string[]>(REPOS_KEY)) ?? []
@@ -605,98 +629,85 @@ function slackConnected(): boolean | null {
 }
 
 /**
- * Slack items for a sync: the cached scan, always (stale beats blocking — a
- * scan is a whole Claude session). Scanning itself is the scheduler's job;
- * this only reports how stale the cache is.
+ * GitHub reconciliation (.docs/watches-v2.md). GitHub is a deterministic source,
+ * not an LLM scan, so it stays plain code — but it now writes into the SAME
+ * durable store as everything else instead of being refetched-and-discarded
+ * every view. Open PRs/issues are upserted (idempotent, newer-wins); a tracked
+ * open item whose PR has since merged or closed is auto-done with actor:system
+ * and evidence — recorded and reversible, never a silent vanish. Throttled; a
+ * failure degrades to a notice and keeps whatever is already stored.
  */
-async function getSlackForSync(): Promise<{ items: WorkItem[]; notice?: string }> {
-  const connected = slackConnected()
-  if (connected === false) return { items: [] }
-  if (connected === null) return { items: [], notice: 'slack: waiting for connector probe — refresh shortly' }
+async function reconcileGitHub(force = false): Promise<void> {
+  if (githubReconcileInFlight) return githubReconcileInFlight
+  if (!force && Date.now() - githubReconcileAt < GITHUB_TTL_MS) return
+  githubReconcileInFlight = (async () => {
+    try {
+      const repos = await connectedRepos()
+      const now = Date.now()
+      const open = await fetchGitHub(repos, now)
+      for (const item of open) await store.items.upsert(item)
 
-  const cache = await store.config.get<SlackCache>(SLACK_CACHE_KEY)
-  if (cache && Date.now() - cache.scannedAt < SLACK_TTL_MS) return { items: cache.items }
-  void runDueScans()
-  if (cache) {
-    const mins = Math.round((Date.now() - cache.scannedAt) / 60_000)
-    return { items: cache.items, notice: `slack: showing scan from ${mins}m ago — rescanning in background` }
-  }
-  return { items: [], notice: 'slack: scanning in background (takes a minute) — refresh shortly' }
+      // Source-side completion: any tracked open/snoozed github item whose PR is
+      // now merged/closed → done(system) with evidence.
+      const closed = await fetchGitHubClosed(repos, new Date(now - GITHUB_LOOKBACK_MS).toISOString())
+      if (closed.length > 0) {
+        const byId = new Map(closed.map((c) => [c.id, c]))
+        for (const it of await store.items.listAll()) {
+          if (it.source !== 'github') continue
+          if (it.status !== 'open' && it.status !== 'snoozed') continue
+          const c = byId.get(it.id)
+          if (c) {
+            await store.items.transition(it.id, {
+              status: 'done',
+              actor: 'system',
+              detail: { reason: c.state === 'merged' ? 'PR merged' : 'PR closed', evidence: c.url },
+            })
+          }
+        }
+      }
+      githubNotice = null
+      githubReconcileAt = Date.now()
+    } catch (err) {
+      githubNotice = `github: ${err instanceof Error ? err.message : String(err)}`
+    } finally {
+      githubReconcileInFlight = null
+    }
+  })()
+  return githubReconcileInFlight
 }
 
 /**
- * The due-checker (.docs/watches.md): no cron, no fire-time queue. Each tick
- * asks "what is due?" — built-in Slack rules (cache older than its TTL) and
- * enabled watches per their cadence — and runs ONE composed scan for the lot.
- * Missed runs are simply due on the first tick after wake, once; scans are
- * cursor-based, so the coalesced run covers the whole gap losslessly.
+ * Rebuild the open-inbox snapshot from the durable store: wake elapsed snoozes,
+ * reconcile GitHub (throttled), then rank + link the open items. There is no
+ * user-state overlay any more — status lives on each row, so this is a pure
+ * fold over what the store already holds.
  */
-async function runDueScans(): Promise<void> {
-  if (slackScanInFlight) return slackScanInFlight
-  if (slackConnected() !== true) return
-  const now = new Date()
-  const watches = await store.watches.list()
-  const due = watches.filter((w) => isDue(w, now))
-  const cache = await store.config.get<SlackCache>(SLACK_CACHE_KEY)
-  const builtins = !cache || Date.now() - cache.scannedAt >= SLACK_TTL_MS
-  if (!builtins && due.length === 0) return
-
-  slackScanInFlight = (async () => {
-    try {
-      const specs: WatchScanSpec[] = due.map((w) => ({
-        id: w.id,
-        scope: w.scope,
-        instruction: w.instruction,
-        cursor: w.cursor,
-        createsItems: w.createsItems,
-      }))
-      const outcome = await runSlackScan({ builtins, watches: specs })
-      if (builtins) {
-        await store.config.set(SLACK_CACHE_KEY, {
-          scannedAt: Date.now(),
-          items: outcome.builtinItems,
-        } satisfies SlackCache)
-      }
-      // Idempotent upsert: id-keyed, update-only-if-newer, state-preserving.
-      for (const item of outcome.watchItems) await store.items.upsert(item)
-      for (const w of due) {
-        await store.watches.recordRun(w.id, {
-          cursor: outcome.startedAt, // the scan covered everything before it started
-          lastRunAt: Date.now(),
-          lastRunTokens: outcome.tokens,
-          lastRunMatches: outcome.matchesByWatch.get(w.id) ?? 0,
-        })
-      }
-      await store.items.prune(Date.now() - INGESTED_RETENTION_MS)
-      inboxCache = null // next view rebuilds the snapshot with the fresh scan
-      await syncInbox()
-    } catch (err) {
-      console.error('[slack] scan failed:', err)
-    } finally {
-      slackScanInFlight = null
-    }
-  })()
-  return slackScanInFlight
-}
-
-setInterval(() => {
-  runDueScans().catch((err) => console.error('[watches] tick failed:', err))
-}, SCHEDULER_TICK_MS).unref()
-
 function syncInbox(): Promise<InboxSnapshot> {
   if (inboxInFlight) return inboxInFlight
   inboxInFlight = (async () => {
     try {
-      const [repos, slack, ingested, manual, states] = await Promise.all([
-        connectedRepos(),
-        getSlackForSync(),
-        store.items.list(),
-        store.manual.list(),
-        store.itemState.all(),
-      ])
-      const { items, notices, rearmed } = await refreshInbox({ repos, slack, ingested, manual, states })
-      if (rearmed.length > 0) await store.itemState.reopen(rearmed, Date.now())
-      inboxCache = { syncedAt: Date.now(), items, notices }
+      const now = Date.now()
+      await store.items.wakeSnoozed(now)
+      await reconcileGitHub()
+      const items = await store.items.list('open')
+      const notices: string[] = []
+      if (githubNotice) notices.push(githubNotice)
+      if (slackConnected() === false) {
+        notices.push('slack: the claude.ai Slack connector is disconnected — reconnect it for Slack items to appear')
+      } else if (slackConnected() === true) {
+        // Honest empty state: surface any watch that failed or has gone overdue,
+        // so "nothing here" is never confused with "the scan never looked".
+        for (const w of await store.watches.list()) {
+          if (!w.enabled) continue
+          if (w.lastRunStatus === 'failed') {
+            notices.push(`watch “${w.title}” last run failed${w.lastRunError ? `: ${w.lastRunError}` : ''}`)
+          } else if (overdueWatch(w, now)) {
+            notices.push(`watch “${w.title}” hasn’t completed a run recently — items from it may be missing`)
+          }
+        }
+      }
+      const { items: ranked } = buildInbox({ items, notices, now })
+      inboxCache = { syncedAt: now, items: ranked, notices }
       void store.inbox.save(inboxCache)
       return inboxCache
     } finally {
@@ -705,6 +716,330 @@ function syncInbox(): Promise<InboxSnapshot> {
   })()
   return inboxInFlight
 }
+
+/** Ranked items for a status tab other than the open inbox (read-only, no scan). */
+async function listItemsByStatus(status: ItemStatus, now = Date.now()): Promise<InboxSnapshot['items']> {
+  const items = await store.items.list(status)
+  return linkByRefs(rank(items, now))
+}
+
+// ---------------------------------------------------------------------------
+// Watch runs (.docs/watches-v2.md): one run per watch, each a real session so
+// its transcript is the run's receipt. A small queue caps concurrency and
+// jitters starts so the top of the hour doesn't stampede; a per-watch in-flight
+// guard turns "already running" into a recorded 'skipped', never a silent no-op.
+// The output contract is TOOL CALLS: the run gets a permalink-shaped
+// upsert_work_item that stamps identity, kind, and provenance, so a work item
+// exists because a tool call created it — no JSON parsing, no cursor-advance-on-
+// garbled-output bug. Cursors advance only on a successful run.
+// ---------------------------------------------------------------------------
+const runQueue: string[] = []
+const runningWatches = new Set<string>()
+let activeRuns = 0
+
+function sumTokens(usage: Record<string, unknown> | undefined): number {
+  let tokens = 0
+  const u = usage ?? {}
+  for (const k of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']) {
+    const v = u[k]
+    if (typeof v === 'number') tokens += v
+  }
+  return tokens
+}
+
+/** A watch is overdue if no run has completed within a grace window past its cadence. */
+function overdueWatch(w: Watch, now: number): boolean {
+  const grace = w.cadence === 'hourly' ? 2 * 3_600_000 : w.cadence === 'daily' ? 26 * 3_600_000 : 8 * 86_400_000
+  return now - (w.lastRunAt ?? w.createdAt) > grace
+}
+
+async function runDueWatches(opts: { force?: boolean } = {}): Promise<void> {
+  if (slackConnected() !== true) return
+  const now = new Date()
+  for (const w of await store.watches.list()) {
+    if (!w.enabled) continue
+    if (!opts.force && !isDue(w, now)) continue
+    if (runningWatches.has(w.id)) {
+      // a previous run is still going — record the skip rather than swallow it
+      await store.watches.recordRun(w.id, {
+        lastRunAt: Date.now(),
+        lastRunTokens: 0,
+        lastRunMatches: 0,
+        status: 'skipped',
+        error: 'previous run still in progress',
+      })
+      continue
+    }
+    if (!runQueue.includes(w.id)) runQueue.push(w.id)
+  }
+  pumpRunQueue()
+}
+
+/**
+ * Queue a single watch to run now (the per-watch "Run" button — a force run,
+ * independent of cadence). Respects the in-flight guard so a double-click can't
+ * start two runs of the same watch. Returns whether it queued or was already
+ * running. Scheduled cadence runs continue independently via runDueWatches.
+ */
+function enqueueWatch(id: string): 'queued' | 'running' {
+  if (runningWatches.has(id)) return 'running'
+  if (!runQueue.includes(id)) runQueue.push(id)
+  pumpRunQueue()
+  return 'queued'
+}
+
+function pumpRunQueue(): void {
+  while (activeRuns < WATCH_CONCURRENCY && runQueue.length > 0) {
+    const id = runQueue.shift()!
+    if (runningWatches.has(id)) continue
+    runningWatches.add(id)
+    activeRuns += 1
+    const jitter = Math.floor(Math.random() * 3_000)
+    setTimeout(() => {
+      runWatch(id)
+        .catch((err) => console.error('[watch] run failed:', err))
+        .finally(() => {
+          activeRuns -= 1
+          runningWatches.delete(id)
+          pumpRunQueue()
+        })
+    }, jitter)
+  }
+}
+
+/**
+ * The per-run ingestion tool. Upsert-only, permalink-shaped: the scanner passes
+ * what it can see (permalink, title, why, timestamp, refs); the server stamps
+ * identity (slack:<tail>), kind, channel, and provenance (this watch + run). So
+ * the model only ADDS candidates and annotates why — lifecycle stays in code.
+ */
+function makeScanMcp(watch: Watch, runId: string, onUpsert: () => void) {
+  let count = 0
+  return createSdkMcpServer({
+    name: 'triage',
+    version: VERSION,
+    tools: [
+      tool(
+        'upsert_work_item',
+        'Record ONE matching Slack thread as a work item. Call once per matching thread; the server assigns its id, kind, and channel.',
+        {
+          permalink: z.string().describe('the Slack message permalink'),
+          title: z.string().describe('a one-line summary of the thread'),
+          from: z.string().optional().describe('display name of the author/asker'),
+          lastActivity: z.string().describe('ISO 8601 timestamp of the newest message in the thread'),
+          why: z.string().describe('one line: exactly what matched the instruction'),
+          refs: z.array(z.string()).optional().describe('GitHub PR/issue URLs or Linear keys in the content'),
+        },
+        async (args) => {
+          try {
+            // Cost guard, enforced here not just in the prompt.
+            if (count >= MAX_ROWS_PER_WATCH) {
+              return errResult(`row cap reached (${MAX_ROWS_PER_WATCH}) — stop calling this tool`)
+            }
+            count += 1
+            const now = Date.now()
+            const when = safeWhen(args.lastActivity, now)
+            const refs = canonicalizeRefs(args.refs)
+            const item: CoreWorkItem = {
+              id: permalinkId(args.permalink),
+              source: 'slack',
+              kind: watch.createsItems ? 'watch-hit' : 'fyi',
+              title: args.title,
+              url: args.permalink,
+              repo: watch.scope,
+              author: args.from ?? '',
+              peopleWaiting: 0,
+              createdAt: when,
+              updatedAt: when,
+              ...(refs ? { refs } : {}),
+            }
+            const prov: Provenance = { watchId: watch.id, runId, at: now, why: args.why }
+            await store.items.upsert(item, prov)
+            onUpsert()
+            inboxCache = null
+            return okResult('ok: recorded')
+          } catch (err) {
+            return errResult(err instanceof Error ? err.message : String(err))
+          }
+        },
+      ),
+    ],
+  })
+}
+
+/**
+ * Run one watch to completion as a headless session. Persists the transcript to
+ * the event log (so it is observable like any session), advances the cursor only
+ * on success, and records the run's status/tokens/matches on the watch row.
+ */
+async function runWatch(watchId: string): Promise<void> {
+  const watch = await store.watches.get(watchId)
+  if (!watch) return
+  const startedIso = new Date().toISOString()
+  const session = await store.sessions.create({
+    id: randomUUID(),
+    title: `Watch · ${watch.title}`,
+    cwd: os.homedir(),
+    kind: 'watch-run',
+    watchId: watch.id,
+  })
+  rows.set(session.id, session)
+
+  let seq = 0
+  const emit = (event: SessionEvent, persist = true) => {
+    if (persist) {
+      seq += 1
+      store.events.append(session.id, seq, event).catch(() => {})
+    }
+    broadcast({ type: 'session_event', sessionId: session.id, event })
+  }
+
+  let matches = 0
+  let tokens = 0
+  let status: WatchRunStatus = 'failed'
+  let error: string | undefined
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), WATCH_TIMEOUT_MS)
+  const scanMcp = makeScanMcp(watch, session.id, () => {
+    matches += 1
+  })
+
+  try {
+    const q = query({
+      prompt: composeWatchRunPrompt({ scope: watch.scope, instruction: watch.instruction, cursor: watch.cursor }),
+      options: {
+        cwd: os.homedir(),
+        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        settingSources: ['user'],
+        allowedTools: [...READ_ONLY_SLACK_TOOLS, 'mcp__triage__upsert_work_item'],
+        mcpServers: { triage: scanMcp },
+        abortController: abort,
+      },
+    })
+    let sawResult = false
+    let resultText = ''
+    for await (const msg of q) {
+      const m = msg as unknown as SdkMessage & { result?: string; usage?: Record<string, unknown> }
+      if (m.type === 'system' && m.subtype === 'init' && m.session_id) {
+        session.sdkSessionId = m.session_id
+        store.sessions.setSdkSessionId(session.id, m.session_id).catch(() => {})
+      }
+      emit({ kind: 'sdk', message: m as SdkMessage }, m.type !== 'stream_event')
+      if (m.type === 'result') {
+        sawResult = true
+        resultText = typeof m.result === 'string' ? m.result : ''
+        tokens = sumTokens(m.usage)
+      }
+    }
+    if (resultText.includes('no-slack-tools')) {
+      throw new Error('no Slack tools — enable Slack for Claude at claude.ai/settings/connectors')
+    }
+    if (!sawResult) throw new Error('scan ended without a result')
+    status = 'ok'
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err)
+    emit({ kind: 'error', message: error })
+  } finally {
+    clearTimeout(timer)
+    await store.watches.recordRun(watch.id, {
+      // cursor advances ONLY on success — a failed/timed-out run must not skip its window
+      ...(status === 'ok' ? { cursor: startedIso } : {}),
+      lastRunAt: Date.now(),
+      lastRunTokens: tokens,
+      lastRunMatches: matches,
+      status,
+      sessionId: session.id,
+      error,
+    })
+    // the run's own receipt, on its session row — powers the Activity view
+    session.runStatus = status
+    session.runMatches = matches
+    session.runTokens = tokens
+    session.runError = error
+    await store.sessions.recordWatchRun(session.id, { status, matches, tokens, error })
+    if (status === 'ok') {
+      inboxCache = null
+      void syncInbox()
+    }
+    broadcastSessionList()
+  }
+}
+
+/**
+ * Pre-installed watch templates (.docs/watches-v2.md): the old built-in Slack
+ * rules, shipped as data and seeded as editable copies on first run. A user can
+ * disable, edit, or duplicate them; a `templateId` marks the origin.
+ */
+const WATCH_TEMPLATES: Array<
+  Pick<Watch, 'title' | 'scope' | 'instruction' | 'cadence' | 'createsItems'> & { templateId: string }
+> = [
+  {
+    templateId: 'unread-dms',
+    title: 'Unread DMs',
+    scope: '@dm',
+    instruction: 'Find my unread Slack direct messages and triage each unanswered one into a work item.',
+    cadence: 'hourly',
+    createsItems: true,
+  },
+  {
+    templateId: 'mentions',
+    title: 'Mentions',
+    scope: '@mentions',
+    instruction: 'Find Slack messages where I am mentioned or tagged and my reply is still awaited, and triage each into a work item.',
+    cadence: 'hourly',
+    createsItems: true,
+  },
+]
+
+/**
+ * Install any built-in template the user has never been offered — tracked per
+ * template id, not by a single "seeded" flag. So the built-ins appear even when
+ * the user already has custom watches (the old "seed only if empty" rule left
+ * DBs that predated seeding with no built-ins at all), a template already
+ * present is never duplicated, and one the user deleted is never re-added.
+ */
+async function seedWatchTemplates(): Promise<void> {
+  // The key used to hold a boolean; it now holds the list of seeded template ids.
+  // A legacy boolean coerces to "none seeded yet" so the built-ins get installed.
+  const raw = await store.config.get<unknown>(WATCHES_SEEDED_KEY)
+  const seeded = new Set<string>(Array.isArray(raw) ? (raw as string[]) : [])
+  const watches = await store.watches.list()
+  const now = Date.now()
+  for (const t of WATCH_TEMPLATES) {
+    if (seeded.has(t.templateId)) continue
+    // Already present (e.g. seeded by the older flag-based path)? Record, don't duplicate.
+    if (!watches.some((w) => w.templateId === t.templateId)) {
+      await store.watches.create({
+        id: randomUUID(),
+        source: 'slack',
+        title: t.title,
+        scope: t.scope,
+        instruction: t.instruction,
+        cadence: t.cadence,
+        createsItems: t.createsItems,
+        enabled: true,
+        templateId: t.templateId,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+    seeded.add(t.templateId)
+  }
+  await store.config.set(WATCHES_SEEDED_KEY, [...seeded])
+}
+
+// The minute tick (.docs/watches.md): due watches run, elapsed snoozes wake. No
+// cron — the server is the long-running process; missed runs are simply due on
+// the first tick after wake.
+setInterval(() => {
+  runDueWatches().catch((err) => console.error('[watches] tick failed:', err))
+  store.items
+    .wakeSnoozed(Date.now())
+    .then((woken) => {
+      if (woken.length > 0) inboxCache = null
+    })
+    .catch((err) => console.error('[snooze] wake failed:', err))
+}, SCHEDULER_TICK_MS).unref()
 
 // The repo picker's "available" list; slow-ish (paginated), so cached.
 let affiliatedCache: { at: number; repos: string[] } | null = null
@@ -864,10 +1199,12 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
 // ---------------------------------------------------------------------------
 
 const CADENCES = new Set<WatchCadence>(['hourly', 'daily', 'weekly'])
-const ITEM_STATUSES = new Set<ItemStatus>(['open', 'done', 'snoozed', 'dismissed'])
+const ITEM_STATUSES = new Set<ItemStatus>(['open', 'done', 'snoozed', 'archived'])
 const VALID_KINDS = new Set(Object.keys(BASE))
 const VALID_SOURCES = new Set(['github', 'slack', 'linear'])
+// upsert accepts only scanner sources; state/resolve accept manual items too.
 const ITEM_ID_RE = /^(github|slack|linear):\S+$/
+const ANY_ITEM_ID_RE = /^(github|slack|linear|manual):\S+$/
 
 type WatchPatch = Partial<NewWatch> & { enabled?: boolean }
 
@@ -998,34 +1335,34 @@ async function listItemsOp(filter: { source?: string; kind?: string } = {}): Pro
 async function upsertItemOp(raw: unknown): Promise<UpsertOutcome> {
   const parsed = workItemFrom(raw)
   if ('error' in parsed) throw new Error(parsed.error)
-  const outcome = await store.items.upsert(parsed.item)
+  const { outcome } = await store.items.upsert(parsed.item)
   if (outcome !== 'unchanged') inboxCache = null
   return outcome
 }
 
 async function resolveItemOp(rawId: unknown): Promise<void> {
   const id = typeof rawId === 'string' ? rawId : ''
-  if (!ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
-  await store.itemState.set({ itemId: id, status: 'done', statusAt: Date.now(), pinned: false })
+  if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
+  await store.items.transition(id, { status: 'done', actor: 'agent' })
   inboxCache = null
 }
 
 async function createManualOp(raw: unknown): Promise<string> {
   const input = await manualItemFrom(raw)
   const id = `manual:${randomUUID()}`
-  await store.manual.create({ id, ...input })
+  await store.items.createManual({ id, ...input })
   inboxCache = null
   return id
 }
 
-// Edits target manual (user-authored) items only. Ingested items are
+// Edits target manual (user-authored) items only. Scanned items are
 // upsert-newer-wins, so a free-form edit would be clobbered by the next scan —
 // reject those with a clear message rather than silently no-op'ing.
 async function editManualOp(id: string, raw: unknown): Promise<void> {
   if (!id || !id.startsWith('manual:'))
     throw new Error('edit_work_item only edits manual items (id must start with "manual:")')
   const patch = await manualItemFrom(raw, { partial: true })
-  await store.manual.update(id, patch)
+  await store.items.updateManual(id, patch)
   inboxCache = null
 }
 
@@ -1286,8 +1623,15 @@ const server = http.createServer(async (req, res) => {
       } else if (req.method === 'DELETE') {
         const id = url.searchParams.get('id')
         if (id) {
+          // Never hard-delete the items: archive this watch's open/snoozed items
+          // with a recorded reason, then drop the watch row (.docs/watches-v2.md).
+          for (const it of await store.items.listAll()) {
+            const fromWatch = it.watchId === id || (it.foundBy ?? []).some((p) => p.watchId === id)
+            if (fromWatch && (it.status === 'open' || it.status === 'snoozed')) {
+              await store.items.transition(it.id, { status: 'archived', actor: 'system', detail: { reason: 'watch deleted' } })
+            }
+          }
           await store.watches.remove(id)
-          await store.items.removeByWatch(id)
           inboxCache = null
         }
       }
@@ -1339,16 +1683,152 @@ const server = http.createServer(async (req, res) => {
       const parsed = (await readJsonBody(req)) as { id?: unknown; status?: unknown; snoozeUntil?: unknown } | null
       const id = typeof parsed?.id === 'string' ? parsed.id : ''
       const statusV = parsed?.status as ItemStatus
-      if (!id || !ITEM_STATUSES.has(statusV)) throw new Error('need an item id and a status (open|done|snoozed|dismissed)')
+      if (!ANY_ITEM_ID_RE.test(id) || !ITEM_STATUSES.has(statusV)) {
+        throw new Error('need an item id and a status (open|done|snoozed|archived)')
+      }
       const snoozeUntil = typeof parsed?.snoozeUntil === 'number' ? parsed.snoozeUntil : undefined
       if (statusV === 'snoozed' && !snoozeUntil) throw new Error('snoozed needs snoozeUntil (epoch ms)')
-      await store.itemState.set({ itemId: id, status: statusV, statusAt: Date.now(), snoozeUntil, pinned: false })
-      inboxCache = null // the overlay changed — next view recomputes
+      // A recorded transition on the durable item — never a delete (.docs/watches-v2.md).
+      await store.items.transition(id, { status: statusV, actor: 'user', snoozeUntil })
+      inboxCache = null
       body = { ok: true }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // Ranked items in a status tab other than the open inbox (done/snoozed/archived).
+  if (url.pathname === '/api/items' && req.method === 'GET') {
+    let body: ItemListResponse
+    try {
+      const s = url.searchParams.get('status')
+      const status: ItemStatus = ITEM_STATUSES.has(s as ItemStatus) ? (s as ItemStatus) : 'open'
+      body = { ok: true, items: await listItemsByStatus(status) }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // The append-only transition log for one item (its timeline).
+  if (url.pathname === '/api/items/events' && req.method === 'GET') {
+    let body: ItemEventsResponse
+    try {
+      const id = url.searchParams.get('id') ?? ''
+      if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need an item id')
+      body = { ok: true, events: await store.items.events(id) }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // Activity: watch runs (each a session) as a browsable history, newest first.
+  if (url.pathname === '/api/activity' && req.method === 'GET') {
+    let body: ActivityResponse
+    try {
+      const watchId = url.searchParams.get('watchId')
+      const titles = new Map((await store.watches.list()).map((w) => [w.id, w.title]))
+      const runs = [...rows.values()]
+        .filter((r) => r.kind === 'watch-run' && (!watchId || r.watchId === watchId))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 200)
+        .map((r) => ({
+          sessionId: r.id,
+          ...(r.watchId ? { watchId: r.watchId } : {}),
+          watchTitle: (r.watchId && titles.get(r.watchId)) || r.title.replace(/^Watch · /, ''),
+          status: r.runStatus,
+          matches: r.runMatches,
+          tokens: r.runTokens,
+          startedAt: r.createdAt,
+          finishedAt: r.updatedAt,
+          ...(r.runError ? { error: r.runError } : {}),
+        }))
+      body = { ok: true, runs }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // The items one run produced (provenance runId === sessionId).
+  if (url.pathname === '/api/activity/items' && req.method === 'GET') {
+    let body: ItemListResponse
+    try {
+      const runId = url.searchParams.get('runId') ?? ''
+      const all = await store.items.listAll()
+      const mine = all.filter((it) => (it.foundBy ?? []).some((p) => p.runId === runId))
+      body = { ok: true, items: linkByRefs(rank(mine)) }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // Coverage probe: which watches cover a given scope, and are they healthy?
+  if (url.pathname === '/api/coverage' && req.method === 'GET') {
+    let body: CoverageResponse
+    try {
+      const scope = (url.searchParams.get('scope') ?? '').trim()
+      if (!scope) throw new Error('need a scope, e.g. "#novus-px"')
+      const norm = scope.toLowerCase()
+      const watches = (await store.watches.list())
+        .filter((w) => w.scope.toLowerCase() === norm)
+        .map((w) => ({
+          id: w.id,
+          title: w.title,
+          scope: w.scope,
+          enabled: w.enabled,
+          lastRunStatus: w.lastRunStatus,
+          lastRunAt: w.lastRunAt,
+          cursor: w.cursor,
+        }))
+      body = { ok: true, scope, watches }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // Force-run one watch now (the per-watch Run button). The run appears under
+  // Activity; scheduled cadence runs continue on their own.
+  if (url.pathname === '/api/watches/run' && req.method === 'POST') {
+    let body: ItemStateResponse
+    try {
+      const id = url.searchParams.get('id') ?? ''
+      const w = await store.watches.get(id)
+      if (!w) throw new Error('unknown watch id')
+      if (slackConnected() !== true) throw new Error('the claude.ai Slack connector is not connected')
+      enqueueWatch(id)
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // Manual "scan now": force every due (and overdue) watch to run and refresh GitHub.
+  if (url.pathname === '/api/scan' && req.method === 'POST') {
+    let body: ItemStateResponse
+    try {
+      void reconcileGitHub(true).then(() => {
+        inboxCache = null
+        void syncInbox()
+      })
+      void runDueWatches({ force: true })
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
     return
   }
@@ -1393,9 +1873,11 @@ const server = http.createServer(async (req, res) => {
         if (!id) throw new Error('need a manual item id')
         await editManualOp(id, await readJsonBody(req))
       } else if (req.method === 'DELETE') {
+        // Never hard-delete (.docs/watches-v2.md): "delete" archives the item,
+        // recorded, so it survives in the Archived tab.
         const id = url.searchParams.get('id')
         if (id) {
-          await store.manual.remove(id)
+          await store.items.transition(id, { status: 'archived', actor: 'user', detail: { reason: 'deleted by user' } })
           inboxCache = null
         }
       } else {
@@ -1422,7 +1904,7 @@ const server = http.createServer(async (req, res) => {
       if (raw === null || raw === 0 || raw === undefined) priority = null
       else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 4) priority = raw
       else throw new Error('priority must be 1–4, or null/0 to clear')
-      await store.itemState.setPriority(id, priority)
+      await store.items.setPriority(id, priority)
       inboxCache = null
       body = { ok: true }
     } catch (err) {
@@ -1692,6 +2174,7 @@ wss.on('connection', (ws) => {
 })
 
 await loadSessions()
+await seedWatchTemplates() // pre-install the built-in watch templates on first run
 inboxCache = await store.inbox.load() // last snapshot, so first paint is instant
 // Probe connectors in the background at startup: the Slack source gates on the
 // result, and the Connectors page becomes instant.

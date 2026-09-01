@@ -17,7 +17,7 @@ import { canonicalizeRefs } from '../work/link.js'
 import type { WorkItem } from '../work/types.js'
 import type { WatchDraft, WatchPreviewRow } from '../watch/types.js'
 
-const READ_ONLY_SLACK_TOOLS = [
+export const READ_ONLY_SLACK_TOOLS = [
   'ToolSearch',
   'mcp__claude_ai_Slack__slack_search_public_and_private',
   'mcp__claude_ai_Slack__slack_read_thread',
@@ -71,6 +71,36 @@ export function composeScanPrompt(builtins: boolean, watches: WatchScanSpec[]): 
     ...watches.map(watchSection),
     OUTPUT_CONTRACT,
   ].join('\n\n')
+}
+
+// ---------------------------------------------------------------------------
+// Per-watch run prompt (.docs/watches-v2.md) — one watch, one session. The
+// output contract is TOOL CALLS, not JSON: for each match the scanner calls
+// upsert_work_item, so a work item exists because a tool call created it (no
+// parse-failure-reads-as-empty bug), and the run transcript is the receipt.
+// The server injects a permalink-shaped upsert tool and stamps identity,
+// kind, provenance, and the channel itself — the model only adds candidates.
+// ---------------------------------------------------------------------------
+
+const SLACK_MCP_TOOLS = READ_ONLY_SLACK_TOOLS.filter((t) => t.startsWith('mcp__'))
+
+export function composeWatchRunPrompt(w: { scope: string; instruction: string; cursor?: string }): string {
+  const window = w.cursor ? `messages newer than ${w.cursor}` : `messages from the last 7 days`
+  return `You are a triage scanner for ONE watch. Your Slack tools are deferred: first call ToolSearch to load ${SLACK_MCP_TOOLS.join(', ')}, then use them (read-only) to perform the scan.
+
+Scan ${w.scope} ONLY, ${window}. Judge each candidate on its title and first ~200 characters; read a full thread only when the snippet is not enough to decide. Stay strictly inside ${w.scope} — never scan any other channel or DM.
+
+Match threads where: ${w.instruction}
+
+For EACH matching thread, call the upsert_work_item tool exactly once, with:
+- permalink: the Slack message permalink (required)
+- title: a one-line summary of the thread
+- from: the display name of the author/asker
+- lastActivity: ISO 8601 timestamp of the newest message in the thread
+- why: one line stating exactly what matched the instruction
+- refs: an array of any GitHub PR/issue URLs or Linear issue keys visible in the matched content (omit when there are none)
+
+Call upsert_work_item at most ${MAX_ROWS_PER_WATCH} times, once per matching thread. It is the ONLY write tool you may use. If nothing matches, do not call it at all — just finish. If you cannot access any Slack tools at all, reply with exactly no-slack-tools and stop.`
 }
 
 // ---------------------------------------------------------------------------
@@ -145,12 +175,12 @@ export function parseScanRows(
 // the permalink tail. Same scheme for every scanner, external ones included.
 // ---------------------------------------------------------------------------
 
-function permalinkId(permalink: string): string {
+export function permalinkId(permalink: string): string {
   const tail = permalink.replace(/^https?:\/\/[^/]+\/archives\//, '').replace(/[?#].*$/, '')
   return `slack:${tail}`
 }
 
-function safeWhen(iso: string, now: number): string {
+export function safeWhen(iso: string, now: number): string {
   return Number.isFinite(Date.parse(iso)) ? iso : new Date(now).toISOString()
 }
 

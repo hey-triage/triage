@@ -19,10 +19,13 @@ import type {
   PermissionMode,
   Project,
   SessionEvent,
+  SessionKind,
 } from '../../shared/protocol.js'
-import type { WorkItem } from '../work/types.js'
-import type { ItemState } from '../work/state.js'
-import type { NewWatch, Watch, WatchRunResult } from '../watch/types.js'
+
+export type { SessionKind }
+import type { Provenance, WorkItem } from '../work/types.js'
+import type { ItemEvent, ItemStatus, StatusChange } from '../work/state.js'
+import type { NewWatch, Watch, WatchRunResult, WatchRunStatus } from '../watch/types.js'
 
 export type StoredSession = {
   id: string
@@ -38,8 +41,25 @@ export type StoredSession = {
   permissionMode: PermissionMode | null
   /** Pinned sessions sort above the rest, whatever their last activity. */
   pinned: boolean
+  /** chat (default) or watch-run. */
+  kind: SessionKind
+  /** the watch this run belongs to, for watch-run sessions. */
+  watchId: string | null
+  /** watch-run outcome, recorded when the run finishes (else undefined). */
+  runStatus?: WatchRunStatus
+  runMatches?: number
+  runTokens?: number
+  runError?: string
   createdAt: number
   updatedAt: number
+}
+
+/** The outcome a finished watch-run session records on its own row. */
+export type WatchRunRecord = {
+  status: WatchRunStatus
+  matches: number
+  tokens: number
+  error?: string
 }
 
 export type NewSession = {
@@ -49,6 +69,8 @@ export type NewSession = {
   model?: string | null
   effort?: EffortLevel | null
   permissionMode?: PermissionMode | null
+  kind?: SessionKind
+  watchId?: string | null
 }
 
 export type StoredEvent = {
@@ -75,6 +97,8 @@ export interface SessionStore {
   remove(id: string): Promise<void>
   /** Bump updatedAt (a session saw activity). */
   touch(id: string): Promise<void>
+  /** Record a watch-run session's outcome on its row (for the Activity view). */
+  recordWatchRun(id: string, run: WatchRunRecord): Promise<void>
 }
 
 export interface EventStore {
@@ -117,30 +141,10 @@ export interface WatchStore {
 
 export type UpsertOutcome = 'inserted' | 'updated' | 'unchanged'
 
-/**
- * Ingested work items (watch hits and external-scanner upserts). Unlike the
- * snapshot, these persist: scans are cursor-incremental, so earlier hits are
- * never re-derivable. The idempotent upsert rule lives in the adapter —
- * correctness in the contract, not the prompt.
- */
-export interface ItemStore {
-  /** id exists → update only if the incoming updatedAt is newer; new → insert. */
-  upsert(item: WorkItem): Promise<UpsertOutcome>
-  list(): Promise<WorkItem[]>
-  /** Drop items whose source updatedAt is older than `cutoff` (epoch ms). */
-  prune(cutoff: number): Promise<void>
-  removeByWatch(watchId: string): Promise<void>
-}
-
-/** User-state overlay — the user's, never written by ingestion. */
-export interface ItemStateStore {
-  all(): Promise<Map<string, ItemState>>
-  /** Set status/snooze; leaves any priority override on the row untouched. */
-  set(state: ItemState): Promise<void>
-  /** Set (or clear, with null) the priority override; leaves status untouched. */
-  setPriority(itemId: string, priority: number | null): Promise<void>
-  /** The re-arm rule's write-back: these items are open again. */
-  reopen(itemIds: string[], now: number): Promise<void>
+export type UpsertResult = {
+  outcome: UpsertOutcome
+  /** the reopen rule fired: a done item returned to open on newer source activity */
+  reopened: boolean
 }
 
 export type NewManualItem = {
@@ -153,16 +157,40 @@ export type NewManualItem = {
 }
 
 /**
- * User-authored work items (added by hand in the inbox). Their own table, not
- * `ingested_items`: they are edited in place and must survive pruning, which
- * the ingestion table's upsert-newer-wins + prune rules would fight.
+ * The durable inbox (.docs/watches-v2.md): one row per work item, keyed by its
+ * canonical id, for every source — built-ins, watch hits, GitHub, and manual
+ * to-dos. Never hard-deleted, never auto-expired; an item leaves the open inbox
+ * only by a recorded transition (done/snoozed/archived) or a wake. The
+ * idempotent upsert rule and the deterministic reopen rule live in the adapter
+ * — correctness in the contract, not the prompt. Every transition is appended
+ * to the item's own event log.
  */
-export interface ManualItemStore {
-  /** As WorkItems, ready to merge into the inbox (source/kind 'manual'). */
-  list(): Promise<WorkItem[]>
-  create(item: NewManualItem): Promise<void>
-  update(id: string, patch: Partial<Omit<NewManualItem, 'id'>>): Promise<void>
-  remove(id: string): Promise<void>
+export interface WorkItemStore {
+  /**
+   * Insert or refresh one scanned/source item. Id exists → update payload only
+   * if the incoming source time is newer (re-ranking is correct); state columns
+   * are never touched by ingestion, except the reopen rule (a done item with
+   * newer source activity returns to open). `provenance` is appended to the
+   * item's foundBy list. New id → insert with a 'created' event.
+   */
+  upsert(item: WorkItem, provenance?: Provenance): Promise<UpsertResult>
+  /** A user-authored to-do (source/kind 'manual'); returns the created id. */
+  createManual(item: NewManualItem): Promise<string>
+  updateManual(id: string, patch: Partial<Omit<NewManualItem, 'id'>>): Promise<void>
+  get(id: string): Promise<WorkItem | null>
+  /** Items in one status (default 'open'), newest source activity first. */
+  list(status?: ItemStatus): Promise<WorkItem[]>
+  /** Every item regardless of status — for reconciliation and counts. */
+  listAll(): Promise<WorkItem[]>
+  /** Record a status transition: append the matching event and set the column. */
+  transition(id: string, change: StatusChange): Promise<void>
+  /** Set (or clear, with null) the user priority override. */
+  setPriority(id: string, priority: number | null): Promise<void>
+  setPinned(id: string, pinned: boolean): Promise<void>
+  /** Snoozes whose wake time has elapsed → open (+ a 'woken' event). Returns woken ids. */
+  wakeSnoozed(now: number): Promise<string[]>
+  /** The append-only transition log for one item, in order. */
+  events(id: string): Promise<ItemEvent[]>
 }
 
 export interface Store {
@@ -172,8 +200,6 @@ export interface Store {
   config: ConfigStore
   projects: ProjectStore
   watches: WatchStore
-  items: ItemStore
-  itemState: ItemStateStore
-  manual: ManualItemStore
+  items: WorkItemStore
   close(): Promise<void>
 }

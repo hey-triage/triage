@@ -10,26 +10,27 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import type { InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
-import type { WorkItem } from '../work/types.js'
-import type { ItemState, ItemStatus } from '../work/state.js'
+import type { Provenance, WorkItem } from '../work/types.js'
+import type { ItemEvent, ItemEventKind, ItemStatus, StatusChange } from '../work/state.js'
+import { eventForStatus, shouldReopen } from '../work/state.js'
 import type { EffortLevel, PermissionMode } from '../../shared/protocol.js'
-import type { NewWatch, Watch, WatchCadence, WatchRunResult } from '../watch/types.js'
+import type { NewWatch, Watch, WatchCadence, WatchRunResult, WatchRunStatus } from '../watch/types.js'
 import type {
   ConfigStore,
   ProjectStore,
   EventStore,
   InboxStore,
-  ItemStateStore,
-  ItemStore,
-  ManualItemStore,
   NewManualItem,
   NewSession,
+  SessionKind,
   SessionStore,
   Store,
   StoredEvent,
   StoredSession,
-  UpsertOutcome,
+  UpsertResult,
+  WatchRunRecord,
   WatchStore,
+  WorkItemStore,
 } from './types.js'
 
 // Numbered, append-only. A new migration is a new entry — never edit an old one.
@@ -126,6 +127,52 @@ const MIGRATIONS: string[] = [
      created_at INTEGER NOT NULL,
      updated_at INTEGER NOT NULL
    );`,
+  // 10: the durable inbox (.docs/watches-v2.md). One row per work item for
+  // EVERY source (built-ins, watch hits, GitHub, manual), never hard-deleted;
+  // lifecycle lives on the row and in an append-only per-item event log. This
+  // supersedes ingested_items + item_state + manual_items + the slack.cache
+  // config (all left in place, unused — a fresh start, no fold-forward). Watch
+  // runs become real sessions (kind/watch_id on sessions); watches record each
+  // run's status/session/error and a template origin.
+  `CREATE TABLE work_items (
+     id                TEXT PRIMARY KEY,
+     source            TEXT NOT NULL,
+     kind              TEXT NOT NULL,
+     status            TEXT NOT NULL DEFAULT 'open',
+     status_at         INTEGER NOT NULL,
+     snooze_until      INTEGER,
+     priority          INTEGER,
+     pinned            INTEGER NOT NULL DEFAULT 0,
+     returned          INTEGER NOT NULL DEFAULT 0,
+     source_updated_at INTEGER NOT NULL,
+     ingested_at       INTEGER NOT NULL,
+     payload           TEXT NOT NULL,
+     created_at        INTEGER NOT NULL,
+     updated_at        INTEGER NOT NULL
+   );
+   CREATE INDEX idx_work_items_status ON work_items(status);
+   CREATE INDEX idx_work_items_source ON work_items(source);
+   CREATE TABLE item_events (
+     item_id TEXT NOT NULL,
+     seq     INTEGER NOT NULL,
+     at      INTEGER NOT NULL,
+     actor   TEXT NOT NULL,
+     event   TEXT NOT NULL,
+     detail  TEXT,
+     PRIMARY KEY (item_id, seq)
+   );
+   ALTER TABLE sessions ADD COLUMN kind TEXT;
+   ALTER TABLE sessions ADD COLUMN watch_id TEXT;
+   ALTER TABLE watches ADD COLUMN last_run_status TEXT;
+   ALTER TABLE watches ADD COLUMN last_run_session_id TEXT;
+   ALTER TABLE watches ADD COLUMN last_run_error TEXT;
+   ALTER TABLE watches ADD COLUMN template_id TEXT;`,
+  // 11: per-run outcome on the (watch-run) session row, so the Activity view is
+  // a true history of runs — each run is a session, and these are its receipt.
+  `ALTER TABLE sessions ADD COLUMN run_status TEXT;
+   ALTER TABLE sessions ADD COLUMN run_matches INTEGER;
+   ALTER TABLE sessions ADD COLUMN run_tokens INTEGER;
+   ALTER TABLE sessions ADD COLUMN run_error TEXT;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -134,6 +181,7 @@ export function openSqliteStore(file: string): Store {
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   migrate(db)
+  ensureDurableSchema(db)
 
   return {
     sessions: new SqliteSessions(db),
@@ -142,11 +190,71 @@ export function openSqliteStore(file: string): Store {
     config: new SqliteConfig(db),
     projects: new SqliteProjects(db),
     watches: new SqliteWatches(db),
-    items: new SqliteItems(db),
-    itemState: new SqliteItemState(db),
-    manual: new SqliteManualItems(db),
+    items: new SqliteWorkItems(db),
     close: async () => db.close(),
   }
+}
+
+/**
+ * Converge the durable-inbox schema regardless of migration-version state.
+ *
+ * Numbered migrations are positional, and this repo's DBs can arrive from
+ * branches that already claimed the same version numbers for different tables
+ * (e.g. an activity-log branch whose migration 10 created `scan_runs`). When
+ * that happens the numbered runner skips *our* migration 10 as "already
+ * applied" and `work_items` is never created. This runs after `migrate` and
+ * makes the v2 schema present no matter how the version counter got there:
+ * tables via IF NOT EXISTS, columns added only when missing. Idempotent, so on
+ * a normally-migrated DB it is a no-op.
+ */
+function ensureDurableSchema(db: DatabaseSync) {
+  db.exec(`CREATE TABLE IF NOT EXISTS work_items (
+     id                TEXT PRIMARY KEY,
+     source            TEXT NOT NULL,
+     kind              TEXT NOT NULL,
+     status            TEXT NOT NULL DEFAULT 'open',
+     status_at         INTEGER NOT NULL,
+     snooze_until      INTEGER,
+     priority          INTEGER,
+     pinned            INTEGER NOT NULL DEFAULT 0,
+     returned          INTEGER NOT NULL DEFAULT 0,
+     source_updated_at INTEGER NOT NULL,
+     ingested_at       INTEGER NOT NULL,
+     payload           TEXT NOT NULL,
+     created_at        INTEGER NOT NULL,
+     updated_at        INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
+   CREATE INDEX IF NOT EXISTS idx_work_items_source ON work_items(source);
+   CREATE TABLE IF NOT EXISTS item_events (
+     item_id TEXT NOT NULL,
+     seq     INTEGER NOT NULL,
+     at      INTEGER NOT NULL,
+     actor   TEXT NOT NULL,
+     event   TEXT NOT NULL,
+     detail  TEXT,
+     PRIMARY KEY (item_id, seq)
+   );`)
+
+  const cols = (table: string): Set<string> =>
+    new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((r) => r.name))
+  const ensure = (table: string, col: string, decl: string, have: Set<string>) => {
+    if (!have.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${decl}`)
+  }
+
+  const s = cols('sessions')
+  ensure('sessions', 'kind', 'kind TEXT', s)
+  ensure('sessions', 'watch_id', 'watch_id TEXT', s)
+  ensure('sessions', 'run_status', 'run_status TEXT', s)
+  ensure('sessions', 'run_matches', 'run_matches INTEGER', s)
+  ensure('sessions', 'run_tokens', 'run_tokens INTEGER', s)
+  ensure('sessions', 'run_error', 'run_error TEXT', s)
+
+  const w = cols('watches')
+  ensure('watches', 'last_run_status', 'last_run_status TEXT', w)
+  ensure('watches', 'last_run_session_id', 'last_run_session_id TEXT', w)
+  ensure('watches', 'last_run_error', 'last_run_error TEXT', w)
+  ensure('watches', 'template_id', 'template_id TEXT', w)
 }
 
 function migrate(db: DatabaseSync) {
@@ -174,6 +282,12 @@ type SessionRow = {
   effort: string | null
   permission_mode: string | null
   pinned: number
+  kind: string | null
+  watch_id: string | null
+  run_status: string | null
+  run_matches: number | null
+  run_tokens: number | null
+  run_error: string | null
   created_at: number
   updated_at: number
 }
@@ -202,6 +316,12 @@ const toSession = (r: SessionRow): StoredSession => ({
   effort: toEffort(r.effort),
   permissionMode: toPermissionMode(r.permission_mode),
   pinned: r.pinned === 1,
+  kind: r.kind === 'watch-run' ? 'watch-run' : 'chat',
+  watchId: r.watch_id,
+  runStatus: toRunStatus(r.run_status),
+  runMatches: r.run_matches ?? undefined,
+  runTokens: r.run_tokens ?? undefined,
+  runError: r.run_error ?? undefined,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -214,17 +334,23 @@ class SqliteSessions implements SessionStore {
     const model = s.model ?? null
     const effort = s.effort ?? null
     const permissionMode = s.permissionMode ?? null
+    const kind: SessionKind = s.kind ?? 'chat'
+    const watchId = s.watchId ?? null
     this.db
       .prepare(
-        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, permission_mode, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, permission_mode, kind, watch_id, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(s.id, s.title, s.cwd, model, effort, permissionMode, now, now)
+      .run(s.id, s.title, s.cwd, model, effort, permissionMode, kind, watchId, now, now)
     return {
-      ...s,
+      id: s.id,
+      title: s.title,
+      cwd: s.cwd,
       model,
       effort,
       permissionMode,
+      kind,
+      watchId,
       pinned: false,
       sdkSessionId: null,
       createdAt: now,
@@ -275,6 +401,12 @@ class SqliteSessions implements SessionStore {
 
   async touch(id: string): Promise<void> {
     this.db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), id)
+  }
+
+  async recordWatchRun(id: string, run: WatchRunRecord): Promise<void> {
+    this.db
+      .prepare('UPDATE sessions SET run_status = ?, run_matches = ?, run_tokens = ?, run_error = ?, updated_at = ? WHERE id = ?')
+      .run(run.status, run.matches, run.tokens, run.error ?? null, Date.now(), id)
   }
 }
 
@@ -359,9 +491,17 @@ type WatchRow = {
   last_run_at: number | null
   last_run_tokens: number | null
   last_run_matches: number | null
+  last_run_status: string | null
+  last_run_session_id: string | null
+  last_run_error: string | null
+  template_id: string | null
   created_at: number
   updated_at: number
 }
+
+const RUN_STATUSES: WatchRunStatus[] = ['ok', 'failed', 'skipped']
+const toRunStatus = (v: string | null): WatchRunStatus | undefined =>
+  RUN_STATUSES.includes(v as WatchRunStatus) ? (v as WatchRunStatus) : undefined
 
 const toWatch = (r: WatchRow): Watch => ({
   id: r.id,
@@ -378,6 +518,10 @@ const toWatch = (r: WatchRow): Watch => ({
   lastRunAt: r.last_run_at ?? undefined,
   lastRunTokens: r.last_run_tokens ?? undefined,
   lastRunMatches: r.last_run_matches ?? undefined,
+  lastRunStatus: toRunStatus(r.last_run_status),
+  lastRunSessionId: r.last_run_session_id ?? undefined,
+  lastRunError: r.last_run_error ?? undefined,
+  templateId: r.template_id ?? undefined,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -399,13 +543,14 @@ class SqliteWatches implements WatchStore {
     this.db
       .prepare(
         `INSERT INTO watches (id, source, title, scope, instruction, cadence, window_start, window_day,
-           enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+           enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)`,
       )
       .run(
         w.id, w.source, w.title, w.scope, w.instruction, w.cadence,
         w.windowStart ?? null, w.windowDay ?? null,
         w.enabled ? 1 : 0, w.createsItems ? 1 : 0,
+        w.templateId ?? null,
         w.createdAt, w.updatedAt,
       )
   }
@@ -427,12 +572,30 @@ class SqliteWatches implements WatchStore {
       )
   }
 
+  /**
+   * Write back one run attempt. The cursor is advanced only when `run.cursor`
+   * is set (a successful run) — a failed/skipped run keeps the old watermark, or
+   * its window is skipped forever. Status/session/error are always recorded so
+   * the list can tell "looked, found nothing" from "the scan broke".
+   */
   async recordRun(id: string, run: WatchRunResult): Promise<void> {
-    this.db
-      .prepare(
-        'UPDATE watches SET cursor = ?, last_run_at = ?, last_run_tokens = ?, last_run_matches = ? WHERE id = ?',
-      )
-      .run(run.cursor, run.lastRunAt, run.lastRunTokens, run.lastRunMatches, id)
+    if (run.cursor !== undefined) {
+      this.db
+        .prepare(
+          `UPDATE watches SET cursor = ?, last_run_at = ?, last_run_tokens = ?, last_run_matches = ?,
+             last_run_status = ?, last_run_session_id = ?, last_run_error = ? WHERE id = ?`,
+        )
+        .run(run.cursor, run.lastRunAt, run.lastRunTokens, run.lastRunMatches,
+          run.status, run.sessionId ?? null, run.error ?? null, id)
+    } else {
+      this.db
+        .prepare(
+          `UPDATE watches SET last_run_at = ?, last_run_tokens = ?, last_run_matches = ?,
+             last_run_status = ?, last_run_session_id = ?, last_run_error = ? WHERE id = ?`,
+        )
+        .run(run.lastRunAt, run.lastRunTokens, run.lastRunMatches,
+          run.status, run.sessionId ?? null, run.error ?? null, id)
+    }
   }
 
   async remove(id: string): Promise<void> {
@@ -440,179 +603,279 @@ class SqliteWatches implements WatchStore {
   }
 }
 
-class SqliteItems implements ItemStore {
-  constructor(private db: DatabaseSync) {}
-
-  async upsert(item: WorkItem): Promise<UpsertOutcome> {
-    const incoming = Date.parse(item.updatedAt)
-    if (!Number.isFinite(incoming)) return 'unchanged'
-    const existing = this.db.prepare('SELECT updated_at FROM ingested_items WHERE id = ?').get(item.id) as
-      | { updated_at: number }
-      | undefined
-    if (!existing) {
-      this.db
-        .prepare('INSERT INTO ingested_items (id, updated_at, payload) VALUES (?, ?, ?)')
-        .run(item.id, incoming, JSON.stringify(item))
-      return 'inserted'
-    }
-    // update only if newer — re-ranking is correct, waiting time grew;
-    // an equal-or-older write touches nothing (idempotence).
-    if (incoming <= existing.updated_at) return 'unchanged'
-    this.db
-      .prepare('UPDATE ingested_items SET updated_at = ?, payload = ? WHERE id = ?')
-      .run(incoming, JSON.stringify(item), item.id)
-    return 'updated'
-  }
-
-  async list(): Promise<WorkItem[]> {
-    const rows = this.db.prepare('SELECT payload FROM ingested_items ORDER BY updated_at DESC').all() as { payload: string }[]
-    return rows.map((r) => JSON.parse(r.payload) as WorkItem)
-  }
-
-  async prune(cutoff: number): Promise<void> {
-    this.db.prepare('DELETE FROM ingested_items WHERE updated_at < ?').run(cutoff)
-  }
-
-  async removeByWatch(watchId: string): Promise<void> {
-    this.db
-      .prepare(`DELETE FROM ingested_items WHERE json_extract(payload, '$.watchId') = ?`)
-      .run(watchId)
-  }
-}
-
-class SqliteItemState implements ItemStateStore {
-  constructor(private db: DatabaseSync) {}
-
-  async all(): Promise<Map<string, ItemState>> {
-    const rows = this.db.prepare('SELECT * FROM item_state').all() as {
-      item_id: string
-      status: string
-      status_at: number
-      snooze_until: number | null
-      priority: number | null
-      pinned: number
-    }[]
-    return new Map(
-      rows.map((r) => [
-        r.item_id,
-        {
-          itemId: r.item_id,
-          status: r.status as ItemStatus,
-          statusAt: r.status_at,
-          snoozeUntil: r.snooze_until ?? undefined,
-          priority: r.priority ?? undefined,
-          pinned: r.pinned === 1,
-        },
-      ]),
-    )
-  }
-
-  /** Status/snooze only — a priority override already on the row is preserved. */
-  async set(state: ItemState): Promise<void> {
-    this.db
-      .prepare(
-        `INSERT INTO item_state (item_id, status, status_at, snooze_until, pinned) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (item_id) DO UPDATE SET status = excluded.status, status_at = excluded.status_at,
-           snooze_until = excluded.snooze_until`,
-      )
-      .run(state.itemId, state.status, state.statusAt, state.snoozeUntil ?? null, state.pinned ? 1 : 0)
-  }
-
-  /** Priority override only — status/snooze on the row are preserved. */
-  async setPriority(itemId: string, priority: number | null): Promise<void> {
-    this.db
-      .prepare(
-        `INSERT INTO item_state (item_id, status, status_at, priority) VALUES (?, 'open', ?, ?)
-         ON CONFLICT (item_id) DO UPDATE SET priority = excluded.priority`,
-      )
-      .run(itemId, Date.now(), priority)
-  }
-
-  async reopen(itemIds: string[], now: number): Promise<void> {
-    const stmt = this.db.prepare(
-      'UPDATE item_state SET status = ?, status_at = ?, snooze_until = NULL WHERE item_id = ?',
-    )
-    for (const id of itemIds) stmt.run('open', now, id)
-  }
-}
-
-type ManualRow = {
+type WorkItemRow = {
   id: string
-  title: string
-  project_id: string | null
-  note: string | null
-  url: string | null
+  source: string
+  kind: string
+  status: string
+  status_at: number
+  snooze_until: number | null
   priority: number | null
+  pinned: number
+  returned: number
+  source_updated_at: number
+  ingested_at: number
+  payload: string
   created_at: number
   updated_at: number
 }
 
-/** A stored manual to-do, projected into the WorkItem shape the inbox merges. */
-const toManualItem = (r: ManualRow): WorkItem => ({
-  id: r.id,
-  source: 'manual',
-  kind: 'manual',
-  title: r.title,
-  url: r.url ?? '',
-  repo: '',
-  author: '',
-  peopleWaiting: 0,
-  createdAt: new Date(r.created_at).toISOString(),
-  updatedAt: new Date(r.updated_at).toISOString(),
-  ...(r.project_id ? { projectId: r.project_id } : {}),
-  ...(r.priority != null ? { priority: r.priority } : {}),
-  ...(r.note ? { why: r.note } : {}), // the note renders on the card via `why`
-})
+const VALID_STATUSES: ItemStatus[] = ['open', 'snoozed', 'done', 'archived']
+const toStatus = (v: string): ItemStatus =>
+  VALID_STATUSES.includes(v as ItemStatus) ? (v as ItemStatus) : 'open'
 
-class SqliteManualItems implements ManualItemStore {
+/**
+ * Project a row into the rendered WorkItem. The payload holds the source-shaped
+ * fields; the columns are authoritative for lifecycle (status/returned/priority/
+ * ingestedAt), so they overwrite whatever the payload happened to carry.
+ */
+function toWorkItem(r: WorkItemRow): WorkItem {
+  const base = JSON.parse(r.payload) as WorkItem
+  return {
+    ...base,
+    status: toStatus(r.status),
+    returned: r.returned === 1,
+    ...(r.priority != null ? { priority: r.priority } : {}),
+    ingestedAt: r.ingested_at,
+  }
+}
+
+/** Lifecycle fields live in columns, not the payload — strip before storing. */
+function payloadOf(item: WorkItem): string {
+  const { status, returned, priority, ingestedAt, ...rest } = item
+  void status; void returned; void priority; void ingestedAt
+  return JSON.stringify(rest)
+}
+
+/** Append `add` to a provenance list, replacing an entry from the same run. */
+function mergeProvenance(existing: Provenance[] | undefined, add?: Provenance): Provenance[] {
+  const list = existing ? [...existing] : []
+  if (!add) return list
+  const key = (p: Provenance) => `${p.watchId ?? ''}|${p.runId ?? ''}`
+  const i = list.findIndex((p) => key(p) === key(add))
+  if (i >= 0) list[i] = add
+  else list.push(add)
+  return list.slice(-10)
+}
+
+/** Who an ingestion transition is attributed to. */
+function upsertActor(p: Provenance | undefined): string {
+  if (p?.runId) return `watch:${p.runId}`
+  if (p?.watchId) return `watch:${p.watchId}`
+  return 'system'
+}
+
+const evDetail = (p?: Provenance): Record<string, unknown> =>
+  p ? { ...(p.watchId ? { watchId: p.watchId } : {}), ...(p.runId ? { runId: p.runId } : {}), ...(p.why ? { why: p.why } : {}) } : {}
+
+/**
+ * The durable inbox: one row per work item, an append-only event log per item.
+ * Never hard-deletes; the idempotent upsert and deterministic reopen rules live
+ * here (.docs/watches-v2.md).
+ */
+class SqliteWorkItems implements WorkItemStore {
   constructor(private db: DatabaseSync) {}
 
-  async list(): Promise<WorkItem[]> {
-    const rows = this.db
-      .prepare('SELECT * FROM manual_items ORDER BY updated_at DESC')
-      .all() as ManualRow[]
-    return rows.map(toManualItem)
+  private row(id: string): WorkItemRow | undefined {
+    return this.db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as WorkItemRow | undefined
   }
 
-  async create(item: NewManualItem): Promise<void> {
+  private appendEvent(
+    itemId: string,
+    at: number,
+    actor: string,
+    event: ItemEventKind,
+    detail: Record<string, unknown>,
+  ): void {
+    const r = this.db
+      .prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM item_events WHERE item_id = ?')
+      .get(itemId) as { s: number }
+    this.db
+      .prepare('INSERT INTO item_events (item_id, seq, at, actor, event, detail) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(itemId, r.s + 1, at, actor, event, Object.keys(detail).length ? JSON.stringify(detail) : null)
+  }
+
+  async upsert(item: WorkItem, provenance?: Provenance): Promise<UpsertResult> {
+    const incoming = Date.parse(item.updatedAt)
+    if (!Number.isFinite(incoming)) return { outcome: 'unchanged', reopened: false }
     const now = Date.now()
-    this.db
-      .prepare(
-        `INSERT INTO manual_items (id, title, project_id, note, url, priority, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        item.id,
-        item.title,
-        item.projectId ?? null,
-        item.note ?? null,
-        item.url ?? null,
-        item.priority || null, // 0 ("none") stores as NULL
-        now,
-        now,
-      )
+    const actor = upsertActor(provenance)
+    const existing = this.row(item.id)
+
+    if (!existing) {
+      const foundBy = mergeProvenance(item.foundBy, provenance)
+      const stored: WorkItem = { ...item, why: provenance?.why ?? item.why, foundBy }
+      this.db
+        .prepare(
+          `INSERT INTO work_items (id, source, kind, status, status_at, snooze_until, priority, pinned,
+             returned, source_updated_at, ingested_at, payload, created_at, updated_at)
+           VALUES (?, ?, ?, 'open', ?, NULL, ?, 0, 0, ?, ?, ?, ?, ?)`,
+        )
+        .run(item.id, item.source, item.kind, now, item.priority ?? null, incoming, now, payloadOf(stored), now, now)
+      this.appendEvent(item.id, now, actor, 'created', evDetail(provenance))
+      return { outcome: 'inserted', reopened: false }
+    }
+
+    const base = JSON.parse(existing.payload) as WorkItem
+    const foundBy = mergeProvenance(base.foundBy, provenance)
+    const newer = incoming > existing.source_updated_at
+    const reopened = newer && shouldReopen(toStatus(existing.status), incoming, existing.status_at)
+
+    if (!newer && !provenance) return { outcome: 'unchanged', reopened: false }
+
+    const stored: WorkItem = newer
+      ? {
+          ...base,
+          kind: item.kind,
+          title: item.title,
+          url: item.url,
+          repo: item.repo,
+          author: item.author,
+          peopleWaiting: item.peopleWaiting,
+          updatedAt: item.updatedAt,
+          isDraft: item.isDraft,
+          ciFailing: item.ciFailing,
+          refs: item.refs ?? base.refs,
+          why: provenance?.why ?? item.why ?? base.why,
+          foundBy,
+        }
+      : { ...base, why: provenance?.why ?? base.why, foundBy }
+
+    if (reopened) {
+      this.db
+        .prepare(
+          `UPDATE work_items SET kind = ?, source_updated_at = ?, payload = ?, status = 'open',
+             status_at = ?, returned = 1, updated_at = ? WHERE id = ?`,
+        )
+        .run(item.kind, incoming, payloadOf(stored), now, now, item.id)
+      this.appendEvent(item.id, now, actor, 'reopened', { sourceUpdatedAt: incoming, ...evDetail(provenance) })
+    } else if (newer) {
+      this.db
+        .prepare('UPDATE work_items SET kind = ?, source_updated_at = ?, payload = ?, updated_at = ? WHERE id = ?')
+        .run(item.kind, incoming, payloadOf(stored), now, item.id)
+      this.appendEvent(item.id, now, actor, 'updated', evDetail(provenance))
+    } else {
+      // provenance-only re-find: refresh foundBy/why, no new source activity, no event
+      this.db
+        .prepare('UPDATE work_items SET payload = ?, updated_at = ? WHERE id = ?')
+        .run(payloadOf(stored), now, item.id)
+    }
+    return { outcome: 'updated', reopened }
   }
 
-  async update(id: string, patch: Partial<Omit<NewManualItem, 'id'>>): Promise<void> {
-    const current = this.db.prepare('SELECT * FROM manual_items WHERE id = ?').get(id) as
-      | ManualRow
-      | undefined
-    if (!current) return
-    const title = patch.title ?? current.title
-    const projectId = patch.projectId !== undefined ? patch.projectId : current.project_id
-    const note = patch.note !== undefined ? patch.note : current.note
-    const url = patch.url !== undefined ? patch.url : current.url
-    const priority = patch.priority !== undefined ? patch.priority : current.priority
+  async createManual(item: NewManualItem): Promise<string> {
+    const now = Date.now()
+    const iso = new Date(now).toISOString()
+    const wi: WorkItem = {
+      id: item.id,
+      source: 'manual',
+      kind: 'manual',
+      title: item.title,
+      url: item.url ?? '',
+      repo: '',
+      author: '',
+      peopleWaiting: 0,
+      createdAt: iso,
+      updatedAt: iso,
+      ...(item.projectId ? { projectId: item.projectId } : {}),
+      ...(item.note ? { note: item.note, why: item.note } : {}),
+    }
     this.db
       .prepare(
-        `UPDATE manual_items SET title = ?, project_id = ?, note = ?, url = ?, priority = ?, updated_at = ?
-         WHERE id = ?`,
+        `INSERT INTO work_items (id, source, kind, status, status_at, snooze_until, priority, pinned,
+           returned, source_updated_at, ingested_at, payload, created_at, updated_at)
+         VALUES (?, 'manual', 'manual', 'open', ?, NULL, ?, 0, 0, ?, ?, ?, ?, ?)`,
       )
-      .run(title, projectId ?? null, note ?? null, url ?? null, priority || null, Date.now(), id)
+      .run(item.id, now, item.priority || null, now, now, payloadOf(wi), now, now)
+    this.appendEvent(item.id, now, 'user', 'created', {})
+    return item.id
   }
 
-  async remove(id: string): Promise<void> {
-    this.db.prepare('DELETE FROM manual_items WHERE id = ?').run(id)
+  async updateManual(id: string, patch: Partial<Omit<NewManualItem, 'id'>>): Promise<void> {
+    const r = this.row(id)
+    if (!r) return
+    const base = JSON.parse(r.payload) as WorkItem
+    const next: WorkItem = { ...base }
+    if (patch.title !== undefined) next.title = patch.title
+    if (patch.url !== undefined) next.url = patch.url
+    if (patch.note !== undefined) {
+      next.note = patch.note || undefined
+      next.why = patch.note || undefined
+    }
+    if (patch.projectId !== undefined) next.projectId = patch.projectId || undefined
+    const priority = patch.priority !== undefined ? patch.priority || null : r.priority
+    this.db
+      .prepare('UPDATE work_items SET payload = ?, priority = ?, updated_at = ? WHERE id = ?')
+      .run(payloadOf(next), priority, Date.now(), id)
+  }
+
+  async get(id: string): Promise<WorkItem | null> {
+    const r = this.row(id)
+    return r ? toWorkItem(r) : null
+  }
+
+  async list(status: ItemStatus = 'open'): Promise<WorkItem[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM work_items WHERE status = ? ORDER BY source_updated_at DESC')
+      .all(status) as WorkItemRow[]
+    return rows.map(toWorkItem)
+  }
+
+  async listAll(): Promise<WorkItem[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM work_items ORDER BY source_updated_at DESC')
+      .all() as WorkItemRow[]
+    return rows.map(toWorkItem)
+  }
+
+  async transition(id: string, change: StatusChange): Promise<void> {
+    if (!this.row(id)) return
+    const now = Date.now()
+    const snooze = change.status === 'snoozed' ? change.snoozeUntil ?? null : null
+    this.db
+      .prepare(
+        'UPDATE work_items SET status = ?, status_at = ?, snooze_until = ?, returned = 0, updated_at = ? WHERE id = ?',
+      )
+      .run(change.status, now, snooze, now, id)
+    this.appendEvent(id, now, change.actor, eventForStatus(change.status), {
+      ...(change.snoozeUntil ? { snoozeUntil: change.snoozeUntil } : {}),
+      ...(change.detail ?? {}),
+    })
+  }
+
+  async setPriority(id: string, priority: number | null): Promise<void> {
+    this.db.prepare('UPDATE work_items SET priority = ?, updated_at = ? WHERE id = ?').run(priority, Date.now(), id)
+  }
+
+  async setPinned(id: string, pinned: boolean): Promise<void> {
+    this.db.prepare('UPDATE work_items SET pinned = ?, updated_at = ? WHERE id = ?').run(pinned ? 1 : 0, Date.now(), id)
+  }
+
+  async wakeSnoozed(now: number): Promise<string[]> {
+    const rows = this.db
+      .prepare('SELECT id FROM work_items WHERE status = ? AND snooze_until IS NOT NULL AND snooze_until <= ?')
+      .all('snoozed', now) as { id: string }[]
+    const upd = this.db.prepare(
+      "UPDATE work_items SET status = 'open', snooze_until = NULL, status_at = ?, updated_at = ? WHERE id = ?",
+    )
+    for (const { id } of rows) {
+      upd.run(now, now, id)
+      this.appendEvent(id, now, 'system', 'woken', {})
+    }
+    return rows.map((r) => r.id)
+  }
+
+  async events(id: string): Promise<ItemEvent[]> {
+    const rows = this.db
+      .prepare('SELECT seq, at, actor, event, detail FROM item_events WHERE item_id = ? ORDER BY seq')
+      .all(id) as { seq: number; at: number; actor: string; event: string; detail: string | null }[]
+    return rows.map((r) => ({
+      seq: r.seq,
+      at: r.at,
+      actor: r.actor,
+      event: r.event as ItemEventKind,
+      ...(r.detail ? { detail: JSON.parse(r.detail) as Record<string, unknown> } : {}),
+    }))
   }
 }
 
