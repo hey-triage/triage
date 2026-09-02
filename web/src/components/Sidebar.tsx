@@ -1,5 +1,4 @@
 import {
-  Activity,
   Eye,
   ExternalLink,
   Folder,
@@ -22,7 +21,6 @@ type Props = {
   currentId: string | null
   inboxActive: boolean
   watchesActive: boolean
-  activityActive: boolean
   projectsActive: boolean
   connectorsActive: boolean
   conn: ConnState
@@ -30,12 +28,12 @@ type Props = {
   onNew: () => void
   onInbox: () => void
   onWatches: () => void
-  onActivity: () => void
   onProjects: () => void
   onConnectors: () => void
   onRename: (id: string, title: string) => void
   onSetPinned: (id: string, pinned: boolean) => void
   onDelete: (id: string) => void
+  onOpenSystem: () => void
 }
 
 const CONN_LABEL: Record<ConnState, string> = {
@@ -49,7 +47,6 @@ export function Sidebar({
   currentId,
   inboxActive,
   watchesActive,
-  activityActive,
   projectsActive,
   connectorsActive,
   conn,
@@ -57,12 +54,12 @@ export function Sidebar({
   onNew,
   onInbox,
   onWatches,
-  onActivity,
   onProjects,
   onConnectors,
   onRename,
   onSetPinned,
   onDelete,
+  onOpenSystem,
 }: Props) {
   // At most one row is being renamed at a time — the sidebar is a list, not a
   // form. (The row menu now manages its own open state via Radix.)
@@ -88,10 +85,6 @@ export function Sidebar({
         <button className={`navItem${watchesActive ? ' active' : ''}`} onClick={onWatches}>
           <Eye size={16} aria-hidden="true" />
           Watches
-        </button>
-        <button className={`navItem${activityActive ? ' active' : ''}`} onClick={onActivity}>
-          <Activity size={16} aria-hidden="true" />
-          Activity
         </button>
         <button className={`navItem${projectsActive ? ' active' : ''}`} onClick={onProjects}>
           <Folder size={16} aria-hidden="true" />
@@ -124,7 +117,10 @@ export function Sidebar({
         ))}
       </div>
       <div className={conn === 'connected' ? '' : 'down'} id="connState">
-        {CONN_LABEL[conn]}
+        <button className="connStatusBtn" onClick={onOpenSystem} title="System status, activity & logs">
+          <span className="connDot" aria-hidden="true" />
+          {CONN_LABEL[conn]}
+        </button>
         <kbd title="Command center">{MOD_LABEL}K</kbd>
       </div>
 

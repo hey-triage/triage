@@ -8,7 +8,6 @@ import type {
   QuestionAnswers,
   ScoredItem,
 } from '../../shared/protocol.js'
-import { ActivityPage } from './components/ActivityPage.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import { Composer } from './components/Composer.js'
 import { ConnectorsPage } from './components/ConnectorsPage.js'
@@ -21,6 +20,7 @@ import {
   type SessionPreset,
 } from './components/NewSessionComposer.js'
 import { Sidebar } from './components/Sidebar.js'
+import { SystemModal } from './components/SystemModal.js'
 import { Transcript } from './components/Transcript.js'
 import { ADD_WATCH_KEY, REFINE_WATCH_KEY, WatchesPage } from './components/WatchesPage.js'
 import { useConn, useEvents, useHashRoute, useSessions } from './hooks.js'
@@ -36,6 +36,7 @@ export function App() {
   const [preset, setPreset] = useState<SessionPreset | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [systemOpen, setSystemOpen] = useState(false)
   const [inboxNonce, setInboxNonce] = useState(0)
   // pending "g" prefix for two-key sequences (g i, g c)
   const goPrefix = useRef<number | undefined>(undefined)
@@ -140,7 +141,6 @@ export function App() {
         if (e.key === 'c') return navigate('/connectors')
         if (e.key === 'p') return navigate('/projects')
         if (e.key === 'w') return navigate('/watches')
-        if (e.key === 'a') return navigate('/activity')
         return // unknown sequence — swallow
       }
       if (e.key === 'g') {
@@ -230,7 +230,6 @@ export function App() {
         currentId={currentId}
         inboxActive={route.page === 'inbox'}
         watchesActive={route.page === 'watches'}
-        activityActive={route.page === 'activity'}
         projectsActive={route.page === 'projects'}
         connectorsActive={route.page === 'connectors'}
         conn={conn}
@@ -238,12 +237,12 @@ export function App() {
         onNew={newSession}
         onInbox={() => navigate('/inbox')}
         onWatches={() => navigate('/watches')}
-        onActivity={() => navigate('/activity')}
         onProjects={() => navigate('/projects')}
         onConnectors={() => navigate('/connectors')}
         onRename={renameSession}
         onSetPinned={setPinned}
         onDelete={deleteSession}
+        onOpenSystem={() => setSystemOpen(true)}
       />
 
       <div id="main" className={current?.status === 'running' ? 'running' : undefined}>
@@ -251,8 +250,6 @@ export function App() {
           <InboxPage key={inboxNonce} onDispatch={dispatch} onRefineWatch={refineWatch} />
         ) : route.page === 'watches' ? (
           <WatchesPage />
-        ) : route.page === 'activity' ? (
-          <ActivityPage />
         ) : route.page === 'connectors' ? (
           <ConnectorsPage />
         ) : route.page === 'projects' ? (
@@ -303,6 +300,7 @@ export function App() {
         onHelp={() => setHelpOpen(true)}
       />
       <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <SystemModal open={systemOpen} conn={conn} onClose={() => setSystemOpen(false)} />
     </>
   )
 }

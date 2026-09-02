@@ -239,6 +239,48 @@ export type CoverageResponse =
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
+// System / daemon status + logs (GET /api/system, GET /api/logs) — the gateway
+// status surface: is the daemon up, is the scheduler ticking, are connectors
+// live, and its recent activity log.
+// ---------------------------------------------------------------------------
+export type SystemStatus = {
+  version: string
+  startedAt: number
+  uptimeMs: number
+  port: number
+  db: string
+  liveSessions: number
+  /** true/false, or null when the connector probe hasn't landed yet */
+  slackConnected: boolean | null
+  connectorsProbedAt: number | null
+  connectorCount: number | null
+  schedulerLastTickAt: number | null
+  runningWatches: number
+  inboxSyncedAt: number | null
+  githubReconcileAt: number | null
+  githubNotice: string | null
+  watches: { total: number; enabled: number; overdue: number; failing: number }
+  /** where JSONL log files are written, or null if file logging is off */
+  logDir: string | null
+}
+
+export type SystemResponse = { ok: true; status: SystemStatus } | { ok: false; error: string }
+
+export type LogLevel = 'info' | 'warn' | 'error'
+export type LogEntry = {
+  seq: number
+  ts: number
+  level: LogLevel
+  subsystem: string
+  message: string
+  /** optional machine-readable context (ids, counts, durations) */
+  fields?: Record<string, unknown>
+}
+export type LogsResponse =
+  | { ok: true; entries: LogEntry[]; subsystems: string[] }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
 // Connected repos (GET /api/repos, PUT /api/repos)
 //
 // The repos the GitHub source is scoped to. Empty = all repos the account
