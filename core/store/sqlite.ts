@@ -15,6 +15,7 @@ import type { ItemEvent, ItemEventKind, ItemStatus, StatusChange } from '../work
 import { eventForStatus, shouldReopen } from '../work/state.js'
 import type { EffortLevel, PermissionMode } from '../../shared/protocol.js'
 import type { NewWatch, Watch, WatchCadence, WatchRunResult, WatchRunStatus } from '../watch/types.js'
+import { cronFromCadence } from '../watch/cron.js'
 import type {
   ConfigStore,
   ProjectStore,
@@ -173,6 +174,9 @@ const MIGRATIONS: string[] = [
    ALTER TABLE sessions ADD COLUMN run_matches INTEGER;
    ALTER TABLE sessions ADD COLUMN run_tokens INTEGER;
    ALTER TABLE sessions ADD COLUMN run_error TEXT;`,
+  // 12: cron schedule per watch — the precise fire schedule, superseding the
+  // coarse hourly/daily/weekly cadence (old rows derive it from cadence).
+  `ALTER TABLE watches ADD COLUMN schedule TEXT;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -255,6 +259,7 @@ function ensureDurableSchema(db: DatabaseSync) {
   ensure('watches', 'last_run_session_id', 'last_run_session_id TEXT', w)
   ensure('watches', 'last_run_error', 'last_run_error TEXT', w)
   ensure('watches', 'template_id', 'template_id TEXT', w)
+  ensure('watches', 'schedule', 'schedule TEXT', w)
 }
 
 function migrate(db: DatabaseSync) {
@@ -485,6 +490,7 @@ type WatchRow = {
   cadence: string
   window_start: string | null
   window_day: number | null
+  schedule: string | null
   enabled: number
   creates_items: number
   cursor: string | null
@@ -512,6 +518,8 @@ const toWatch = (r: WatchRow): Watch => ({
   cadence: r.cadence as WatchCadence,
   windowStart: r.window_start ?? undefined,
   windowDay: r.window_day ?? undefined,
+  // Precise schedule is the source of truth; legacy rows derive it from cadence.
+  schedule: r.schedule ?? cronFromCadence(r.cadence as WatchCadence, r.window_start ?? undefined, r.window_day ?? undefined),
   enabled: r.enabled === 1,
   createsItems: r.creates_items === 1,
   cursor: r.cursor ?? undefined,
@@ -543,12 +551,13 @@ class SqliteWatches implements WatchStore {
     this.db
       .prepare(
         `INSERT INTO watches (id, source, title, scope, instruction, cadence, window_start, window_day,
-           enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+           schedule, enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)`,
       )
       .run(
         w.id, w.source, w.title, w.scope, w.instruction, w.cadence,
         w.windowStart ?? null, w.windowDay ?? null,
+        w.schedule,
         w.enabled ? 1 : 0, w.createsItems ? 1 : 0,
         w.templateId ?? null,
         w.createdAt, w.updatedAt,
@@ -562,11 +571,12 @@ class SqliteWatches implements WatchStore {
     this.db
       .prepare(
         `UPDATE watches SET title = ?, scope = ?, instruction = ?, cadence = ?, window_start = ?,
-           window_day = ?, enabled = ?, creates_items = ?, updated_at = ? WHERE id = ?`,
+           window_day = ?, schedule = ?, enabled = ?, creates_items = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         next.title, next.scope, next.instruction, next.cadence,
         next.windowStart ?? null, next.windowDay ?? null,
+        next.schedule,
         next.enabled ? 1 : 0, next.createsItems ? 1 : 0,
         Date.now(), id,
       )

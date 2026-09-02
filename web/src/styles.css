@@ -1049,3 +1049,12 @@ dialog:focus-visible, dialog:focus { outline: none; }
 .coverageResult { margin-top: 8px; padding: 8px 12px; border-radius: var(--r-sm); font-size: 13px; border: 1px solid var(--border); }
 .coverageResult.covered { border-color: rgba(88, 190, 130, 0.35); background: rgba(88, 190, 130, 0.08); }
 .coverageResult.uncovered { border-color: rgba(214, 164, 74, 0.35); background: rgba(214, 164, 74, 0.08); }
+
+/* Cron schedule preview in the watch dialog (Hermes-style human + expression). */
+.cronPreview {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 8px; padding: 8px 12px; border-radius: var(--r-sm);
+  background: var(--panel-hi); border: 1px solid var(--border); font-size: 13px;
+}
+.cronPreview code { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.cronPreview.invalid { border-color: rgba(235, 92, 92, 0.4); background: var(--red-tint); color: var(--red); }

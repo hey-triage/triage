@@ -88,6 +88,7 @@ import {
   safeWhen,
 } from '../core/sources/slack.js'
 import { isDue } from '../core/watch/schedule.js'
+import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
 import type { NewWatch, Watch, WatchCadence, WatchRunStatus } from '../core/watch/types.js'
 import { clearState, pkgVersion, writeState } from './state.js'
 
@@ -971,13 +972,14 @@ async function runWatch(watchId: string): Promise<void> {
  * disable, edit, or duplicate them; a `templateId` marks the origin.
  */
 const WATCH_TEMPLATES: Array<
-  Pick<Watch, 'title' | 'scope' | 'instruction' | 'cadence' | 'createsItems'> & { templateId: string }
+  Pick<Watch, 'title' | 'scope' | 'instruction' | 'schedule' | 'cadence' | 'createsItems'> & { templateId: string }
 > = [
   {
     templateId: 'unread-dms',
     title: 'Unread DMs',
     scope: '@dm',
     instruction: 'Find my unread Slack direct messages and triage each unanswered one into a work item.',
+    schedule: '0 * * * *',
     cadence: 'hourly',
     createsItems: true,
   },
@@ -986,6 +988,7 @@ const WATCH_TEMPLATES: Array<
     title: 'Mentions',
     scope: '@mentions',
     instruction: 'Find Slack messages where I am mentioned or tagged and my reply is still awaited, and triage each into a work item.',
+    schedule: '0 * * * *',
     cadence: 'hourly',
     createsItems: true,
   },
@@ -1015,6 +1018,7 @@ async function seedWatchTemplates(): Promise<void> {
         title: t.title,
         scope: t.scope,
         instruction: t.instruction,
+        schedule: t.schedule,
         cadence: t.cadence,
         createsItems: t.createsItems,
         enabled: true,
@@ -1227,6 +1231,12 @@ function watchPatchFrom(raw: unknown): { patch: WatchPatch } | { error: string }
   if (r.cadence !== undefined) {
     if (!CADENCES.has(r.cadence as WatchCadence)) return { error: 'cadence must be hourly | daily | weekly' }
     patch.cadence = r.cadence as WatchCadence
+  }
+  if (r.schedule !== undefined) {
+    if (typeof r.schedule !== 'string' || !isValidCron(r.schedule)) {
+      return { error: 'schedule must be a valid 5-field cron expression, e.g. "0 9 * * *"' }
+    }
+    patch.schedule = r.schedule.trim()
   }
   if (r.windowStart !== undefined && r.windowStart !== null) {
     if (typeof r.windowStart !== 'string' || !/^\d{1,2}:\d{2}$/.test(r.windowStart)) return { error: 'windowStart must be "HH:MM"' }
@@ -1595,9 +1605,11 @@ const server = http.createServer(async (req, res) => {
         const parsed = watchPatchFrom(await readJsonBody(req))
         if ('error' in parsed) throw new Error(parsed.error)
         const p = parsed.patch
-        if (!p.title || !p.scope || !p.instruction || !p.cadence) {
-          throw new Error('a watch needs title, scope, instruction, and cadence')
+        if (!p.title || !p.scope || !p.instruction) {
+          throw new Error('a watch needs title, scope, and instruction')
         }
+        // Schedule is the source of truth; accept a legacy cadence as a fallback.
+        const schedule = p.schedule ?? (p.cadence ? cronFromCadence(p.cadence, p.windowStart, p.windowDay) : '0 9 * * *')
         const now = Date.now()
         await store.watches.create({
           id: randomUUID(),
@@ -1605,7 +1617,8 @@ const server = http.createServer(async (req, res) => {
           title: p.title,
           scope: p.scope,
           instruction: p.instruction,
-          cadence: p.cadence,
+          schedule,
+          cadence: p.cadence ?? 'daily',
           windowStart: p.windowStart,
           windowDay: p.windowDay,
           enabled: p.enabled ?? true,
