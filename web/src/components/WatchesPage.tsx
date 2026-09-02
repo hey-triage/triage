@@ -3,19 +3,17 @@ import type {
   CoverageResponse,
   CoverageWatch,
   Watch,
-  WatchCadence,
   WatchDraftResponse,
   WatchPreviewResponse,
   WatchPreviewRow,
   WatchesResponse,
 } from '../../../shared/protocol.js'
+import { CRON_PRESETS, cronFromCadence, describeCron, isValidCron, phraseToCron } from '../../../core/watch/cron.js'
 
 // Cross-page handoffs (palette "Add watch", inbox thumbs-down → refine),
 // read once on mount. sessionStorage because it must survive the hash change.
 export const ADD_WATCH_KEY = 'triage.watch.add'
 export const REFINE_WATCH_KEY = 'triage.watch.refine'
-
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 const TEMPLATES: Array<{ label: string; text: string }> = [
   { label: 'Channel topic', text: 'watch #channel for threads about <topic> — not release-note chatter' },
@@ -31,12 +29,6 @@ function relTime(ms?: number): string {
   if (mins < 60) return `${mins}m ago`
   if (mins < 48 * 60) return `${Math.round(mins / 60)}h ago`
   return `${Math.round(mins / 1440)}d ago`
-}
-
-function cadenceLabel(w: Watch): string {
-  if (w.cadence === 'hourly') return 'hourly'
-  if (w.cadence === 'daily') return `daily ${w.windowStart ?? '09:00'}`
-  return `${DAY_NAMES[w.windowDay ?? 1].slice(0, 3)} ${w.windowStart ?? '09:00'}`
 }
 
 type LoadState =
@@ -163,7 +155,7 @@ export function WatchesPage() {
                       {!w.createsItems && <span className="watchFyi">fyi-only</span>}
                     </div>
                     <div className="watchMeta">
-                      {cadenceLabel(w)} · last run {relTime(w.lastRunAt)}
+                      {describeCron(w.schedule)} · last run {relTime(w.lastRunAt)}
                       {w.lastRunStatus === 'failed' && (
                         <span className="watchFailed" title={w.lastRunError ?? 'the last run failed'}>
                           {' '}· failed
@@ -224,9 +216,8 @@ type Form = {
   title: string
   scope: string
   instruction: string
-  cadence: WatchCadence
-  windowStart: string
-  windowDay: number
+  /** raw schedule input — a cron expression or a phrase like "every 15 minutes" */
+  schedule: string
   createsItems: boolean
 }
 
@@ -234,9 +225,7 @@ const EMPTY_FORM: Form = {
   title: '',
   scope: '',
   instruction: '',
-  cadence: 'daily',
-  windowStart: '09:00',
-  windowDay: 1,
+  schedule: '0 9 * * *',
   createsItems: true,
 }
 
@@ -245,11 +234,17 @@ function formFrom(w: Watch): Form {
     title: w.title,
     scope: w.scope,
     instruction: w.instruction,
-    cadence: w.cadence,
-    windowStart: w.windowStart ?? '09:00',
-    windowDay: w.windowDay ?? 1,
+    schedule: w.schedule,
     createsItems: w.createsItems,
   }
+}
+
+/** Resolve the schedule input to a cron string (accepting phrases), or null. */
+function resolveSchedule(raw: string): string | null {
+  const t = (raw ?? '').trim()
+  if (!t) return null
+  if (isValidCron(t)) return t
+  return phraseToCron(t)
 }
 
 function WatchDialog({
@@ -322,7 +317,7 @@ function WatchDialog({
         title: body.draft.title,
         scope: body.draft.scope,
         instruction: body.draft.instruction,
-        cadence: body.draft.cadence,
+        schedule: cronFromCadence(body.draft.cadence),
         createsItems: body.draft.createsItems,
       })
       setStep('form')
@@ -358,13 +353,13 @@ function WatchDialog({
     setSaving(true)
     setError('')
     try {
+      const schedule = resolveSchedule(form.schedule)
+      if (!schedule) throw new Error('enter a valid schedule (a cron expression or a phrase like “every 15 minutes”)')
       const payload = {
         title: form.title,
         scope: form.scope,
         instruction: form.instruction,
-        cadence: form.cadence,
-        windowStart: form.cadence === 'hourly' ? null : form.windowStart,
-        windowDay: form.cadence === 'weekly' ? form.windowDay : null,
+        schedule,
         createsItems: form.createsItems,
       }
       const res = await fetch(
@@ -385,12 +380,10 @@ function WatchDialog({
     }
   }
 
-  const formComplete = form.title.trim() && form.scope.trim() && form.instruction.trim()
-  // Create requires a preview of exactly what will be saved; editing only
-  // re-requires one when scope/instruction changed.
-  const editUnchanged =
-    editing !== null && editing.scope === form.scope && editing.instruction === form.instruction
-  const canSave = Boolean(formComplete) && !saving && !previewing && (previewed || editUnchanged)
+  const formComplete = form.title.trim() && form.scope.trim() && form.instruction.trim() && resolveSchedule(form.schedule) !== null
+  // Preview is an optional trust step, not a gate — Create is enabled as soon as
+  // the form is valid, so the button is never a dead end.
+  const canSave = Boolean(formComplete) && !saving && !previewing
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }))
 
@@ -445,34 +438,34 @@ function WatchDialog({
             onChange={(e) => set('instruction', e.target.value)}
             placeholder="threads discussing product experience — user friction, UX decisions, PX metrics; not release-note chatter"
           />
-          <div className="watchFormRow">
-            <div>
-              <label>Cadence</label>
-              <select value={form.cadence} onChange={(e) => set('cadence', e.target.value as WatchCadence)}>
-                <option value="hourly">hourly</option>
-                <option value="daily">daily</option>
-                <option value="weekly">weekly</option>
-              </select>
-            </div>
-            {form.cadence !== 'hourly' && (
-              <div>
-                <label>At</label>
-                <input type="time" value={form.windowStart} onChange={(e) => set('windowStart', e.target.value)} />
+          <label>Frequency</label>
+          <select
+            value={CRON_PRESETS.some((p) => p.cron === form.schedule) ? form.schedule : 'custom'}
+            onChange={(e) => e.target.value !== 'custom' && set('schedule', e.target.value)}
+          >
+            {CRON_PRESETS.map((p) => (
+              <option key={p.cron} value={p.cron}>
+                {p.label}
+              </option>
+            ))}
+            <option value="custom">Custom…</option>
+          </select>
+          {!CRON_PRESETS.some((p) => p.cron === form.schedule) && (
+            <input
+              value={form.schedule ?? ''}
+              onChange={(e) => set('schedule', e.target.value)}
+              placeholder="cron, e.g. 0 9 * * *  —  or “every 15 minutes”"
+            />
+          )}
+          {(() => {
+            const cron = resolveSchedule(form.schedule)
+            return (
+              <div className={`cronPreview${cron ? '' : ' invalid'}`}>
+                <span>{cron ? describeCron(cron) : 'Not a valid schedule'}</span>
+                {cron && <code>{cron}</code>}
               </div>
-            )}
-            {form.cadence === 'weekly' && (
-              <div>
-                <label>On</label>
-                <select value={form.windowDay} onChange={(e) => set('windowDay', Number(e.target.value))}>
-                  {DAY_NAMES.map((d, i) => (
-                    <option key={d} value={i}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
+            )
+          })()}
           <label className="watchCheck">
             <input
               type="checkbox"
@@ -530,7 +523,7 @@ function WatchDialog({
             <button
               className="go"
               disabled={!canSave}
-              title={canSave || !formComplete ? undefined : 'Preview first — see what this rule actually matches'}
+              title={canSave ? undefined : 'Fill in title, scope, instruction, and a valid schedule'}
               onClick={() => void save()}
             >
               {saving ? 'Saving…' : editing ? 'Save' : 'Create watch'}

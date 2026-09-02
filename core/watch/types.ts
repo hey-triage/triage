@@ -19,6 +19,12 @@ export interface Watch {
   scope: string
   /** the NL sentence; editable forever, never opaque weights */
   instruction: string
+  /**
+   * A 5-field cron expression, the source of truth for when the watch runs
+   * (.docs/watches-v2.md). Legacy rows without one derive it from `cadence`.
+   */
+  schedule: string
+  /** legacy coarse cadence; retained for back-compat / draft suggestions */
   cadence: WatchCadence
   /** daily/weekly: local time "09:00" */
   windowStart?: string
@@ -46,10 +52,12 @@ export interface Watch {
   updatedAt: number
 }
 
-export type NewWatch = Pick<
-  Watch,
-  'title' | 'scope' | 'instruction' | 'cadence' | 'windowStart' | 'windowDay' | 'createsItems'
->
+export type NewWatch = Pick<Watch, 'title' | 'scope' | 'instruction' | 'schedule' | 'createsItems'> & {
+  /** legacy; defaults to a coarse bucket when omitted */
+  cadence?: WatchCadence
+  windowStart?: string
+  windowDay?: number
+}
 
 /**
  * What one completed run attempt writes back to the row. `cursor` is set only

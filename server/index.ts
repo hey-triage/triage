@@ -59,7 +59,11 @@ import type {
   ItemEventsResponse,
   ItemListResponse,
   ItemStateResponse,
+  LogLevel,
+  LogsResponse,
   ManualItemInput,
+  SystemResponse,
+  SystemStatus,
   ManualItemResponse,
   Project,
   ProjectsResponse,
@@ -88,11 +92,14 @@ import {
   safeWhen,
 } from '../core/sources/slack.js'
 import { isDue } from '../core/watch/schedule.js'
+import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
 import type { NewWatch, Watch, WatchCadence, WatchRunStatus } from '../core/watch/types.js'
 import { clearState, pkgVersion, writeState } from './state.js'
+import { initLogFile, log, logFilePath, logSubsystems, recentLogs } from './log.js'
 
 const PORT = Number(process.env.PORT || 5178)
 const VERSION = pkgVersion()
+const SERVER_STARTED = Date.now()
 const DB_FILE = process.env.TRIAGE_DB || path.join(os.homedir(), '.triage', 'triage-dev.db')
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /**
@@ -458,7 +465,7 @@ class LiveSession {
     if (persist) {
       this.seq += 1
       store.events.append(this.row.id, this.seq, event).catch((err) => {
-        console.error(`[store] failed to persist event for ${this.row.id}:`, err)
+        log('error', 'session', `failed to persist event for ${this.row.id}: ${err}`)
       })
     }
     broadcast({ type: 'session_event', sessionId: this.row.id, event })
@@ -469,6 +476,7 @@ class LiveSession {
 // Session registry: every session lives in the store; a subset is live.
 // ---------------------------------------------------------------------------
 const store: Store = openSqliteStore(DB_FILE)
+initLogFile(path.join(path.dirname(DB_FILE), 'logs'))
 const rows = new Map<string, StoredSession>()
 const live = new Map<string, LiveSession>()
 const branches = new Map<string, string>() // session id → git branch (derived)
@@ -615,6 +623,8 @@ let inboxInFlight: Promise<InboxSnapshot> | null = null
 let githubNotice: string | null = null
 let githubReconcileAt = 0
 let githubReconcileInFlight: Promise<void> | null = null
+/** when the scheduler last ticked — surfaced in the System status. */
+let lastSchedulerTickAt: number | null = null
 
 async function connectedRepos(): Promise<string[]> {
   return (await store.config.get<string[]>(REPOS_KEY)) ?? []
@@ -657,18 +667,22 @@ async function reconcileGitHub(force = false): Promise<void> {
           if (it.status !== 'open' && it.status !== 'snoozed') continue
           const c = byId.get(it.id)
           if (c) {
+            const reason = c.state === 'merged' ? 'PR merged' : 'PR closed'
             await store.items.transition(it.id, {
               status: 'done',
               actor: 'system',
-              detail: { reason: c.state === 'merged' ? 'PR merged' : 'PR closed', evidence: c.url },
+              detail: { reason, evidence: c.url },
             })
+            log('info', 'github', `auto-done: ${it.id} (${reason})`, { id: it.id, state: c.state })
           }
         }
       }
       githubNotice = null
       githubReconcileAt = Date.now()
+      log('info', 'github', `reconciled: ${open.length} open, ${closed.length} closed/merged`)
     } catch (err) {
       githubNotice = `github: ${err instanceof Error ? err.message : String(err)}`
+      log('error', 'github', err instanceof Error ? err.message : String(err))
     } finally {
       githubReconcileInFlight = null
     }
@@ -753,6 +767,36 @@ function overdueWatch(w: Watch, now: number): boolean {
   return now - (w.lastRunAt ?? w.createdAt) > grace
 }
 
+/** The daemon's live status, for the System modal. */
+async function systemStatus(): Promise<SystemStatus> {
+  const now = Date.now()
+  const watches = await store.watches.list()
+  const enabled = watches.filter((w) => w.enabled)
+  return {
+    version: VERSION,
+    startedAt: SERVER_STARTED,
+    uptimeMs: now - SERVER_STARTED,
+    port: PORT,
+    db: DB_FILE,
+    liveSessions: live.size,
+    slackConnected: slackConnected(),
+    connectorsProbedAt: connectorCache?.probedAt ?? null,
+    connectorCount: connectorCache?.connectors.length ?? null,
+    schedulerLastTickAt: lastSchedulerTickAt,
+    runningWatches: runningWatches.size,
+    inboxSyncedAt: inboxCache?.syncedAt ?? null,
+    githubReconcileAt: githubReconcileAt || null,
+    githubNotice,
+    watches: {
+      total: watches.length,
+      enabled: enabled.length,
+      overdue: enabled.filter((w) => overdueWatch(w, now)).length,
+      failing: enabled.filter((w) => w.lastRunStatus === 'failed').length,
+    },
+    logDir: logFilePath(),
+  }
+}
+
 async function runDueWatches(opts: { force?: boolean } = {}): Promise<void> {
   if (slackConnected() !== true) return
   const now = new Date()
@@ -768,6 +812,7 @@ async function runDueWatches(opts: { force?: boolean } = {}): Promise<void> {
         status: 'skipped',
         error: 'previous run still in progress',
       })
+      log('warn', 'scheduler', `skipped ${w.title}: previous run still in progress`, { watchId: w.id })
       continue
     }
     if (!runQueue.includes(w.id)) runQueue.push(w.id)
@@ -797,7 +842,7 @@ function pumpRunQueue(): void {
     const jitter = Math.floor(Math.random() * 3_000)
     setTimeout(() => {
       runWatch(id)
-        .catch((err) => console.error('[watch] run failed:', err))
+        .catch((err) => log('error', 'watch', `run crashed: ${err}`))
         .finally(() => {
           activeRuns -= 1
           runningWatches.delete(id)
@@ -854,9 +899,16 @@ function makeScanMcp(watch: Watch, runId: string, onUpsert: () => void) {
               ...(refs ? { refs } : {}),
             }
             const prov: Provenance = { watchId: watch.id, runId, at: now, why: args.why }
-            await store.items.upsert(item, prov)
+            const { outcome } = await store.items.upsert(item, prov)
             onUpsert()
             inboxCache = null
+            log('info', 'watch', `filed (${outcome}): ${item.title}`, {
+              id: item.id,
+              watchId: watch.id,
+              runId,
+              channel: watch.scope,
+              outcome,
+            })
             return okResult('ok: recorded')
           } catch (err) {
             return errResult(err instanceof Error ? err.message : String(err))
@@ -875,7 +927,8 @@ function makeScanMcp(watch: Watch, runId: string, onUpsert: () => void) {
 async function runWatch(watchId: string): Promise<void> {
   const watch = await store.watches.get(watchId)
   if (!watch) return
-  const startedIso = new Date().toISOString()
+  const startedMs = Date.now()
+  const startedIso = new Date(startedMs).toISOString()
   const session = await store.sessions.create({
     id: randomUUID(),
     title: `Watch · ${watch.title}`,
@@ -884,6 +937,7 @@ async function runWatch(watchId: string): Promise<void> {
     watchId: watch.id,
   })
   rows.set(session.id, session)
+  log('info', 'watch', `run started: ${watch.title}`, { watchId: watch.id, runId: session.id, scope: watch.scope, cursor: watch.cursor })
 
   let seq = 0
   const emit = (event: SessionEvent, persist = true) => {
@@ -957,6 +1011,12 @@ async function runWatch(watchId: string): Promise<void> {
     session.runTokens = tokens
     session.runError = error
     await store.sessions.recordWatchRun(session.id, { status, matches, tokens, error })
+    log(
+      status === 'ok' ? 'info' : 'error',
+      'watch',
+      `run ${status}: ${watch.title}${status === 'ok' ? ` — ${matches} filed, ${Math.round(tokens / 1000)}k tok` : ''}${error ? ` — ${error}` : ''}`,
+      { watchId: watch.id, runId: session.id, status, matches, tokens, durationMs: Date.now() - startedMs, ...(error ? { error } : {}) },
+    )
     if (status === 'ok') {
       inboxCache = null
       void syncInbox()
@@ -971,13 +1031,14 @@ async function runWatch(watchId: string): Promise<void> {
  * disable, edit, or duplicate them; a `templateId` marks the origin.
  */
 const WATCH_TEMPLATES: Array<
-  Pick<Watch, 'title' | 'scope' | 'instruction' | 'cadence' | 'createsItems'> & { templateId: string }
+  Pick<Watch, 'title' | 'scope' | 'instruction' | 'schedule' | 'cadence' | 'createsItems'> & { templateId: string }
 > = [
   {
     templateId: 'unread-dms',
     title: 'Unread DMs',
     scope: '@dm',
     instruction: 'Find my unread Slack direct messages and triage each unanswered one into a work item.',
+    schedule: '0 * * * *',
     cadence: 'hourly',
     createsItems: true,
   },
@@ -986,6 +1047,7 @@ const WATCH_TEMPLATES: Array<
     title: 'Mentions',
     scope: '@mentions',
     instruction: 'Find Slack messages where I am mentioned or tagged and my reply is still awaited, and triage each into a work item.',
+    schedule: '0 * * * *',
     cadence: 'hourly',
     createsItems: true,
   },
@@ -1015,6 +1077,7 @@ async function seedWatchTemplates(): Promise<void> {
         title: t.title,
         scope: t.scope,
         instruction: t.instruction,
+        schedule: t.schedule,
         cadence: t.cadence,
         createsItems: t.createsItems,
         enabled: true,
@@ -1032,13 +1095,17 @@ async function seedWatchTemplates(): Promise<void> {
 // cron — the server is the long-running process; missed runs are simply due on
 // the first tick after wake.
 setInterval(() => {
-  runDueWatches().catch((err) => console.error('[watches] tick failed:', err))
+  lastSchedulerTickAt = Date.now()
+  runDueWatches().catch((err) => log('error', 'scheduler', `tick failed: ${err}`))
   store.items
     .wakeSnoozed(Date.now())
     .then((woken) => {
-      if (woken.length > 0) inboxCache = null
+      if (woken.length > 0) {
+        inboxCache = null
+        log('info', 'scheduler', `woke ${woken.length} snoozed item(s)`, { ids: woken })
+      }
     })
-    .catch((err) => console.error('[snooze] wake failed:', err))
+    .catch((err) => log('error', 'scheduler', `snooze wake failed: ${err}`))
 }, SCHEDULER_TICK_MS).unref()
 
 // The repo picker's "available" list; slow-ish (paginated), so cached.
@@ -1058,7 +1125,7 @@ async function getInbox(force: boolean): Promise<InboxSnapshot> {
 // Keep the cache warm while the server runs, so page loads are instant. A
 // failed background sync keeps the previous snapshot; the next view retries.
 setInterval(() => {
-  syncInbox().catch((err) => console.error('[inbox] background sync failed:', err))
+  syncInbox().catch((err) => log('error', 'inbox', `background sync failed: ${err}`))
 }, INBOX_KEEP_WARM_MS).unref()
 
 // ---------------------------------------------------------------------------
@@ -1108,6 +1175,7 @@ function probeConnectors(): Promise<ConnectorProbe> {
         )
         .sort((a, b) => a.name.localeCompare(b.name))
       connectorCache = { probedAt: Date.now(), connectors }
+      log('info', 'connectors', `probed: ${connectors.length} server(s), ${connectors.filter((c) => c.status === 'connected').length} connected`)
       return connectorCache
     } finally {
       input.close()
@@ -1152,6 +1220,7 @@ function probeModels(): Promise<ModelProbe> {
         }),
       )
       modelCache = { probedAt: Date.now(), models }
+      log('info', 'models', `probed: ${models.length} model(s) available`)
       return modelCache
     } finally {
       input.close()
@@ -1227,6 +1296,12 @@ function watchPatchFrom(raw: unknown): { patch: WatchPatch } | { error: string }
   if (r.cadence !== undefined) {
     if (!CADENCES.has(r.cadence as WatchCadence)) return { error: 'cadence must be hourly | daily | weekly' }
     patch.cadence = r.cadence as WatchCadence
+  }
+  if (r.schedule !== undefined) {
+    if (typeof r.schedule !== 'string' || !isValidCron(r.schedule)) {
+      return { error: 'schedule must be a valid 5-field cron expression, e.g. "0 9 * * *"' }
+    }
+    patch.schedule = r.schedule.trim()
   }
   if (r.windowStart !== undefined && r.windowStart !== null) {
     if (typeof r.windowStart !== 'string' || !/^\d{1,2}:\d{2}$/.test(r.windowStart)) return { error: 'windowStart must be "HH:MM"' }
@@ -1345,6 +1420,7 @@ async function resolveItemOp(rawId: unknown): Promise<void> {
   if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
   await store.items.transition(id, { status: 'done', actor: 'agent' })
   inboxCache = null
+  log('info', 'inbox', `done: ${id} (by agent)`, { id, actor: 'agent' })
 }
 
 async function createManualOp(raw: unknown): Promise<string> {
@@ -1352,6 +1428,7 @@ async function createManualOp(raw: unknown): Promise<string> {
   const id = `manual:${randomUUID()}`
   await store.items.createManual({ id, ...input })
   inboxCache = null
+  log('info', 'inbox', `manual item created: ${input.title ?? id}`, { id })
   return id
 }
 
@@ -1595,9 +1672,11 @@ const server = http.createServer(async (req, res) => {
         const parsed = watchPatchFrom(await readJsonBody(req))
         if ('error' in parsed) throw new Error(parsed.error)
         const p = parsed.patch
-        if (!p.title || !p.scope || !p.instruction || !p.cadence) {
-          throw new Error('a watch needs title, scope, instruction, and cadence')
+        if (!p.title || !p.scope || !p.instruction) {
+          throw new Error('a watch needs title, scope, and instruction')
         }
+        // Schedule is the source of truth; accept a legacy cadence as a fallback.
+        const schedule = p.schedule ?? (p.cadence ? cronFromCadence(p.cadence, p.windowStart, p.windowDay) : '0 9 * * *')
         const now = Date.now()
         await store.watches.create({
           id: randomUUID(),
@@ -1605,7 +1684,8 @@ const server = http.createServer(async (req, res) => {
           title: p.title,
           scope: p.scope,
           instruction: p.instruction,
-          cadence: p.cadence,
+          schedule,
+          cadence: p.cadence ?? 'daily',
           windowStart: p.windowStart,
           windowDay: p.windowDay,
           enabled: p.enabled ?? true,
@@ -1613,26 +1693,32 @@ const server = http.createServer(async (req, res) => {
           createdAt: now,
           updatedAt: now,
         })
+        log('info', 'watch', `created: ${p.title}`, { scope: p.scope, schedule })
         // active on the next scheduler tick (never run → due immediately)
       } else if (req.method === 'PUT') {
         const id = url.searchParams.get('id')
-        if (!id || !(await store.watches.get(id))) throw new Error('unknown watch id')
+        const existing = id ? await store.watches.get(id) : null
+        if (!id || !existing) throw new Error('unknown watch id')
         const parsed = watchPatchFrom(await readJsonBody(req))
         if ('error' in parsed) throw new Error(parsed.error)
         await store.watches.update(id, parsed.patch)
+        log('info', 'watch', `updated: ${parsed.patch.title ?? existing.title}`, { watchId: id })
       } else if (req.method === 'DELETE') {
         const id = url.searchParams.get('id')
         if (id) {
           // Never hard-delete the items: archive this watch's open/snoozed items
           // with a recorded reason, then drop the watch row (.docs/watches-v2.md).
+          let archived = 0
           for (const it of await store.items.listAll()) {
             const fromWatch = it.watchId === id || (it.foundBy ?? []).some((p) => p.watchId === id)
             if (fromWatch && (it.status === 'open' || it.status === 'snoozed')) {
               await store.items.transition(it.id, { status: 'archived', actor: 'system', detail: { reason: 'watch deleted' } })
+              archived += 1
             }
           }
           await store.watches.remove(id)
           inboxCache = null
+          log('info', 'watch', `deleted watch ${id}; archived ${archived} item(s)`, { watchId: id, archived })
         }
       }
       body = { ok: true, watches: await store.watches.list() }
@@ -1691,6 +1777,7 @@ const server = http.createServer(async (req, res) => {
       // A recorded transition on the durable item — never a delete (.docs/watches-v2.md).
       await store.items.transition(id, { status: statusV, actor: 'user', snoozeUntil })
       inboxCache = null
+      log('info', 'inbox', `${statusV}: ${id} (by user)`, { id, status: statusV, actor: 'user' })
       body = { ok: true }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1807,11 +1894,40 @@ const server = http.createServer(async (req, res) => {
       if (!w) throw new Error('unknown watch id')
       if (slackConnected() !== true) throw new Error('the claude.ai Slack connector is not connected')
       enqueueWatch(id)
+      log('info', 'watch', `run requested: ${w.title}`, { watchId: id })
       body = { ok: true }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     res.writeHead(body.ok ? 200 : 400, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // Daemon status for the System modal (is it up, ticking, connected?).
+  if (url.pathname === '/api/system' && req.method === 'GET') {
+    let body: SystemResponse
+    try {
+      body = { ok: true, status: await systemStatus() }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    res.writeHead(body.ok ? 200 : 502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+    return
+  }
+  // The daemon's recent activity log (filterable by level / subsystem / text).
+  if (url.pathname === '/api/logs' && req.method === 'GET') {
+    const level = url.searchParams.get('level')
+    const body: LogsResponse = {
+      ok: true,
+      entries: recentLogs({
+        level: (level as LogLevel) || undefined,
+        subsystem: url.searchParams.get('subsystem') || undefined,
+        q: url.searchParams.get('q') || undefined,
+      }),
+      subsystems: logSubsystems(),
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
     return
   }
@@ -1824,6 +1940,7 @@ const server = http.createServer(async (req, res) => {
         void syncInbox()
       })
       void runDueWatches({ force: true })
+      log('info', 'scheduler', 'manual scan requested (all watches + GitHub)')
       body = { ok: true }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -2178,10 +2295,10 @@ await seedWatchTemplates() // pre-install the built-in watch templates on first 
 inboxCache = await store.inbox.load() // last snapshot, so first paint is instant
 // Probe connectors in the background at startup: the Slack source gates on the
 // result, and the Connectors page becomes instant.
-probeConnectors().catch((err) => console.error('[connectors] startup probe failed:', err))
+probeConnectors().catch((err) => log('error', 'connectors', `startup probe failed: ${err}`))
 // Same idea for the model list: the composer's picker should be populated by
 // the time anyone opens it.
-probeModels().catch((err) => console.error('[models] startup probe failed:', err))
+probeModels().catch((err) => log('error', 'models', `startup probe failed: ${err}`))
 // The wss wraps the http server and re-emits its errors, so the handler has
 // to sit on both — an unhandled 'error' on either one crashes with a raw stack.
 for (const emitter of [server, wss]) emitter.on('error', onListenError)
@@ -2196,7 +2313,7 @@ function onListenError(err: NodeJS.ErrnoException) {
   throw err
 }
 server.listen(PORT, () => {
-  console.log(`triage-dev server → http://localhost:${PORT}  (db: ${DB_FILE})`)
+  log('info', 'server', `triage v${VERSION} started on :${PORT} (db: ${DB_FILE})`)
   // Record where we are so `triage stop/status` can find a --port server.
   writeState({ pid: process.pid, port: PORT, version: VERSION, startedAt: new Date().toISOString() }).catch(
     (err) => console.error('[state] could not write server.json:', err),
@@ -2205,6 +2322,7 @@ server.listen(PORT, () => {
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
+    log('info', 'server', `received ${sig} — shutting down`)
     clearState(process.pid).finally(() => process.exit(0))
   })
 }
