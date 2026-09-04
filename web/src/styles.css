@@ -1084,3 +1084,87 @@ dialog:focus-visible, dialog:focus { outline: none; }
 .logSub { color: var(--accent); flex: none; }
 .logMsg { overflow: hidden; text-overflow: ellipsis; }
 .logLine.error .logMsg { color: #f4a9a4; }
+
+/* ---------- workspaces (.docs/workspaces.md) ---------- */
+
+/* the switcher: which world am I in, and the door to the others */
+.wsSwitcher {
+  margin: 0 12px 8px; padding: 6px 9px; border-radius: var(--r-sm);
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  font: inherit; font-size: 13px; font-weight: 500; text-align: left;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+.wsSwitcher:hover, .wsSwitcher[data-state="open"] { background: var(--panel-hi); border-color: var(--border-hi); }
+.wsSwitcher > svg { color: var(--dim); flex: none; }
+.wsDot { width: 9px; height: 9px; min-width: 9px; border-radius: 3px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.25); }
+.wsSwitcher .wsName { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.wsMenu { min-width: 210px; }
+.wsMenu .wsMenuName { flex: 1; display: flex; align-items: center; gap: 7px; }
+.wsDefaultTag {
+  font-style: normal; font-size: 10px; color: var(--dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+}
+
+/* the creation / onboarding / settings modal */
+.wsModal { width: 560px; max-height: 86vh; overflow-y: auto; }
+.wsIntro { margin: 0 0 6px; font-size: 13px; line-height: 1.55; color: var(--text2); }
+.wsSteps { display: flex; gap: 6px; margin: 10px 0 4px; }
+.wsStep {
+  font-size: 11px; color: var(--dim); padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.wsStep.active { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-tint); }
+
+.wsColors { display: flex; gap: 8px; }
+.wsColor {
+  width: 24px; height: 24px; border-radius: 7px; border: 2px solid transparent; cursor: pointer;
+  padding: 0; display: flex; align-items: center; justify-content: center; color: #0a0b0d;
+}
+.wsColor.active { border-color: var(--text); }
+
+.wsAuthCards { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.wsAuthCard {
+  text-align: left; padding: 11px 13px; border-radius: var(--r);
+  background: var(--panel); border: 1px solid var(--border); color: var(--text2);
+  font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 4px;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.wsAuthCard:hover { border-color: var(--border-hi); }
+.wsAuthCard.active { border-color: var(--accent-dim); background: var(--accent-tint); }
+.wsAuthTitle { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
+.wsAuthTitle svg { color: var(--accent); }
+.wsAuthBody { font-size: 12px; line-height: 1.5; color: var(--text2); }
+.wsKeyRow { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; cursor: default; }
+.wsKeyRow input { width: 100%; font-family: var(--mono); font-size: 12px; }
+.wsKeyRow small { font-size: 11px; color: var(--dim); }
+.wsKeyRow code { font-size: 10.5px; }
+
+.wsVerify { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.wsModal .probing { color: var(--dim); font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.wsModal .probing .pip {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.3s infinite; display: inline-block;
+}
+.wsLogin { font-size: 12.5px; color: var(--text2); }
+.wsLogin p { margin: 0 0 6px; }
+.wsLoginCmd {
+  display: block; font-family: var(--mono); font-size: 11.5px; padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm);
+  color: var(--text); user-select: all; overflow-x: auto; white-space: nowrap;
+}
+.wsVerifyResults { display: flex; flex-direction: column; gap: 6px; }
+.wsVerifyRow { font-size: 13px; }
+.wsVerifyRow.ok { color: var(--green); }
+.wsVerifyRow.bad { color: var(--red); font-family: var(--mono); font-size: 12px; }
+.wsVerifyRow.dim { color: var(--dim); }
+.wsVerifyDetail { display: block; font-size: 11.5px; color: var(--dim); margin: 2px 0 0 18px; }
+.wsRecheck {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: var(--r-sm); cursor: pointer; font: inherit; font-size: 12px;
+  background: transparent; color: var(--text2); border: 1px solid var(--border);
+}
+.wsRecheck:hover:not(:disabled) { background: var(--panel-hi); }
+.wsRecheck:disabled { opacity: 0.5; cursor: default; }
+.wsModal .danger { background: var(--red); color: #180909; margin-right: auto; }

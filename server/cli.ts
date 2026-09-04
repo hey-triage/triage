@@ -72,14 +72,22 @@ const HELP = `
     ${cyan('triage status')}      show whether the server is running and where
     ${cyan('triage logs')}        print the tail of the server log
 
+  ${bold('Workspaces')} ${dim('(.docs/workspaces.md)')}
+    ${cyan('triage workspace list')}              list workspaces ${dim('(default marked *)')}
+    ${cyan('triage workspace create <name>')}     create a workspace ${dim('(--color #rrggbb)')}
+    ${cyan('triage workspace use <name|id>')}     make a workspace the default
+
   ${bold('Options')}
     ${cyan('--port <n>')}         port to serve on ${dim(`(default ${DEFAULT_PORT}; PORT env works too)`)}
+    ${cyan('--color <hex>')}      workspace color for ${cyan('workspace create')}
     ${cyan('--version')}          print the version
     ${cyan('--help')}             show this help
 
   ${bold('Files')}
-    ${dim('~/.triage/server.log')}    server output when started in the background
-    ${dim('~/.triage/server.json')}   pid/port of the last started server
+    ${dim('~/.triage/server.log')}        server output when started in the background
+    ${dim('~/.triage/server.json')}       pid/port of the last started server
+    ${dim('~/.triage/workspaces.json')}   the workspace registry
+    ${dim('~/.triage/workspaces/<id>/')}  each workspace's DB and auth material
 `
 
 function die(message: string): never {
@@ -91,6 +99,7 @@ function die(message: string): never {
 
 const args = process.argv.slice(2)
 let explicitPort: number | null = null
+let explicitColor: string | null = null
 const positional: string[] = []
 for (let i = 0; i < args.length; i++) {
   const a = args[i]
@@ -104,11 +113,18 @@ for (let i = 0; i < args.length; i++) {
     explicitPort = Number(args[++i])
   } else if (a.startsWith('--port=')) {
     explicitPort = Number(a.slice('--port='.length))
+  } else if (a === '--color') {
+    explicitColor = args[++i] ?? null
+  } else if (a.startsWith('--color=')) {
+    explicitColor = a.slice('--color='.length)
   } else if (a.startsWith('-')) {
     die(`unknown option ${a} — try ${cyan('triage --help')}`)
   } else {
     positional.push(a)
   }
+}
+if (explicitColor !== null && !/^#[0-9a-fA-F]{6}$/.test(explicitColor)) {
+  die(`--color needs a hex color, e.g. ${cyan('--color #7aa2f7')}`)
 }
 if (explicitPort !== null && (!Number.isInteger(explicitPort) || explicitPort <= 0 || explicitPort > 65535)) {
   die(`--port needs a port number, e.g. ${cyan('--port 5179')}`)
@@ -275,6 +291,95 @@ async function logs() {
   console.log(dim(`\n(full log: ${tilde(LOG_FILE)})`))
 }
 
+// --- workspaces ---------------------------------------------------------------
+// Prefer the running server's API (it owns the registry while it's up — edits
+// behind its back would diverge from the runtimes it already built); fall back
+// to the registry file only when no server is running.
+
+type WireWorkspace = { id: string; name: string; color: string; authBackend: string; isDefault: boolean }
+
+async function serverPort(): Promise<number | null> {
+  const port = await resolvePort(false)
+  const health = await checkHealth(port)
+  return health && health !== 'other' ? port : null
+}
+
+function printWorkspaces(rows: WireWorkspace[]) {
+  for (const w of rows) {
+    const mark = w.isDefault ? green('*') : ' '
+    console.log(`${mark} ${bold(w.name)} ${dim(`(${w.id} · ${w.authBackend})`)}`)
+  }
+}
+
+async function workspaceCmd(sub: string | undefined, name: string | undefined) {
+  const { loadRegistry, saveRegistry, slugify, ensureWorkspaceDirs } = await import('./workspaces.js')
+  const port = await serverPort()
+
+  if (sub === 'list' || sub === undefined) {
+    if (port) {
+      const body = (await (await fetch(`http://localhost:${port}/api/workspaces`)).json()) as {
+        ok: boolean
+        workspaces?: WireWorkspace[]
+        error?: string
+      }
+      if (!body.ok || !body.workspaces) die(body.error ?? 'could not list workspaces')
+      printWorkspaces(body.workspaces)
+    } else {
+      const reg = loadRegistry()
+      printWorkspaces(reg.workspaces.map((w) => ({ ...w, isDefault: w.id === reg.defaultId })))
+    }
+    return
+  }
+
+  if (sub === 'create') {
+    if (!name) die(`workspace create needs a name, e.g. ${cyan('triage workspace create work')}`)
+    if (port) {
+      const body = (await (
+        await fetch(`http://localhost:${port}/api/workspaces`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, ...(explicitColor ? { color: explicitColor } : {}) }),
+        })
+      ).json()) as { ok: boolean; workspace?: WireWorkspace; error?: string }
+      if (!body.ok || !body.workspace) die(body.error ?? 'could not create the workspace')
+      console.log(`${green('✓')} created workspace ${bold(body.workspace.name)} ${dim(`(${body.workspace.id})`)}`)
+    } else {
+      const reg = loadRegistry()
+      let id = slugify(name)
+      for (let n = 2; reg.workspaces.some((w) => w.id === id); n++) id = `${slugify(name)}-${n}`
+      reg.workspaces.push({ id, name, color: explicitColor ?? '#7aa2f7', authBackend: 'inherit', createdAt: Date.now() })
+      ensureWorkspaceDirs(id)
+      saveRegistry(reg)
+      console.log(`${green('✓')} created workspace ${bold(name)} ${dim(`(${id})`)} — picked up on the next server start`)
+    }
+    return
+  }
+
+  if (sub === 'use') {
+    if (!name) die(`workspace use needs a name or id, e.g. ${cyan('triage workspace use work')}`)
+    const reg = loadRegistry()
+    const match = reg.workspaces.find((w) => w.id === name || w.name.toLowerCase() === name.toLowerCase())
+    if (!match) die(`no workspace named "${name}" — see ${cyan('triage workspace list')}`)
+    if (port) {
+      const body = (await (
+        await fetch(`http://localhost:${port}/api/workspaces/default`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: match.id }),
+        })
+      ).json()) as { ok: boolean; error?: string }
+      if (!body.ok) die(body.error ?? 'could not switch the default workspace')
+    } else {
+      reg.defaultId = match.id
+      saveRegistry(reg)
+    }
+    console.log(`${green('✓')} default workspace is now ${bold(match.name)} ${dim(`(${match.id})`)}`)
+    return
+  }
+
+  die(`unknown workspace command "${sub}" — try ${cyan('triage workspace list')}`)
+}
+
 // --- dispatch ----------------------------------------------------------------
 
 switch (command) {
@@ -299,6 +404,10 @@ switch (command) {
     break
   case 'logs':
     await logs()
+    break
+  case 'workspace':
+  case 'workspaces':
+    await workspaceCmd(positional[1], positional[2])
     break
   default:
     die(`unknown command "${command}" — try ${cyan('triage --help')}`)

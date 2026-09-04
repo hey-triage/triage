@@ -13,10 +13,14 @@
  *
  *   claude mcp add triage -- npx tsx /path/to/server/mcp.ts
  *   TRIAGE_URL overrides the default http://localhost:5178
+ *   TRIAGE_WORKSPACE names the workspace to act in (.docs/workspaces.md);
+ *   unset = the default workspace — an external agent never writes into an
+ *   ambiguous workspace.
  */
 import readline from 'node:readline'
 
 const BASE_URL = (process.env.TRIAGE_URL || 'http://localhost:5178').replace(/\/$/, '')
+const WORKSPACE = process.env.TRIAGE_WORKSPACE || ''
 const PROTOCOL_VERSION = '2024-11-05'
 
 type JsonRpcRequest = { jsonrpc: '2.0'; id?: number | string; method: string; params?: Record<string, unknown> }
@@ -103,6 +107,8 @@ const TOOLS = [
 ]
 
 async function api(path: string, body?: unknown, method?: string): Promise<unknown> {
+  // Scope every call to the configured workspace (?workspace= wins server-side).
+  if (WORKSPACE) path += `${path.includes('?') ? '&' : '?'}workspace=${encodeURIComponent(WORKSPACE)}`
   const res = await fetch(`${BASE_URL}${path}`, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
     headers: { 'content-type': 'application/json' },

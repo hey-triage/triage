@@ -669,7 +669,8 @@ function ItemComposer({
 }
 
 // ---------------------------------------------------------------------------
-// Repo picker: which repos the GitHub source is scoped to. Empty = all.
+// Repo picker: which repos the GitHub source is scoped to, per workspace.
+// Empty = no GitHub items (scope is opt-in per workspace — see workspaces.md).
 // ---------------------------------------------------------------------------
 
 type PickerState =
@@ -751,7 +752,8 @@ function RepoPicker({
     <dialog ref={dialog} className="repoDialog" onClose={onClose}>
       <h3>Connected repos</h3>
       <p className="pickerSub">
-        The GitHub source only pulls from checked repos. Nothing checked = all repos.
+        The GitHub source only pulls from checked repos, and this scope is per workspace.
+        Nothing checked = no GitHub items here.
       </p>
       {state.phase === 'loading' && <div className="pickerLoading">Loading your repos…</div>}
       {state.phase === 'error' && <div className="msg error">{state.message}</div>}
@@ -773,7 +775,7 @@ function RepoPicker({
             {shown.length === 0 && <div className="pickerLoading">No repos match.</div>}
           </div>
           <div className="pickerCount">
-            {selected.size === 0 ? 'all repos' : `${selected.size} selected`}
+            {selected.size === 0 ? 'no repos — no GitHub items' : `${selected.size} selected`}
             {selected.size > 0 && (
               <button className="clearSel" onClick={() => setSelected(new Set())}>
                 clear

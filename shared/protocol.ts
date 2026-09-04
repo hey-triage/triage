@@ -15,6 +15,66 @@ import type { WatchRunStatus } from '../core/watch/types.js'
 
 export type SessionStatus = 'starting' | 'idle' | 'running' | 'error'
 
+// ---------------------------------------------------------------------------
+// Workspaces (.docs/workspaces.md) — the top-level scope isolating work from
+// personal. Each workspace has its own DB (projects, inbox, watches, sessions)
+// and its own Claude auth backend. Every HTTP request and WS connection is
+// bound to exactly one workspace (?workspace= param, else the triage_ws
+// cookie, else the default).
+// ---------------------------------------------------------------------------
+
+/**
+ * How a workspace's Claude subprocesses authenticate:
+ * - `inherit` — no overrides; the machine's own ~/.claude login (and its
+ *   claude.ai connectors), exactly like before workspaces existed.
+ * - `api-key` — spawned with ANTHROPIC_API_KEY from the workspace's .env.
+ *   Billed to the key; NO claude.ai connectors (they ride the claude.ai
+ *   login), so Slack watches don't run here. `gh` is unaffected.
+ * - `config-dir` — spawned with CLAUDE_CONFIG_DIR pointing into the workspace:
+ *   a separate claude.ai login with its own subscription and connectors.
+ *   Needs a one-time interactive login (see `loginCommand`).
+ */
+export type WorkspaceAuthBackend = 'inherit' | 'api-key' | 'config-dir'
+
+export type Workspace = {
+  id: string
+  name: string
+  /** hex color — the ambient "which world am I in" signal in the UI */
+  color: string
+  description?: string
+  authBackend: WorkspaceAuthBackend
+  isDefault: boolean
+  /** api-key backend: masked tail of the stored key ("…abcd"); null = none yet */
+  apiKeyHint?: string | null
+  /** config-dir backend: where that login lives, and the one-time login command */
+  configDir?: string
+  loginCommand?: string
+  createdAt: number
+}
+
+export type WorkspacesResponse =
+  | { ok: true; workspaces: Workspace[]; defaultId: string; onboarded: boolean }
+  | { ok: false; error: string }
+
+export type WorkspaceResponse = { ok: true; workspace: Workspace } | { ok: false; error: string }
+
+/**
+ * POST /api/workspaces/verify — a live probe with the workspace's own env.
+ * `authOk` is a real auth check (a one-turn headless prompt) for api-key and
+ * config-dir backends — the model catalog alone doesn't prove a key works.
+ * For `inherit` it is always true (that login is the machine's own).
+ */
+export type WorkspaceVerifyResponse =
+  | {
+      ok: true
+      models: ModelOption[]
+      connectors: Connector[]
+      slackConnected: boolean
+      authOk: boolean
+      authError?: string
+    }
+  | { ok: false; error: string }
+
 /**
  * What kind of session a row is. `chat` = a normal user conversation (the
  * default). `watch-run` = one watch's scan, run as a real session so its
@@ -248,6 +308,8 @@ export type SystemStatus = {
   startedAt: number
   uptimeMs: number
   port: number
+  /** the workspace this status describes (statuses are per-workspace) */
+  workspace: string
   db: string
   liveSessions: number
   /** true/false, or null when the connector probe hasn't landed yet */
@@ -283,8 +345,9 @@ export type LogsResponse =
 // ---------------------------------------------------------------------------
 // Connected repos (GET /api/repos, PUT /api/repos)
 //
-// The repos the GitHub source is scoped to. Empty = all repos the account
-// can see (noisy; the picker exists to narrow it).
+// The repos the GitHub source is scoped to, per workspace. Empty = NO GitHub
+// items (.docs/workspaces.md): scope is opt-in per workspace so the same PRs
+// don't mirror into every inbox. Pick the repos each workspace should track.
 // ---------------------------------------------------------------------------
 
 export type ReposResponse =
@@ -468,7 +531,16 @@ export type ClientMessage =
   | { type: 'interrupt'; sessionId: string }
 
 export type ServerMessage =
-  | { type: 'hello'; sessions: SessionSummary[] }
+  // hello also carries the workspace picture: which one this socket is bound
+  // to, every workspace's card for the switcher, and whether first-run
+  // onboarding has been completed.
+  | {
+      type: 'hello'
+      sessions: SessionSummary[]
+      workspaceId: string
+      workspaces: Workspace[]
+      onboarded: boolean
+    }
   | { type: 'sessions'; sessions: SessionSummary[] }
   | { type: 'session_created'; session: SessionSummary }
   | { type: 'session_deleted'; sessionId: string }

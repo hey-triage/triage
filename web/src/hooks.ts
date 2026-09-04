@@ -9,6 +9,18 @@ export function useSessions() {
   return useSyncExternalStore(store.subscribeStructural, store.getSessions)
 }
 
+export function useWorkspaces() {
+  return useSyncExternalStore(store.subscribeStructural, store.getWorkspaces)
+}
+
+export function useWorkspaceId() {
+  return useSyncExternalStore(store.subscribeStructural, store.getWorkspaceId)
+}
+
+export function useOnboarded() {
+  return useSyncExternalStore(store.subscribeStructural, store.getOnboarded)
+}
+
 export function useEvents(sessionId: string | null) {
   const get = useCallback(() => (sessionId ? store.getEvents(sessionId) : EMPTY), [sessionId])
   return useSyncExternalStore(store.subscribeStructural, get)

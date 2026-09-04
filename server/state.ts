@@ -16,7 +16,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const DEFAULT_PORT = 5178
-export const TRIAGE_DIR = path.join(os.homedir(), '.triage')
+/** TRIAGE_HOME relocates the whole state root (registry, workspaces, logs) — used by tests. */
+export const TRIAGE_DIR = process.env.TRIAGE_HOME || path.join(os.homedir(), '.triage')
 export const STATE_FILE = path.join(TRIAGE_DIR, 'server.json')
 export const LOG_FILE = path.join(TRIAGE_DIR, 'server.log')
 

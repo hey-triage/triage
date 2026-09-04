@@ -23,7 +23,16 @@ import { Sidebar } from './components/Sidebar.js'
 import { SystemModal } from './components/SystemModal.js'
 import { Transcript } from './components/Transcript.js'
 import { ADD_WATCH_KEY, REFINE_WATCH_KEY, WatchesPage } from './components/WatchesPage.js'
-import { useConn, useEvents, useHashRoute, useSessions } from './hooks.js'
+import { WorkspaceModal, type WorkspaceModalMode } from './components/WorkspaceModal.js'
+import {
+  useConn,
+  useEvents,
+  useHashRoute,
+  useOnboarded,
+  useSessions,
+  useWorkspaceId,
+  useWorkspaces,
+} from './hooks.js'
 import { anyDialogOpen, isTypingTarget } from './keys.js'
 import { store } from './store.js'
 
@@ -38,6 +47,20 @@ export function App() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [systemOpen, setSystemOpen] = useState(false)
   const [inboxNonce, setInboxNonce] = useState(0)
+  const workspaces = useWorkspaces()
+  const workspaceId = useWorkspaceId()
+  const onboarded = useOnboarded()
+  const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
+  const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
+
+  // First run: the workspace modal doubles as onboarding — introduce the
+  // concept, name the default workspace, pick the Claude auth method.
+  useEffect(() => {
+    if (!onboarded && activeWorkspace) {
+      setWsModal({ kind: 'onboarding', workspace: activeWorkspace })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onboarded, activeWorkspace?.id])
   // pending "g" prefix for two-key sequences (g i, g c)
   const goPrefix = useRef<number | undefined>(undefined)
 
@@ -243,6 +266,13 @@ export function App() {
         onSetPinned={setPinned}
         onDelete={deleteSession}
         onOpenSystem={() => setSystemOpen(true)}
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        onSwitchWorkspace={(id) => store.switchWorkspace(id)}
+        onNewWorkspace={() => setWsModal({ kind: 'create' })}
+        onWorkspaceSettings={() =>
+          activeWorkspace && setWsModal({ kind: 'settings', workspace: activeWorkspace })
+        }
       />
 
       <div id="main" className={current?.status === 'running' ? 'running' : undefined}>
@@ -301,6 +331,7 @@ export function App() {
       />
       <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
       <SystemModal open={systemOpen} conn={conn} onClose={() => setSystemOpen(false)} />
+      <WorkspaceModal mode={wsModal} onClose={() => setWsModal(null)} />
     </>
   )
 }

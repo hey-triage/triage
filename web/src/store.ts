@@ -15,6 +15,8 @@ import type {
   ServerMessage,
   SessionEvent,
   SessionSummary,
+  Workspace,
+  WorkspacesResponse,
 } from '../../shared/protocol.js'
 
 export type ConnState = 'connecting' | 'connected' | 'disconnected'
@@ -28,6 +30,13 @@ export class Store {
   #conn: ConnState = 'connecting'
   #sessions: readonly SessionSummary[] = []
   #events = new Map<string, readonly SessionEvent[]>()
+
+  // Workspace picture, from `hello`. The socket (and every fetch, via the
+  // triage_ws cookie) is bound to one workspace; switching = set the cookie
+  // and reload, so every page remounts against the new scope.
+  #workspaceId = ''
+  #workspaces: readonly Workspace[] = []
+  #onboarded = true
 
   #liveText = new Map<string, string>()
   /** Deltas received since the last animation frame. */
@@ -47,6 +56,9 @@ export class Store {
   getSessions = (): readonly SessionSummary[] => this.#sessions
   getEvents = (sessionId: string): readonly SessionEvent[] => this.#events.get(sessionId) ?? NO_EVENTS
   getLive = (sessionId: string): string => this.#liveText.get(sessionId) ?? ''
+  getWorkspaceId = (): string => this.#workspaceId
+  getWorkspaces = (): readonly Workspace[] => this.#workspaces
+  getOnboarded = (): boolean => this.#onboarded
 
   subscribeStructural = (fn: () => void) => {
     this.#structuralListeners.add(fn)
@@ -101,11 +113,49 @@ export class Store {
     this.send({ type: 'subscribe', sessionId })
   }
 
+  // -- workspaces -------------------------------------------------------------
+
+  /**
+   * Bind this browser to a workspace and reload. The cookie rides on every
+   * fetch and on the WS upgrade, so one write scopes the whole app; the reload
+   * remounts every page against the new scope (they all fetch on mount).
+   */
+  switchWorkspace(id: string) {
+    document.cookie = `triage_ws=${encodeURIComponent(id)}; path=/; max-age=31536000; samesite=lax`
+    location.reload()
+  }
+
+  /** Re-pull the workspace list after a create/edit/delete. */
+  async refreshWorkspaces(): Promise<void> {
+    try {
+      const body = (await (await fetch('/api/workspaces')).json()) as WorkspacesResponse
+      if (body.ok) {
+        this.#workspaces = body.workspaces
+        this.#onboarded = body.onboarded
+        this.#notify()
+      }
+    } catch {
+      // transient — the next hello refreshes it anyway
+    }
+  }
+
+  /** Local echo for completing/skipping onboarding (the server is told separately). */
+  markOnboarded() {
+    this.#onboarded = true
+    this.#notify()
+  }
+
   // -- incoming -------------------------------------------------------------
 
   #handle(msg: ServerMessage) {
     switch (msg.type) {
       case 'hello':
+        this.#sessions = msg.sessions
+        this.#workspaceId = msg.workspaceId
+        this.#workspaces = msg.workspaces
+        this.#onboarded = msg.onboarded
+        this.#notify()
+        break
       case 'sessions':
         this.#sessions = msg.sessions
         this.#notify()

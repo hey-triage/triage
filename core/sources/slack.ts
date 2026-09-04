@@ -244,7 +244,11 @@ export interface SlackScanOutcome {
 }
 
 /** Run one headless prompt to completion; returns the result text + tokens. */
-async function runHeadless(prompt: string, timeoutMs: number): Promise<{ text: string; tokens: number }> {
+async function runHeadless(
+  prompt: string,
+  timeoutMs: number,
+  env?: Record<string, string>,
+): Promise<{ text: string; tokens: number }> {
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), timeoutMs)
   try {
@@ -255,6 +259,8 @@ async function runHeadless(prompt: string, timeoutMs: number): Promise<{ text: s
         settingSources: ['user'],
         allowedTools: READ_ONLY_SLACK_TOOLS,
         abortController: abort,
+        // Workspace auth: spawn with the caller's env (api key / config dir).
+        ...(env ? { env } : {}),
       },
     })
     let text = ''
@@ -325,9 +331,10 @@ export async function previewWatch(
   scope: string,
   instruction: string,
   timeoutMs = 240_000,
+  env?: Record<string, string>,
 ): Promise<{ rows: WatchPreviewRow[]; tokens: number }> {
   const spec: WatchScanSpec = { id: 'preview', scope, instruction, createsItems: true }
-  const { text, tokens } = await runHeadless(composeScanPrompt(false, [spec]), timeoutMs)
+  const { text, tokens } = await runHeadless(composeScanPrompt(false, [spec]), timeoutMs, env)
   const rows = parseScanRows(text, new Set(['preview'])).watches.map((r) => ({
     title: r.title,
     permalink: r.permalink,
@@ -352,7 +359,11 @@ Request: ${JSON.stringify(text)}
 Output ONLY a JSON object, no prose, no code fence:
 {"title": "<short name, e.g. 'PX topics in #novus-px'>", "scope": "<#channel or @dm mentioned>", "instruction": "<the matching criteria as one clear sentence, including any exclusions>", "cadence": "hourly" | "daily" | "weekly" (default "daily" unless the request implies otherwise), "createsItems": true unless the request says FYI/digest-only}`
 
-export async function draftWatch(text: string, timeoutMs = 60_000): Promise<WatchDraft | null> {
+export async function draftWatch(
+  text: string,
+  timeoutMs = 60_000,
+  env?: Record<string, string>,
+): Promise<WatchDraft | null> {
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), timeoutMs)
   try {
@@ -363,6 +374,7 @@ export async function draftWatch(text: string, timeoutMs = 60_000): Promise<Watc
         settingSources: [],
         allowedTools: [],
         abortController: abort,
+        ...(env ? { env } : {}),
       },
     })
     let out = ''

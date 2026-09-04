@@ -1,4 +1,6 @@
 import {
+  Check,
+  ChevronsUpDown,
   Eye,
   ExternalLink,
   Folder,
@@ -8,10 +10,12 @@ import {
   Pin,
   PinOff,
   Plug,
+  Plus,
+  Settings2,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { SessionSummary } from '../../../shared/protocol.js'
+import type { SessionSummary, Workspace } from '../../../shared/protocol.js'
 import { MOD_LABEL } from '../keys.js'
 import type { ConnState } from '../store.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
@@ -24,6 +28,8 @@ type Props = {
   projectsActive: boolean
   connectorsActive: boolean
   conn: ConnState
+  workspaces: readonly Workspace[]
+  workspaceId: string
   onSelect: (id: string) => void
   onNew: () => void
   onInbox: () => void
@@ -34,6 +40,9 @@ type Props = {
   onSetPinned: (id: string, pinned: boolean) => void
   onDelete: (id: string) => void
   onOpenSystem: () => void
+  onSwitchWorkspace: (id: string) => void
+  onNewWorkspace: () => void
+  onWorkspaceSettings: () => void
 }
 
 const CONN_LABEL: Record<ConnState, string> = {
@@ -50,6 +59,8 @@ export function Sidebar({
   projectsActive,
   connectorsActive,
   conn,
+  workspaces,
+  workspaceId,
   onSelect,
   onNew,
   onInbox,
@@ -60,6 +71,9 @@ export function Sidebar({
   onSetPinned,
   onDelete,
   onOpenSystem,
+  onSwitchWorkspace,
+  onNewWorkspace,
+  onWorkspaceSettings,
 }: Props) {
   // At most one row is being renamed at a time — the sidebar is a list, not a
   // form. (The row menu now manages its own open state via Radix.)
@@ -77,6 +91,13 @@ export function Sidebar({
           <small>ranked work inbox</small>
         </span>
       </header>
+      <WorkspaceSwitcher
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        onSwitch={onSwitchWorkspace}
+        onNew={onNewWorkspace}
+        onSettings={onWorkspaceSettings}
+      />
       <nav id="sideNav">
         <button className={`navItem${inboxActive ? ' active' : ''}`} onClick={onInbox}>
           <Inbox size={16} aria-hidden="true" />
@@ -133,6 +154,60 @@ export function Sidebar({
         }}
       />
     </div>
+  )
+}
+
+/**
+ * The workspace switcher (.docs/workspaces.md): which world am I in, and the
+ * door to the others. The color dot is the ambient signal; the menu lists
+ * every workspace (active checked), plus New and Settings.
+ */
+function WorkspaceSwitcher({
+  workspaces,
+  workspaceId,
+  onSwitch,
+  onNew,
+  onSettings,
+}: {
+  workspaces: readonly Workspace[]
+  workspaceId: string
+  onSwitch: (id: string) => void
+  onNew: () => void
+  onSettings: () => void
+}) {
+  const active = workspaces.find((w) => w.id === workspaceId)
+  if (!active) return null // hello not in yet
+  return (
+    <Menu>
+      <MenuTrigger asChild>
+        <button type="button" className="wsSwitcher" title={`Workspace: ${active.name}`}>
+          <span className="wsDot" style={{ background: active.color }} aria-hidden="true" />
+          <span className="wsName">{active.name}</span>
+          <ChevronsUpDown size={13} aria-hidden="true" />
+        </button>
+      </MenuTrigger>
+      <MenuContent align="start" className="wsMenu">
+        {workspaces.map((w) => (
+          <MenuItem key={w.id} onSelect={() => w.id !== workspaceId && onSwitch(w.id)}>
+            <span className="wsDot" style={{ background: w.color }} aria-hidden="true" />
+            <span className="wsMenuName">
+              {w.name}
+              {w.isDefault && <em className="wsDefaultTag">default</em>}
+            </span>
+            {w.id === workspaceId && <Check size={13} aria-hidden="true" />}
+          </MenuItem>
+        ))}
+        <MenuSeparator />
+        <MenuItem onSelect={onNew}>
+          <Plus size={14} aria-hidden="true" />
+          New workspace…
+        </MenuItem>
+        <MenuItem onSelect={onSettings}>
+          <Settings2 size={14} aria-hidden="true" />
+          Workspace settings…
+        </MenuItem>
+      </MenuContent>
+    </Menu>
   )
 }
 
