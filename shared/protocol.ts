@@ -375,6 +375,14 @@ export type ProjectsResponse =
   | { ok: true; projects: Project[] }
   | { ok: false; error: string }
 
+// POST /api/pick-folder — opens the OS's native folder chooser on the machine
+// running the server (which is the user's own machine) and returns the picked
+// absolute path. `cancelled` is the user dismissing the dialog, not an error.
+export type PickFolderResponse =
+  | { ok: true; path: string }
+  | { ok: true; cancelled: true }
+  | { ok: false; error: string }
+
 // ---------------------------------------------------------------------------
 // Watches (GET/POST/PUT/DELETE /api/watches, POST /api/watches/draft,
 // POST /api/watches/preview) — the ingestion engine (.docs/watches.md).

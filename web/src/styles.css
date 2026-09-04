@@ -505,8 +505,7 @@ dialog .cancel:hover { background: var(--panel-hi); }
 #watchesPage .inner { max-width: 860px; margin: 0 auto; }
 #connectorsPage .inner, #projectsPage .inner { max-width: 760px; margin: 0 auto; }
 
-#inboxPage .pageHead, #connectorsPage .pageHead, #watchesPage .pageHead { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
-#projectsPage .pageHead { margin-bottom: 24px; }
+#inboxPage .pageHead, #connectorsPage .pageHead, #watchesPage .pageHead, #projectsPage .pageHead { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
 #inboxPage h2, #connectorsPage h2, #projectsPage h2, #watchesPage h2 {
   margin: 0 0 5px; font-size: 21px; font-weight: 600; letter-spacing: -0.02em;
 }
@@ -515,27 +514,28 @@ dialog .cancel:hover { background: var(--panel-hi); }
 }
 
 /* header buttons share one look; the primary "add" and the mono "repos" vary */
-#inboxPage .refresh, #connectorsPage .refresh, #watchesPage .refresh {
+#inboxPage .refresh, #connectorsPage .refresh, #watchesPage .refresh, #projectsPage .refresh {
   flex: none; padding: 7px 13px; border-radius: var(--r-sm);
   background: var(--panel); color: var(--text2); border: 1px solid var(--border);
   font-family: inherit; font-weight: 500; font-size: 13px; cursor: pointer;
   transition: border-color 0.1s ease, background 0.1s ease, color 0.1s ease;
 }
-#inboxPage .refresh:hover:not(:disabled), #connectorsPage .refresh:hover:not(:disabled), #watchesPage .refresh:hover:not(:disabled) {
+#inboxPage .refresh:hover:not(:disabled), #connectorsPage .refresh:hover:not(:disabled), #watchesPage .refresh:hover:not(:disabled), #projectsPage .refresh:hover:not(:disabled) {
   border-color: var(--border-hi); background: var(--panel-hi); color: var(--text);
 }
-#inboxPage .refresh:disabled, #connectorsPage .refresh:disabled, #watchesPage .refresh:disabled { opacity: 0.5; cursor: default; }
+#inboxPage .refresh:disabled, #connectorsPage .refresh:disabled, #watchesPage .refresh:disabled, #projectsPage .refresh:disabled { opacity: 0.5; cursor: default; }
 /* the first control after the page title floats to the right; the rest follow it */
 #inboxPage .pageHead > button:first-of-type,
 #connectorsPage .pageHead > button:first-of-type,
-#watchesPage .pageHead > button:first-of-type { margin-left: auto; }
+#watchesPage .pageHead > button:first-of-type,
+#projectsPage .pageHead > button:first-of-type { margin-left: auto; }
 
 /* the primary action on a page: filled indigo */
-#inboxPage .refresh.add, #watchesPage .refresh.add {
+#inboxPage .refresh.add, #watchesPage .refresh.add, #projectsPage .refresh.add {
   background: var(--accent-solid); color: var(--accent-fg); border-color: transparent;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
-#inboxPage .refresh.add:hover, #watchesPage .refresh.add:hover { background: var(--accent-hi); border-color: transparent; }
+#inboxPage .refresh.add:hover, #watchesPage .refresh.add:hover, #projectsPage .refresh.add:hover { background: var(--accent-hi); border-color: transparent; }
 
 #inboxPage .probing, #connectorsPage .probing, #watchesPage .probing {
   display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; padding: 24px 0;
@@ -964,19 +964,23 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
   font-size: 12px; padding: 3px 7px; border-radius: var(--r-xs); transition: color 0.1s, background 0.1s;
 }
 .projDelete:hover { color: var(--red); background: var(--red-tint); }
-.projForm { border: 1px solid var(--border); border-radius: var(--r); padding: 15px; background: var(--panel); }
-.projForm h3 { margin: 0 0 11px; font-size: 12px; color: var(--text2); font-weight: 600; }
-.projFields { display: grid; grid-template-columns: 1fr 1fr 1.4fr auto; gap: 8px; }
-.projFields input {
-  background: var(--bg2); border: 1px solid var(--border); color: var(--text);
-  border-radius: var(--r-sm); padding: 7px 10px; font: 12.5px/1.4 inherit; outline: none; min-width: 0;
-  transition: border-color 0.12s, box-shadow 0.12s;
+.projModal { width: 460px; }
+.projPickRow { display: flex; align-items: center; gap: 10px; }
+.projPick {
+  flex: none; display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 12px; border-radius: var(--r-sm); cursor: pointer; font: inherit; font-size: 13px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  transition: border-color 0.1s ease, background 0.1s ease;
 }
-.projFields input:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-tint); }
-.projFields .go { padding: 7px 15px; border-radius: var(--r-sm); border: none; background: var(--accent-solid); color: var(--accent-fg); font-family: inherit; font-weight: 500; font-size: 13px; cursor: pointer; }
-.projFields .go:hover:not(:disabled) { background: var(--accent-hi); }
-.projFields .go:disabled { opacity: 0.4; cursor: default; }
-.projError { margin-top: 8px; color: var(--red); font-size: 12px; }
+.projPick:hover:not(:disabled) { border-color: var(--border-hi); background: var(--panel-hi); }
+.projPick:disabled { opacity: 0.5; cursor: default; }
+.projPick svg { color: var(--accent); }
+.projPickPath {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; color: var(--text2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.projPickPath.empty { color: var(--dim); font-family: inherit; font-style: italic; }
+.projError { margin-top: 12px; color: var(--red); font-size: 12px; }
 
 /* project select in the session dialog */
 dialog select {
