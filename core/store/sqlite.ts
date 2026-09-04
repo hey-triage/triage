@@ -177,6 +177,9 @@ const MIGRATIONS: string[] = [
   // 12: cron schedule per watch — the precise fire schedule, superseding the
   // coarse hourly/daily/weekly cadence (old rows derive it from cadence).
   `ALTER TABLE watches ADD COLUMN schedule TEXT;`,
+  // 13: fast mode per session — premium speed at premium price, so it is opt-in
+  // per session and defaults off, including for every session that predates it.
+  `ALTER TABLE sessions ADD COLUMN fast_mode INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -285,6 +288,7 @@ type SessionRow = {
   sdk_session_id: string | null
   model: string | null
   effort: string | null
+  fast_mode: number
   permission_mode: string | null
   pinned: number
   kind: string | null
@@ -319,6 +323,7 @@ const toSession = (r: SessionRow): StoredSession => ({
   sdkSessionId: r.sdk_session_id,
   model: r.model,
   effort: toEffort(r.effort),
+  fastMode: r.fast_mode === 1,
   permissionMode: toPermissionMode(r.permission_mode),
   pinned: r.pinned === 1,
   kind: r.kind === 'watch-run' ? 'watch-run' : 'chat',
@@ -338,21 +343,23 @@ class SqliteSessions implements SessionStore {
     const now = Date.now()
     const model = s.model ?? null
     const effort = s.effort ?? null
+    const fastMode = s.fastMode ?? false
     const permissionMode = s.permissionMode ?? null
     const kind: SessionKind = s.kind ?? 'chat'
     const watchId = s.watchId ?? null
     this.db
       .prepare(
-        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, permission_mode, kind, watch_id, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, fast_mode, permission_mode, kind, watch_id, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(s.id, s.title, s.cwd, model, effort, permissionMode, kind, watchId, now, now)
+      .run(s.id, s.title, s.cwd, model, effort, fastMode ? 1 : 0, permissionMode, kind, watchId, now, now)
     return {
       id: s.id,
       title: s.title,
       cwd: s.cwd,
       model,
       effort,
+      fastMode,
       permissionMode,
       kind,
       watchId,
@@ -381,6 +388,10 @@ class SqliteSessions implements SessionStore {
 
   async setModel(id: string, model: string | null, effort: EffortLevel | null): Promise<void> {
     this.db.prepare('UPDATE sessions SET model = ?, effort = ? WHERE id = ?').run(model, effort, id)
+  }
+
+  async setFastMode(id: string, fastMode: boolean): Promise<void> {
+    this.db.prepare('UPDATE sessions SET fast_mode = ? WHERE id = ?').run(fastMode ? 1 : 0, id)
   }
 
   async setPermissionMode(id: string, mode: PermissionMode | null): Promise<void> {

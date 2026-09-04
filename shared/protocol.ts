@@ -126,6 +126,32 @@ export type ToolEffect = 'read' | 'local-write' | 'external-write'
 /** How much thinking the model puts into a turn. The SDK's own scale. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/**
+ * Fast mode: the same model served at up to ~2.5x the output tokens/second,
+ * at premium pricing. Off by default and chosen per session — speed you opt
+ * into for a turn you are waiting on, not a setting to forget you left on.
+ *
+ * Two facts, deliberately kept apart: what the user asked for (`fastMode` on
+ * the session) and what the subprocess reports it can actually do — the SDK
+ * only serves fast mode on some models, some plans and some auth backends,
+ * and says why when it cannot. Mirrors the SDK's own `FastModeState` /
+ * `FastModeDisabledReason`, so a stale reason we no longer know renders as
+ * plain unavailability rather than a lie.
+ */
+export type FastModeState = 'off' | 'cooldown' | 'on'
+
+export type FastModeDisabledReason =
+  | 'free'
+  | 'preference'
+  | 'extra_usage_disabled'
+  | 'network_error'
+  | 'unknown'
+  | 'not_first_party'
+  | 'disabled_by_env'
+  | 'model_not_allowed'
+  | 'sdk_opt_in_required'
+  | 'pending'
+
 export type SessionSummary = {
   id: string
   title: string
@@ -135,6 +161,12 @@ export type SessionSummary = {
   model?: string
   /** The chosen effort, when the user picked one. */
   effort?: EffortLevel
+  /** Fast mode as the user set it. Absent = off. */
+  fastMode?: boolean
+  /** What fast mode is actually doing, as the live subprocess last reported. */
+  fastModeState?: FastModeState
+  /** Why fast mode cannot serve right now. Absent = nothing is blocking it. */
+  fastModeDisabledReason?: FastModeDisabledReason
   /** How much this session asks before acting. Absent = 'default'. */
   permissionMode?: PermissionMode
   /** Pinned to the top of the sidebar. Absent = not pinned. */
@@ -223,6 +255,8 @@ export type ModelOption = {
   description: string
   /** Effort levels this model accepts; empty when it has no effort control. */
   efforts: EffortLevel[]
+  /** Whether this model can be run in fast mode at all. */
+  supportsFastMode?: boolean
 }
 
 export type ModelsResponse =
@@ -460,6 +494,9 @@ export type SdkMessage = {
   total_cost_usd?: number
   duration_ms?: number
   num_turns?: number
+  /** Carried on init and result messages; the session's fast-mode reality. */
+  fast_mode_state?: FastModeState
+  fast_mode_disabled_reason?: FastModeDisabledReason
 }
 
 // ---------------------------------------------------------------------------
@@ -515,9 +552,12 @@ export type ClientMessage =
       model?: string
       effort?: EffortLevel
       permissionMode?: PermissionMode
+      fastMode?: boolean
     }
   /** Switch a session's model/effort — mid-session, and for every turn after. */
   | { type: 'set_model'; sessionId: string; model?: string; effort?: EffortLevel }
+  /** Turn fast mode on or off — mid-session, and for every turn after. */
+  | { type: 'set_fast_mode'; sessionId: string; fastMode: boolean }
   /** Switch how much a session asks — mid-session, and for every turn after. */
   | { type: 'set_permission_mode'; sessionId: string; mode: PermissionMode }
   /** Give a session a new title. */

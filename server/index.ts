@@ -46,6 +46,8 @@ import type {
   Connector,
   ConnectorsResponse,
   EffortLevel,
+  FastModeDisabledReason,
+  FastModeState,
   ModelOption,
   ModelsResponse,
   PermissionBehavior,
@@ -314,6 +316,9 @@ initLogFile(path.join(TRIAGE_DIR, 'logs'))
 class LiveSession {
   status: SessionStatus = 'starting'
   model?: string
+  /** What fast mode is actually doing here, straight from the subprocess. */
+  fastModeState?: FastModeState
+  fastModeDisabledReason?: FastModeDisabledReason
   private seq: number
   private readonly input = new AsyncQueue<SDKUserMessage>()
   private readonly pendingPermissions = new Map<
@@ -357,6 +362,12 @@ class LiveSession {
         // real choice (an org can move it), not a model we should pin here.
         ...(row.model ? { model: row.model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
+        // Fast mode: the same model at up to ~2.5x output speed, priced higher.
+        // The SDK only honours it from the inline (flag) settings layer and
+        // only when it is explicitly true — a user/project setting is ignored
+        // in the Agent SDK ('sdk_opt_in_required'), so it is set at spawn here
+        // and cleared, not set false, when turned off (see setFastMode).
+        ...(row.fastMode ? { settings: { fastMode: true } } : {}),
         // How much this session asks. Only the SDK's own modes are passed; for
         // 'default' (its baseline) and 'gated' (ours, enforced in canUseTool)
         // the SDK is left at that baseline so every call reaches the gate.
@@ -381,6 +392,10 @@ class LiveSession {
     try {
       for await (const msg of this.q) {
         const m = msg as unknown as SdkMessage
+        // init and result messages carry what fast mode is really doing —
+        // including why it is not serving, which is the only way the user
+        // learns their toggle was overruled (wrong model, wrong plan, …).
+        if (m.fast_mode_state !== undefined) this.noteFastMode(m)
         if (m.type === 'system' && m.subtype === 'init') {
           this.model = m.model
           // The key for `resume` — without it a stored session can't continue.
@@ -419,6 +434,31 @@ class LiveSession {
   async setModel(model: string | null, effort: EffortLevel | null) {
     await this.q.setModel(model ?? undefined)
     await this.q.applyFlagSettings({ effortLevel: effort })
+  }
+
+  /**
+   * Turn fast mode on or off for every turn from here on. Off clears the key
+   * from the flag layer rather than writing `false`: the SDK reads absence as
+   * "not opted in", which is exactly what off means, and lets any lower-
+   * precedence setting speak for itself again.
+   */
+  async setFastMode(on: boolean) {
+    // The last verdict described the old setting; drop it rather than let the
+    // UI read a stale "not serving" against a switch just flipped. The next
+    // init or result message replaces it.
+    this.fastModeState = undefined
+    this.fastModeDisabledReason = undefined
+    await this.q.applyFlagSettings({ fastMode: on ? true : null })
+  }
+
+  /** Record the subprocess's own fast-mode verdict, broadcasting on a change. */
+  private noteFastMode(m: SdkMessage) {
+    const changed =
+      m.fast_mode_state !== this.fastModeState ||
+      m.fast_mode_disabled_reason !== this.fastModeDisabledReason
+    this.fastModeState = m.fast_mode_state
+    this.fastModeDisabledReason = m.fast_mode_disabled_reason
+    if (changed) broadcastSessionList(this.rt)
   }
 
   sendUserMessage(text: string) {
@@ -580,6 +620,9 @@ function summarize(rt: WorkspaceRuntime, row: StoredSession): SessionSummary {
     // before the subprocess has reported anything.
     model: row.model ?? l?.model,
     effort: row.effort ?? undefined,
+    fastMode: row.fastMode || undefined,
+    fastModeState: l?.fastModeState,
+    fastModeDisabledReason: l?.fastModeDisabledReason,
     permissionMode: row.permissionMode ?? undefined,
     pinned: row.pinned || undefined,
     branch: rt.branches.get(row.id),
@@ -634,6 +677,7 @@ async function createSession(
   cwd: string,
   model: string | null,
   effort: EffortLevel | null,
+  fastMode: boolean,
   permissionMode: PermissionMode | null,
 ): Promise<StoredSession> {
   const row = await rt.store.sessions.create({
@@ -642,6 +686,7 @@ async function createSession(
     cwd,
     model,
     effort,
+    fastMode,
     permissionMode,
   })
   rt.rows.set(row.id, row)
@@ -1325,6 +1370,7 @@ function probeModels(rt: WorkspaceRuntime): Promise<ModelProbe> {
           name: m.displayName,
           description: m.description,
           efforts: m.supportsEffort ? (m.supportedEffortLevels ?? []) : [],
+          supportsFastMode: m.supportsFastMode,
         }),
       )
       rt.modelCache = { probedAt: Date.now(), models }
@@ -2578,11 +2624,18 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         firstMessage: typeof m.firstMessage === 'string' ? m.firstMessage : undefined,
         model: model(m.model),
         effort: effort(m.effort),
+        fastMode: m.fastMode === true,
         permissionMode: permissionMode(m.permissionMode),
       }
     case 'set_model':
       return typeof m.sessionId === 'string'
         ? { type: 'set_model', sessionId: m.sessionId, model: model(m.model), effort: effort(m.effort) }
+        : null
+    case 'set_fast_mode':
+      // Anything but an explicit true is off — the paid-for mode is the one
+      // that has to be asked for exactly.
+      return typeof m.sessionId === 'string'
+        ? { type: 'set_fast_mode', sessionId: m.sessionId, fastMode: m.fastMode === true }
         : null
     case 'set_permission_mode': {
       const mode = permissionMode(m.mode)
@@ -2659,6 +2712,7 @@ wss.on('connection', (ws, req) => {
             cwd,
             msg.model ?? null,
             msg.effort ?? null,
+            msg.fastMode === true,
             msg.permissionMode ?? null,
           )
           send(ws, { type: 'session_created', session: summarize(rt, row) })
@@ -2675,6 +2729,17 @@ wss.on('connection', (ws, req) => {
           // A session with no subprocess picks the choice up from its row when
           // it is revived; a live one is switched in place.
           await rt.live.get(row.id)?.setModel(row.model, row.effort)
+          broadcastSessionList(rt)
+          break
+        }
+        case 'set_fast_mode': {
+          const row = rt.rows.get(msg.sessionId)
+          if (!row) break
+          row.fastMode = msg.fastMode
+          await rt.store.sessions.setFastMode(row.id, row.fastMode)
+          // Same shape as set_model: the row is what a revival reads, and a
+          // live subprocess is switched in place.
+          await rt.live.get(row.id)?.setFastMode(row.fastMode)
           broadcastSessionList(rt)
           break
         }

@@ -1,7 +1,14 @@
 import { Folder, GitBranch } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
-import type { EffortLevel, PermissionMode, SessionStatus } from '../../../shared/protocol.js'
+import type {
+  EffortLevel,
+  FastModeDisabledReason,
+  FastModeState,
+  PermissionMode,
+  SessionStatus,
+} from '../../../shared/protocol.js'
 import { nextMode } from '../permissionModes.js'
+import { FastModeToggle } from './FastModeToggle.js'
 import { ModelPicker } from './ModelPicker.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 
@@ -11,10 +18,14 @@ type Props = {
   branch?: string
   model?: string
   effort?: EffortLevel
+  fastMode?: boolean
+  fastModeState?: FastModeState
+  fastModeDisabledReason?: FastModeDisabledReason
   permissionMode?: PermissionMode
   onSend: (text: string) => void
   onInterrupt: () => void
   onModelChange: (model: string | undefined, effort: EffortLevel | undefined) => void
+  onFastModeChange: (fastMode: boolean) => void
   onPermissionModeChange: (mode: PermissionMode) => void
 }
 
@@ -36,10 +47,14 @@ export function Composer({
   branch,
   model,
   effort,
+  fastMode,
+  fastModeState,
+  fastModeDisabledReason,
   permissionMode,
   onSend,
   onInterrupt,
   onModelChange,
+  onFastModeChange,
   onPermissionModeChange,
 }: Props) {
   const [text, setText] = useState('')
@@ -76,6 +91,13 @@ export function Composer({
             </span>
           )}
           <ModelPicker model={model} effort={effort} onChange={onModelChange} />
+          <FastModeToggle
+            model={model}
+            fastMode={fastMode}
+            state={fastModeState}
+            reason={fastModeDisabledReason}
+            onChange={onFastModeChange}
+          />
           <PermissionModePicker mode={permissionMode} onChange={onPermissionModeChange} />
           <span className={`state ${status}`}>
             <span className="pip" />

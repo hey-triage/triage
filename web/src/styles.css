@@ -396,6 +396,23 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
 .statusline .chip.model svg { fill: none; stroke: currentColor; color: var(--dim); }
 .statusline .chip.model[data-state="open"] { border-color: var(--border-hi); color: var(--text); }
 
+/* ---------- fast mode ---------- */
+/* A toggle, not a menu: the chip is both the switch and the readout. Off is a
+   plain chip; on is the one warm thing in the statusline, because it is the
+   one setting that costs more per turn. `blocked` = asked for but not served. */
+.statusline .chip.fast {
+  cursor: pointer; font: 11px/1.4 var(--mono); color: var(--text2); gap: 6px;
+}
+.statusline .chip.fast:hover:not(:disabled) { border-color: var(--border-hi); color: var(--text); }
+.statusline .chip.fast:disabled { opacity: 0.4; cursor: default; }
+.statusline .chip.fast svg { fill: none; stroke: currentColor; color: var(--dim); }
+.statusline .chip.fast.on {
+  border-color: rgba(224, 163, 78, 0.45); background: var(--amber-tint); color: var(--amber);
+}
+.statusline .chip.fast.on svg { color: var(--amber); fill: currentColor; opacity: 1; }
+.statusline .chip.fast.blocked { border-color: rgba(235, 92, 92, 0.5); color: var(--red); }
+.statusline .chip.fast.blocked svg { color: var(--red); }
+
 /* ---------- permission-mode picker ---------- */
 .permPicker { position: relative; flex: none; }
 .statusline .chip.perm {

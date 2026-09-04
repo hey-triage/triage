@@ -37,6 +37,8 @@ export type StoredSession = {
   model: string | null
   /** The effort the user picked; null = the model's own default. */
   effort: EffortLevel | null
+  /** Fast mode, as the user set it. Persisted so a revived session keeps it. */
+  fastMode: boolean
   /** How much the session asks before acting; null = 'default' (ask). */
   permissionMode: PermissionMode | null
   /** Pinned sessions sort above the rest, whatever their last activity. */
@@ -68,6 +70,7 @@ export type NewSession = {
   cwd: string
   model?: string | null
   effort?: EffortLevel | null
+  fastMode?: boolean
   permissionMode?: PermissionMode | null
   kind?: SessionKind
   watchId?: string | null
@@ -87,6 +90,8 @@ export interface SessionStore {
   setSdkSessionId(id: string, sdkSessionId: string): Promise<void>
   /** Persist a model/effort switch, so a revived session keeps the choice. */
   setModel(id: string, model: string | null, effort: EffortLevel | null): Promise<void>
+  /** Persist a fast-mode switch, so a revived session keeps the choice. */
+  setFastMode(id: string, fastMode: boolean): Promise<void>
   /** Persist a permission-mode switch, so a revived session keeps the choice. */
   setPermissionMode(id: string, mode: PermissionMode | null): Promise<void>
   /** Give a session a new title. */

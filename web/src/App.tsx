@@ -96,6 +96,13 @@ export function App() {
     [currentId],
   )
 
+  const setFastMode = useCallback(
+    (fastMode: boolean) => {
+      if (currentId) store.send({ type: 'set_fast_mode', sessionId: currentId, fastMode })
+    },
+    [currentId],
+  )
+
   const setPermissionMode = useCallback(
     (mode: PermissionMode) => {
       if (currentId) store.send({ type: 'set_permission_mode', sessionId: currentId, mode })
@@ -190,6 +197,7 @@ export function App() {
       firstMessage: s.firstMessage || undefined,
       model: s.model,
       effort: s.effort,
+      fastMode: s.fastMode,
       permissionMode: s.permissionMode,
     })
     setPreset(null)
@@ -305,10 +313,14 @@ export function App() {
               branch={current.branch}
               model={current.model}
               effort={current.effort}
+              fastMode={current.fastMode}
+              fastModeState={current.fastModeState}
+              fastModeDisabledReason={current.fastModeDisabledReason}
               permissionMode={current.permissionMode}
               onSend={sendMessage}
               onInterrupt={interrupt}
               onModelChange={setModel}
+              onFastModeChange={setFastMode}
               onPermissionModeChange={setPermissionMode}
             />
           </>

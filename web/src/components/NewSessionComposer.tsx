@@ -8,6 +8,7 @@ import type {
 } from '../../../shared/protocol.js'
 import { isEffort } from '../models.js'
 import { isPermissionMode, nextMode } from '../permissionModes.js'
+import { FastModeToggle } from './FastModeToggle.js'
 import { ModelPicker } from './ModelPicker.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 
@@ -17,6 +18,7 @@ export type NewSession = {
   firstMessage: string
   model?: string
   effort?: EffortLevel
+  fastMode?: boolean
   permissionMode?: PermissionMode
 }
 
@@ -34,6 +36,9 @@ const DEFAULT_CWD = '~/Code/prnl/hey-triage'
 // per-browser preference, so it does not belong in the session store.
 const MODEL_KEY = 'triage.newSession.model'
 const EFFORT_KEY = 'triage.newSession.effort'
+// Fast mode is remembered too, but as an explicit '1' — anything else is off,
+// so a stale or garbled value can never quietly start billing at premium rates.
+const FAST_MODE_KEY = 'triage.newSession.fastMode'
 // Permission mode is remembered the same way — someone who works in auto mode
 // wants the next session in auto mode too, not a fresh round of prompts.
 const PERMISSION_KEY = 'triage.newSession.permissionMode'
@@ -64,6 +69,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
     const stored = remembered(EFFORT_KEY)
     return isEffort(stored) ? stored : undefined
   })
+  const [fastMode, setFastMode] = useState(() => remembered(FAST_MODE_KEY) === '1')
   const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(() => {
     const stored = remembered(PERMISSION_KEY)
     return isPermissionMode(stored) ? stored : undefined
@@ -100,7 +106,15 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
   function submit() {
     const trimmed = text.trim()
     if (!trimmed) return
-    onCreate({ title: titleFrom(trimmed), cwd, firstMessage: trimmed, model, effort, permissionMode })
+    onCreate({
+      title: titleFrom(trimmed),
+      cwd,
+      firstMessage: trimmed,
+      model,
+      effort,
+      fastMode,
+      permissionMode,
+    })
     setText('')
     requestAnimationFrame(autosize)
   }
@@ -140,6 +154,15 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
                 setEffort(e)
                 remember(MODEL_KEY, m)
                 remember(EFFORT_KEY, e)
+              }}
+            />
+
+            <FastModeToggle
+              model={model}
+              fastMode={fastMode}
+              onChange={(on) => {
+                setFastMode(on)
+                remember(FAST_MODE_KEY, on ? '1' : undefined)
               }}
             />
 
