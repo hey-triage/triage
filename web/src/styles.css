@@ -532,33 +532,33 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
 }
 #box::placeholder { color: var(--stone); opacity: 1; }
 .statusline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.statusline .chip {
+.chip {
   display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 2px 8px; height: 22px;
   border-radius: var(--r-full); background: var(--elev); border: 1px solid var(--hair-strong);
   color: var(--charcoal); font-size: 11px; line-height: 1.5; white-space: nowrap;
   transition: border-color 0.1s ease, color 0.1s ease;
 }
-.statusline button.chip:hover:not(:disabled), .statusline .chip[data-state="open"] { color: var(--ink); border-color: var(--hair-bright); }
-.statusline .chip:disabled { opacity: 0.45; cursor: default; }
-.statusline .chip svg { width: 12px; height: 12px; flex: none; color: var(--ash); }
-.statusline .chip .name { overflow: hidden; text-overflow: ellipsis; }
-.statusline .chip.model { color: var(--ink); }
-.statusline .chip.model .eff { color: var(--ash); }
-.statusline .chip.model .eff::before { content: "·"; margin-right: 6px; color: var(--stone); }
-.statusline .chip.cwd { font-family: var(--mono); max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
-.statusline .chip.fast { color: var(--ash); }
-.statusline .chip.fast.on { color: var(--yellow); border-color: rgba(255, 197, 61, 0.45); }
-.statusline .chip.fast.on svg { color: var(--yellow); fill: currentColor; }
-.statusline .chip.fast.blocked { color: var(--red); border-color: rgba(255, 32, 71, 0.45); }
-.statusline .chip.perm.risk-high { color: var(--red); border-color: rgba(255, 32, 71, 0.45); }
-.statusline .chip.perm.risk-high svg { color: var(--red); }
-.statusline .chip.cwd.pick { cursor: pointer; }
-.statusline .chip.cwd.pick select {
+button.chip:hover:not(:disabled), .chip[data-state="open"] { color: var(--ink); border-color: var(--hair-bright); }
+.chip:disabled { opacity: 0.45; cursor: default; }
+.chip svg { width: 12px; height: 12px; flex: none; color: var(--ash); }
+.chip .name { overflow: hidden; text-overflow: ellipsis; }
+.chip.model { color: var(--ink); }
+.chip.model .eff { color: var(--ash); }
+.chip.model .eff::before { content: "·"; margin-right: 6px; color: var(--stone); }
+.chip.cwd { font-family: var(--mono); max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+.chip.fast { color: var(--ash); }
+.chip.fast.on { color: var(--yellow); border-color: rgba(255, 197, 61, 0.45); }
+.chip.fast.on svg { color: var(--yellow); fill: currentColor; }
+.chip.fast.blocked { color: var(--red); border-color: rgba(255, 32, 71, 0.45); }
+.chip.perm.risk-high { color: var(--red); border-color: rgba(255, 32, 71, 0.45); }
+.chip.perm.risk-high svg { color: var(--red); }
+.chip.cwd.pick { cursor: pointer; }
+.chip.cwd.pick select {
   appearance: none; -webkit-appearance: none; min-width: 0; max-width: 100%; padding: 0; margin: 0;
   background: transparent; border: none; outline: none; cursor: pointer; color: inherit; font: 11px/1.5 var(--mono);
   overflow: hidden; text-overflow: ellipsis;
 }
-.statusline .chip.cwd.pick select option { background: var(--elev); color: var(--ink); }
+.chip.cwd.pick select option { background: var(--elev); color: var(--ink); }
 .modelPicker, .permPicker { position: relative; flex: none; display: flex; }
 #sendBtn, #stopBtn {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
@@ -944,8 +944,8 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .itemAside .prioSelect { max-width: none; width: fit-content; }
 .statusline { flex-wrap: nowrap; min-width: 0; }
 #newSessionHome .statusline .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.statusline .chip { flex: none; }
-.statusline .chip.cwd { flex: 0 1 auto; min-width: 72px; }
+.chip { flex: none; }
+.chip.cwd { flex: 0 1 auto; min-width: 72px; }
 #newSessionHome .statusline .hint { flex: 0 1 auto; }
 
 /* ---------- terminals ---------- */
@@ -991,17 +991,19 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .prow.draft .t { font-style: italic; }
 
 /* ---------- draft composer: header row ---------- */
-#composer .frame .cardHead { display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 10px; border-bottom: 1px solid var(--hair); min-width: 0; }
+/* The header bleeds to the card's edges (the frame pads 12px 14px), so its
+   rule runs edge to edge and its content shares the 14px gutter with the
+   prompt and the chips below. */
+#composer .frame:has(.cardHead) { padding-top: 0; }
+#composer .frame .cardHead { display: flex; align-items: center; gap: 10px; margin: 0 -14px; padding: 9px 14px; border-bottom: 1px solid var(--hair); min-width: 0; }
 .cardHead .chip { max-width: 240px; }
 .cardHead .chip .name { overflow: hidden; text-overflow: ellipsis; }
 .cardHead .branch { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--ash); white-space: nowrap; }
 .cardHead .branch svg { color: var(--stone); }
 .cardHead .path { margin-left: auto; color: var(--stone); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-#composer .frame .cardHead + #box { padding: 6px 4px 0; }
-#newSessionHome .frame #box { padding: 6px 4px 0; }
+#composer .frame .cardHead + #box { padding: 6px 0 0; }
+#newSessionHome .frame #box { padding: 6px 0 0; }
 .chip.pick { cursor: pointer; }
-.chip.pick select { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
-.chip.pick { position: relative; }
 .chip .pdot { width: 6px; height: 6px; border-radius: var(--r-full); flex: none; }
 
 
@@ -1037,3 +1039,17 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .mpFoot .eff { padding: 0 8px; font-size: 11px; }
 .keysHint { color: var(--stone); font-size: 11px; display: flex; gap: 6px; align-items: center; margin-top: -6px; }
 .keysHint kbd { color: var(--ash); }
+
+/* ---------- project picker ---------- */
+.uiMenu.projMenu { min-width: 320px; }
+.projMenuHead { padding: 6px 9px 4px; color: var(--stone); font-size: 10.5px; letter-spacing: 0.6px; text-transform: uppercase; }
+.projMenuEmpty { padding: 8px 9px 10px; color: var(--ash); font-size: 12px; }
+.projRowItem { align-items: flex-start; padding-top: 7px; padding-bottom: 7px; }
+.projRowItem .pdot { width: 7px; height: 7px; border-radius: var(--r-full); flex: none; margin-top: 6px; }
+.projRowItem .name { color: var(--ink); }
+.projRowItem .desc { display: flex; gap: 6px; align-items: baseline; font-family: var(--mono); font-size: 11px; color: var(--ash); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.projRowItem .desc .repo { color: var(--blue); }
+.projRowItem .desc .sep { color: var(--stone); }
+.projRowItem .desc .path { overflow: hidden; text-overflow: ellipsis; }
+.projRowItem .check { margin-top: 2px; }
+.projRowItem.on { background: rgba(255,255,255,0.04); }

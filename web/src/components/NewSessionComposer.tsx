@@ -1,4 +1,4 @@
-import { ArrowUp, ChevronDown, GitBranch } from 'lucide-react'
+import { ArrowUp, GitBranch } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   BranchResponse,
@@ -10,10 +10,10 @@ import type {
 import type { Draft } from '../drafts.js'
 import { isEffort } from '../models.js'
 import { isPermissionMode, nextMode } from '../permissionModes.js'
-import { projectColor } from '../tabs.js'
 import { FastModeToggle } from './FastModeToggle.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
+import { ProjectPicker } from './ProjectPicker.js'
 
 export type NewSession = {
   title: string
@@ -32,7 +32,6 @@ type Props = {
   onCreate: (s: NewSession) => void
 }
 
-const DEFAULT_CWD = '~/Code/prnl/hey-triage'
 
 // The last model picked here is the default for the next new session — a
 // per-browser preference, so it does not belong in the session store.
@@ -66,7 +65,8 @@ function titleFrom(text: string): string {
 export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
   const [projects, setProjects] = useState<Project[]>([])
   const [branch, setBranch] = useState<string | null>(null)
-  const cwd = draft.cwd ?? DEFAULT_CWD
+  // No folder chosen yet → the first saved project, else home.
+  const cwd = draft.cwd ?? projects[0]?.path ?? '~'
   const text = draft.text
   const [model, setModel] = useState<string | undefined>(() => remembered(MODEL_KEY))
   const [effort, setEffort] = useState<EffortLevel | undefined>(() => {
@@ -144,28 +144,7 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
       <div id="composer">
         <div className="frame card">
           <div className="cardHead">
-            <label className="chip ink pick" title={`Project folder: ${cwd}`}>
-              <span className="pdot" style={{ background: projectColor(cwd) }} aria-hidden="true" />
-              <span className="name">{project?.name ?? homely(cwd).split('/').pop() ?? cwd}</span>
-              <ChevronDown size={11} aria-hidden="true" />
-              <select
-                id="draftProject"
-                aria-label="Project"
-                value={project?.id ?? ''}
-                onChange={(e) => {
-                  const p = projects.find((x) => x.id === e.target.value)
-                  if (p) onChange({ cwd: p.path })
-                }}
-              >
-                {!project && <option value="">{homely(cwd)}</option>}
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                    {p.repo ? ` (${p.repo})` : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <ProjectPicker projects={projects} cwd={cwd} onPick={(path) => onChange({ cwd: path })} />
             {branch && (
               <span className="branch" title="Current branch">
                 <GitBranch size={12} aria-hidden="true" />
