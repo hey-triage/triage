@@ -1,5 +1,5 @@
 import { Eye, Folder, Plug, Terminal as TerminalIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type {
   EffortLevel,
   PermissionBehavior,
@@ -43,6 +43,7 @@ import { inboxStore, useInbox } from './inboxStore.js'
 import { anyDialogOpen, isTypingTarget } from './keys.js'
 import { EFFORT_LABEL, findModel, useModels } from './models.js'
 import { store } from './store.js'
+import { usePanelWidth } from './panelWidth.js'
 import { projectColor, useOpenTabs } from './tabs.js'
 
 /** `/Users/you/Code/x` → `~/Code/x` — display only. */
@@ -83,6 +84,7 @@ export function App() {
   const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
   const { tabs, open: openTab, close: closeTab } = useOpenTabs(workspaceId)
+  const panelSize = usePanelWidth()
 
   // First run: the workspace modal doubles as onboarding — introduce the
   // concept, name the default workspace, pick the Claude auth method.
@@ -453,7 +455,10 @@ export function App() {
         onHelp={() => setHelpOpen(true)}
       />
 
-      <div className="shell">
+      <div
+        className={`shell${panelSize.dragging ? ' resizing' : ''}`}
+        style={{ '--panel-w': `${panelSize.width}px` } as CSSProperties}
+      >
         <Rail
           active={railActive}
           inboxCount={inbox.items.length}
@@ -465,6 +470,14 @@ export function App() {
         />
 
         {panel}
+        <div
+          className="panelResize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the panel (double-click to reset)"
+          title="Drag to resize · double-click to reset"
+          {...panelSize.handleProps}
+        />
 
         <div id="main">
           <TabBand
@@ -475,6 +488,8 @@ export function App() {
             onSelect={(key) => navigate(tabRoute(key))}
             onClose={closeOpenTab}
             onNew={newSession}
+            onNewTerminal={newTerminal}
+            terminalCwd={terminalCwd}
           />
 
           <div className="content">

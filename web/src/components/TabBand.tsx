@@ -1,5 +1,9 @@
-import { Inbox, MessagesSquare, Plus, Terminal, X, type LucideProps } from 'lucide-react'
-import type { ComponentType, MouseEvent } from 'react'
+import { ChevronRight, Folder, Home, Inbox, MessagesSquare, Plus, Terminal, X, type LucideProps } from 'lucide-react'
+import { useEffect, useState, type ComponentType, type MouseEvent } from 'react'
+import type { Project, ProjectsResponse } from '../../../shared/protocol.js'
+import { Menu, MenuContent, MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger, MenuTrigger } from '../ui/Menu.js'
+
+const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 
 export type OpenTab = {
   /** the tab-band key: a session id, or `term:<id>` for a terminal */
@@ -23,10 +27,14 @@ type Props = {
   onSelect: (key: string) => void
   onClose: (key: string) => void
   onNew: () => void
+  /** Open a shell — in `cwd`, or the daemon's default (home) when undefined. */
+  onNewTerminal: (cwd?: string) => void
+  /** The folder a new terminal opens in by default: the active tab's. */
+  terminalCwd?: string
 }
 
 /** The tab band: Inbox pinned, one closable tab per open session or terminal, + for a new session. */
-export function TabBand({ activeKey, tabs, pageTab, onInbox, onSelect, onClose, onNew }: Props) {
+export function TabBand({ activeKey, tabs, pageTab, onInbox, onSelect, onClose, onNew, onNewTerminal, terminalCwd }: Props) {
   return (
     <div className="tabband" role="tablist">
       <button
@@ -77,9 +85,74 @@ export function TabBand({ activeKey, tabs, pageTab, onInbox, onSelect, onClose, 
         </button>
       )}
 
-      <button type="button" className="add" title="New session (n)" onClick={onNew}>
-        <Plus size={14} aria-hidden="true" />
-      </button>
+      <NewTabMenu onNew={onNew} onNewTerminal={onNewTerminal} terminalCwd={terminalCwd} />
     </div>
+  )
+}
+
+/** The "+": a new session, or a new terminal — here, or in a project folder. */
+function NewTabMenu({ onNew, onNewTerminal, terminalCwd }: Pick<Props, 'onNew' | 'onNewTerminal' | 'terminalCwd'>) {
+  const [open, setOpen] = useState(false)
+  const [projects, setProjects] = useState<Project[]>([])
+
+  useEffect(() => {
+    if (!open) return
+    void fetch('/api/projects')
+      .then((r) => r.json() as Promise<ProjectsResponse>)
+      .then((b) => {
+        if (b.ok) setProjects(b.projects)
+      })
+      .catch(() => {})
+  }, [open])
+
+  return (
+    <Menu open={open} onOpenChange={setOpen}>
+      <MenuTrigger asChild>
+        <button type="button" className="add" title="New tab — session or terminal">
+          <Plus size={14} aria-hidden="true" />
+        </button>
+      </MenuTrigger>
+      <MenuContent align="start" className="wide">
+        <MenuItem onSelect={onNew}>
+          <MessagesSquare size={14} aria-hidden="true" />
+          <span className="text">
+            <span className="name">New session</span>
+            <span className="desc">Pick the project in the composer</span>
+          </span>
+          <span className="val">n</span>
+        </MenuItem>
+        <MenuItem onSelect={() => onNewTerminal(terminalCwd)}>
+          <Terminal size={14} aria-hidden="true" />
+          <span className="text">
+            <span className="name">New terminal</span>
+            <span className="desc">{terminalCwd ? homely(terminalCwd) : 'Home folder'}</span>
+          </span>
+        </MenuItem>
+        <MenuSeparator />
+        <MenuSub>
+          <MenuSubTrigger className="nav">
+            <Folder size={14} aria-hidden="true" />
+            <span className="name">Terminal in…</span>
+            <ChevronRight size={14} aria-hidden="true" />
+          </MenuSubTrigger>
+          <MenuSubContent className="wide">
+            {projects.map((p) => (
+              <MenuItem key={p.id} onSelect={() => onNewTerminal(p.path)}>
+                <Folder size={14} aria-hidden="true" />
+                <span className="text">
+                  <span className="name">{p.name}</span>
+                  <span className="desc">{homely(p.path)}</span>
+                </span>
+              </MenuItem>
+            ))}
+            {projects.length > 0 && <MenuSeparator />}
+            <MenuItem onSelect={() => onNewTerminal(undefined)}>
+              <Home size={14} aria-hidden="true" />
+              Home folder
+            </MenuItem>
+          </MenuSubContent>
+        </MenuSub>
+      </MenuContent>
+    </Menu>
   )
 }

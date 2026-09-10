@@ -971,3 +971,17 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .termHome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 40px; position: relative; text-align: center; }
 .termHome p { margin: 0; color: var(--mute); font-size: 13px; max-width: 46ch; }
 .termHome .choices { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.tabband .add[data-state="open"] { color: var(--ink); background: var(--hair-soft); }
+
+/* ---------- panel resize handle ---------- */
+.panelResize {
+  position: relative; flex: none; width: 7px; margin-left: -4px; margin-right: -3px; z-index: 3;
+  cursor: col-resize; touch-action: none;
+}
+.panelResize::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px;
+  background: transparent; transition: background 0.12s ease;
+}
+.panelResize:hover::after, .shell.resizing .panelResize::after { background: var(--hair-bright); }
+.shell.resizing, .shell.resizing * { cursor: col-resize !important; user-select: none !important; }
+.shell.resizing .panel, .shell.resizing #main { transition: none; }
