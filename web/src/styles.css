@@ -947,3 +947,27 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .statusline .chip { flex: none; }
 .statusline .chip.cwd { flex: 0 1 auto; min-width: 72px; }
 #newSessionHome .statusline .hint { flex: 0 1 auto; }
+
+/* ---------- terminals ---------- */
+.termPage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.termTitle { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; color: var(--ink); font-size: 14px; cursor: text; }
+.termTitle svg { color: var(--stone); opacity: 0; transition: opacity 0.1s; }
+.termTitle:hover svg { opacity: 1; }
+.termRename { background: var(--canvas); border: 1px solid var(--hair-bright); border-radius: var(--r-sm); color: var(--ink); font-size: 14px; padding: 2px 8px; outline: none; min-width: 240px; }
+.termRename:focus { border-color: var(--ink); }
+#chatHeader.termHeader .state { margin-left: auto; }
+.termHost { flex: 1; min-height: 0; background: var(--deep); padding: 10px 6px 6px 14px; }
+.termHost .xterm { height: 100%; }
+.termHost .xterm .xterm-viewport { background: var(--deep) !important; }
+.termHost.exited { opacity: 0.7; }
+.termExited { display: flex; align-items: center; gap: 10px; padding: 10px 20px; border-top: 1px solid var(--hair); color: var(--mute); font-size: 12px; flex: none; }
+.termExited span { flex: 1; }
+.prow.term { height: auto; padding-top: 6px; padding-bottom: 6px; align-items: flex-start; }
+.prow.term > .dot { margin-top: 6px; }
+.prow.term .t { display: flex; flex-direction: column; gap: 2px; white-space: normal; }
+.prow.term .t .sub { color: var(--stone); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow.term.off .t { color: var(--ash); }
+.prow.term .rowMenu { margin-top: 1px; }
+.termHome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 40px; position: relative; text-align: center; }
+.termHome p { margin: 0; color: var(--mute); font-size: 13px; max-width: 46ch; }
+.termHome .choices { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }

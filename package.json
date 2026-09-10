@@ -16,7 +16,8 @@
     "triage-mcp": "dist/server/mcp.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts/postinstall.mjs"
   ],
   "engines": {
     "node": ">=22.5"
@@ -30,11 +31,13 @@
     "dev:web": "vite",
     "build": "rm -rf dist && vite build && tsc -p tsconfig.publish.json",
     "start": "tsx server/index.ts",
-    "prepublishOnly": "npm run typecheck && npm run build"
+    "prepublishOnly": "npm run typecheck && npm run build",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.251",
     "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "node-pty": "^1.1.0",
     "ws": "^8.21.3",
     "zod": "^4.5.2"
   },
@@ -44,6 +47,8 @@
     "@types/react-dom": "^19.2.5",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "dompurify": "^3.4.14",
     "lucide-react": "^1.37.0",
     "marked": "^18.0.11",

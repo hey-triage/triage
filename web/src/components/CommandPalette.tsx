@@ -5,13 +5,14 @@ import type {
   ProjectsResponse,
   ScoredItem,
   SessionSummary,
+  TerminalSummary,
   Watch,
   WatchesResponse,
 } from '../../../shared/protocol.js'
 
 export type Command = {
   id: string
-  section: 'Actions' | 'Pages' | 'Projects' | 'Sessions' | 'Watches' | 'Work items'
+  section: 'Actions' | 'Pages' | 'Projects' | 'Sessions' | 'Terminals' | 'Watches' | 'Work items'
   label: string
   hint?: string
   run: () => void
@@ -20,9 +21,11 @@ export type Command = {
 type Props = {
   open: boolean
   sessions: readonly SessionSummary[]
+  terminals: readonly TerminalSummary[]
   onClose: () => void
   onNavigate: (hash: string) => void
   onNewSession: () => void
+  onNewTerminal: () => void
   onOpenItem: (item: ScoredItem) => void
   onNewSessionIn: (project: Project) => void
   onSyncInbox: () => void
@@ -30,14 +33,16 @@ type Props = {
   onHelp: () => void
 }
 
-const SECTION_ORDER: Command['section'][] = ['Actions', 'Pages', 'Projects', 'Sessions', 'Watches', 'Work items']
+const SECTION_ORDER: Command['section'][] = ['Actions', 'Pages', 'Projects', 'Sessions', 'Terminals', 'Watches', 'Work items']
 
 export function CommandPalette({
   open,
   sessions,
+  terminals,
   onClose,
   onNavigate,
   onNewSession,
+  onNewTerminal,
   onOpenItem,
   onNewSessionIn,
   onSyncInbox,
@@ -84,11 +89,13 @@ export function CommandPalette({
   const commands = useMemo<Command[]>(
     () => [
       { id: 'new', section: 'Actions', label: 'New session', hint: 'n', run: onNewSession },
+      { id: 'newterm', section: 'Actions', label: 'New terminal', run: onNewTerminal },
       { id: 'sync', section: 'Actions', label: 'Sync inbox now', run: onSyncInbox },
       { id: 'addwatch', section: 'Actions', label: 'Add watch', run: onAddWatch },
       { id: 'help', section: 'Actions', label: 'Keyboard shortcuts', hint: '?', run: onHelp },
       { id: 'inbox', section: 'Pages', label: 'Inbox', hint: 'g i', run: () => onNavigate('/inbox') },
       { id: 'sessions', section: 'Pages', label: 'Sessions', hint: 'g s', run: () => onNavigate('') },
+      { id: 'terminals', section: 'Pages', label: 'Terminals', hint: 'g t', run: () => onNavigate('/terminals') },
       { id: 'watches', section: 'Pages', label: 'Watches', hint: 'g w', run: () => onNavigate('/watches') },
       { id: 'projects', section: 'Pages', label: 'Projects', hint: 'g p', run: () => onNavigate('/projects') },
       { id: 'connectors', section: 'Pages', label: 'Connectors', hint: 'g c', run: () => onNavigate('/connectors') },
@@ -119,6 +126,13 @@ export function CommandPalette({
         hint: `${s.status} · ${s.cwd.split('/').pop() ?? ''}`,
         run: () => onNavigate(s.id),
       })),
+      ...terminals.map((t): Command => ({
+        id: `t:${t.id}`,
+        section: 'Terminals',
+        label: t.title,
+        hint: `${t.status} · ${t.cwd.split('/').pop() ?? ''}`,
+        run: () => onNavigate(`/terminal/${t.id}`),
+      })),
       ...items.map((i): Command => ({
         id: `w:${i.id}`,
         section: 'Work items',
@@ -127,7 +141,7 @@ export function CommandPalette({
         run: () => onOpenItem(i),
       })),
     ],
-    [sessions, items, projects, watches, onNavigate, onNewSession, onOpenItem, onNewSessionIn, onSyncInbox, onAddWatch, onHelp],
+    [sessions, terminals, items, projects, watches, onNavigate, onNewSession, onNewTerminal, onOpenItem, onNewSessionIn, onSyncInbox, onAddWatch, onHelp],
   )
 
   const shown = useMemo(() => {

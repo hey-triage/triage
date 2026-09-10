@@ -21,6 +21,10 @@ export function useOnboarded() {
   return useSyncExternalStore(store.subscribeStructural, store.getOnboarded)
 }
 
+export function useTerminals() {
+  return useSyncExternalStore(store.subscribeStructural, store.getTerminals)
+}
+
 export function useEvents(sessionId: string | null) {
   const get = useCallback(() => (sessionId ? store.getEvents(sessionId) : EMPTY), [sessionId])
   return useSyncExternalStore(store.subscribeStructural, get)
@@ -40,6 +44,8 @@ export type Route =
   | { page: 'session'; id: string }
   | { page: 'inbox' }
   | { page: 'item'; id: string }
+  | { page: 'terminal'; id: string }
+  | { page: 'terminals' }
   | { page: 'connectors' }
   | { page: 'projects' }
   | { page: 'watches' }
@@ -57,6 +63,8 @@ function parseRoute(hash: string): Route {
       return { page: 'inbox' }
     }
   }
+  if (hash === '/terminals') return { page: 'terminals' }
+  if (hash.startsWith('/terminal/')) return { page: 'terminal', id: hash.slice('/terminal/'.length) }
   if (hash === '/connectors') return { page: 'connectors' }
   if (hash === '/projects') return { page: 'projects' }
   if (hash === '/watches') return { page: 'watches' }

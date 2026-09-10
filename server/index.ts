@@ -124,6 +124,7 @@ import {
   writeApiKey,
   type WorkspaceMeta,
 } from './workspaces.js'
+import { TerminalManager } from './terminals.js'
 
 const PORT = Number(process.env.PORT || 5178)
 const VERSION = pkgVersion()
@@ -290,11 +291,17 @@ class WorkspaceRuntime {
 
   /** the in-process triage MCP server every chat session in this workspace gets */
   readonly triageMcp: ReturnType<typeof createSdkMcpServer>
+  /** PTY shells opened from the web UI — run with this workspace's spawn env */
+  readonly terminals: TerminalManager
 
   constructor(public meta: WorkspaceMeta) {
     this.store = openSqliteStore(dbFileFor(meta.id, registry.defaultId))
     this.env = spawnEnvFor(meta)
     this.triageMcp = makeTriageMcp(this)
+    this.terminals = new TerminalManager(
+      (msg) => broadcast(this, msg),
+      (level, msg) => log(level, 'terminal', msg, { workspace: meta.id }),
+    )
   }
 
   /** Re-resolve the spawn env after an auth-backend or key change. */
@@ -2674,6 +2681,29 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         : null
     case 'interrupt':
       return typeof m.sessionId === 'string' ? { type: 'interrupt', sessionId: m.sessionId } : null
+    case 'terminal_create':
+      return {
+        type: 'terminal_create',
+        cwd: typeof m.cwd === 'string' && m.cwd ? m.cwd : undefined,
+        title: typeof m.title === 'string' && m.title ? m.title : undefined,
+        command: typeof m.command === 'string' && m.command ? m.command : undefined,
+      }
+    case 'terminal_input':
+      return typeof m.terminalId === 'string' && typeof m.data === 'string'
+        ? { type: 'terminal_input', terminalId: m.terminalId, data: m.data }
+        : null
+    case 'terminal_resize':
+      return typeof m.terminalId === 'string' && Number.isFinite(m.cols) && Number.isFinite(m.rows)
+        ? { type: 'terminal_resize', terminalId: m.terminalId, cols: Number(m.cols), rows: Number(m.rows) }
+        : null
+    case 'terminal_subscribe':
+      return typeof m.terminalId === 'string' ? { type: 'terminal_subscribe', terminalId: m.terminalId } : null
+    case 'terminal_rename':
+      return typeof m.terminalId === 'string'
+        ? { type: 'terminal_rename', terminalId: m.terminalId, title: str(m.title) }
+        : null
+    case 'terminal_close':
+      return typeof m.terminalId === 'string' ? { type: 'terminal_close', terminalId: m.terminalId } : null
     default:
       return null
   }
@@ -2689,6 +2719,7 @@ wss.on('connection', (ws, req) => {
     workspaceId: rt.meta.id,
     workspaces: wireWorkspaces(),
     onboarded: registry.onboarded,
+    terminals: rt.terminals.list(),
   })
 
   ws.on('message', async (raw) => {
@@ -2801,6 +2832,40 @@ wss.on('connection', (ws, req) => {
           void rt.live.get(msg.sessionId)?.interrupt()
           break
         }
+        case 'terminal_create': {
+          const terminal = rt.terminals.create({
+            cwd: msg.cwd ? expandHome(msg.cwd) : undefined,
+            title: msg.title,
+            command: msg.command,
+            env: rt.env,
+          })
+          // The creator hears first so it can switch to the new tab; the list
+          // broadcast (already sent by the manager) brings everyone else along.
+          send(ws, { type: 'terminal_created', terminal })
+          break
+        }
+        case 'terminal_input': {
+          rt.terminals.write(msg.terminalId, msg.data)
+          break
+        }
+        case 'terminal_resize': {
+          rt.terminals.resize(msg.terminalId, msg.cols, msg.rows)
+          break
+        }
+        case 'terminal_subscribe': {
+          if (rt.terminals.get(msg.terminalId)) {
+            send(ws, { type: 'terminal_history', terminalId: msg.terminalId, data: rt.terminals.history(msg.terminalId) })
+          }
+          break
+        }
+        case 'terminal_rename': {
+          rt.terminals.rename(msg.terminalId, msg.title)
+          break
+        }
+        case 'terminal_close': {
+          rt.terminals.close(msg.terminalId)
+          break
+        }
       }
     } catch (err) {
       send(ws, { type: 'error', message: String(err) })
@@ -2839,6 +2904,7 @@ server.listen(PORT, () => {
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log('info', 'server', `received ${sig} — shutting down`)
+    for (const rt of runtimes.values()) rt.terminals.killAll()
     clearState(process.pid).finally(() => process.exit(0))
   })
 }

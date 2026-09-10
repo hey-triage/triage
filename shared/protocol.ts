@@ -543,6 +543,25 @@ export type QuestionAnswers = Record<string, string>
 // Wire messages
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Terminals — PTY-backed shells the daemon runs for the browser. Ephemeral:
+// they live in the daemon's memory and die with it, so nothing here is stored.
+// ---------------------------------------------------------------------------
+
+export type TerminalStatus = 'running' | 'exited'
+
+export type TerminalSummary = {
+  id: string
+  title: string
+  cwd: string
+  /** the shell binary's basename, e.g. "zsh" */
+  shell: string
+  pid: number
+  status: TerminalStatus
+  exitCode?: number
+  createdAt: number
+}
+
 export type ClientMessage =
   | {
       type: 'create_session'
@@ -577,6 +596,16 @@ export type ClientMessage =
       answers?: QuestionAnswers
     }
   | { type: 'interrupt'; sessionId: string }
+  /** Open a shell in `cwd` (default: the home folder); `command` is typed in first, if given. */
+  | { type: 'terminal_create'; cwd?: string; title?: string; command?: string }
+  /** Keystrokes / pasted text — raw, exactly as the terminal emulator produced them. */
+  | { type: 'terminal_input'; terminalId: string; data: string }
+  | { type: 'terminal_resize'; terminalId: string; cols: number; rows: number }
+  /** Replay the scrollback buffer to this socket, then stream. */
+  | { type: 'terminal_subscribe'; terminalId: string }
+  | { type: 'terminal_rename'; terminalId: string; title: string }
+  /** Kill the process (if still running) and forget the terminal. */
+  | { type: 'terminal_close'; terminalId: string }
 
 export type ServerMessage =
   // hello also carries the workspace picture: which one this socket is bound
@@ -588,10 +617,18 @@ export type ServerMessage =
       workspaceId: string
       workspaces: Workspace[]
       onboarded: boolean
+      terminals: TerminalSummary[]
     }
   | { type: 'sessions'; sessions: SessionSummary[] }
   | { type: 'session_created'; session: SessionSummary }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'history'; sessionId: string; events: SessionEvent[] }
   | { type: 'session_event'; sessionId: string; event: SessionEvent }
+  | { type: 'terminals'; terminals: TerminalSummary[] }
+  | { type: 'terminal_created'; terminal: TerminalSummary }
+  /** The scrollback so far — sent once per subscribe, before live output resumes. */
+  | { type: 'terminal_history'; terminalId: string; data: string }
+  | { type: 'terminal_output'; terminalId: string; data: string }
+  | { type: 'terminal_exit'; terminalId: string; exitCode: number }
+  | { type: 'terminal_closed'; terminalId: string }
   | { type: 'error'; message: string }

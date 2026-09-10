@@ -1,4 +1,4 @@
-import { Eye, Folder, Plug } from 'lucide-react'
+import { Eye, Folder, Plug, Terminal as TerminalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   EffortLevel,
@@ -9,11 +9,12 @@ import type {
   QuestionAnswers,
   ScoredItem,
   SessionStatus,
+  TerminalSummary,
 } from '../../shared/protocol.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import { Composer } from './components/Composer.js'
 import { ConnectorsPage } from './components/ConnectorsPage.js'
-import { QueuePanel, SessionsPanel } from './components/ContextPanel.js'
+import { NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { InboxPage } from './components/InboxPage.js'
 import { ItemPage } from './components/ItemPage.js'
@@ -21,7 +22,8 @@ import { NewSessionComposer, type NewSession, type SessionPreset } from './compo
 import { ProjectsPage } from './components/ProjectsPage.js'
 import { Rail, type RailSection } from './components/Rail.js'
 import { SystemModal, type SystemTab } from './components/SystemModal.js'
-import { TabBand, type PageTab, type SessionTab } from './components/TabBand.js'
+import { TabBand, type OpenTab, type PageTab } from './components/TabBand.js'
+import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
 import { Transcript } from './components/Transcript.js'
 import { ADD_WATCH_KEY, REFINE_WATCH_KEY, WatchesPage } from './components/WatchesPage.js'
@@ -33,6 +35,7 @@ import {
   useHashRoute,
   useOnboarded,
   useSessions,
+  useTerminals,
   useWorkspaceId,
   useWorkspaces,
 } from './hooks.js'
@@ -52,7 +55,8 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'error',
 }
 
-const PAGE_TABS: Record<'watches' | 'projects' | 'connectors', PageTab> = {
+const PAGE_TABS: Record<'watches' | 'projects' | 'connectors' | 'terminals', PageTab> = {
+  terminals: { key: 'page:terminals', label: 'Terminals', icon: TerminalIcon },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
   projects: { key: 'page:projects', label: 'Projects', icon: Folder },
   connectors: { key: 'page:connectors', label: 'Connectors', icon: Plug },
@@ -61,10 +65,12 @@ const PAGE_TABS: Record<'watches' | 'projects' | 'connectors', PageTab> = {
 export function App() {
   const conn = useConn()
   const sessions = useSessions()
+  const terminals = useTerminals()
   const models = useModels()
   const inbox = useInbox()
   const [route, navigate] = useHashRoute()
   const currentId = route.page === 'session' ? route.id : null
+  const currentTerminalId = route.page === 'terminal' ? route.id : null
   const events = useEvents(currentId)
   const [preset, setPreset] = useState<SessionPreset | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -90,14 +96,22 @@ export function App() {
   const goPrefix = useRef<number | undefined>(undefined)
 
   const current = sessions.find((s) => s.id === currentId) ?? null
+  const currentTerminal = terminals.find((t) => t.id === currentTerminalId) ?? null
+  const termKey = (id: string) => `term:${id}`
 
   // The open inbox feeds the rail badge and the Queue panel from the start.
   useEffect(() => {
     if (conn === 'connected') void inboxStore.refresh()
   }, [conn])
 
-  // A session created from this tab becomes the selected one.
+  // A session or terminal created from this tab becomes the selected one.
   useEffect(() => store.onSessionCreated((s) => navigate(s.id)), [navigate])
+  useEffect(() => store.onTerminalCreated((t) => navigate(`/terminal/${t.id}`)), [navigate])
+
+  // A visited terminal gets a tab too.
+  useEffect(() => {
+    if (currentTerminalId) openTab(termKey(currentTerminalId))
+  }, [currentTerminalId, openTab])
 
   // Replay the log whenever the selection changes (and after a reconnect);
   // a visited session gets a tab.
@@ -185,26 +199,62 @@ export function App() {
 
   const openItem = useCallback((id: string) => navigate(itemHash(id)), [navigate])
 
+  // Terminals: open in a folder (the server falls back to home), rename, kill.
+  const newTerminal = useCallback((cwd?: string) => {
+    store.send({ type: 'terminal_create', cwd })
+  }, [])
+  const renameTerminal = useCallback((terminalId: string, title: string) => {
+    store.send({ type: 'terminal_rename', terminalId, title })
+  }, [])
+  const closeTerminal = useCallback(
+    (terminalId: string) => {
+      store.send({ type: 'terminal_close', terminalId })
+      closeTab(termKey(terminalId))
+      if (terminalId === currentTerminalId) {
+        const rest = terminals.filter((t) => t.id !== terminalId)
+        navigate(rest.length ? `/terminal/${rest[rest.length - 1].id}` : '/terminals')
+      }
+    },
+    [closeTab, currentTerminalId, terminals, navigate],
+  )
+  // Where "+" opens a shell: the folder of whatever tab is in front.
+  const terminalCwd = current?.cwd ?? currentTerminal?.cwd
+
   const goTo = useCallback(
     (section: RailSection) => {
       if (section === 'inbox') navigate('/inbox')
       else if (section === 'sessions') navigate(currentId ?? '')
-      else navigate(`/${section}`)
+      else if (section === 'terminals') {
+        const last = currentTerminalId ?? terminals[terminals.length - 1]?.id
+        navigate(last ? `/terminal/${last}` : '/terminals')
+      } else navigate(`/${section}`)
     },
-    [navigate, currentId],
+    [navigate, currentId, currentTerminalId, terminals],
   )
 
   // Closing the tab you are on lands you on its neighbour, else the inbox.
-  const closeSessionTab = useCallback(
-    (id: string) => {
-      if (id === currentId) {
-        const i = tabs.indexOf(id)
+  // A terminal tab closing does not kill the shell — that is the panel's menu.
+  const activeTabKey =
+    route.page === 'inbox' || route.page === 'item'
+      ? 'inbox'
+      : route.page === 'session'
+        ? route.id
+        : route.page === 'terminal'
+          ? termKey(route.id)
+          : route.page === 'home'
+            ? 'home'
+            : PAGE_TABS[route.page].key
+  const tabRoute = (key: string) => (key.startsWith('term:') ? `/terminal/${key.slice(5)}` : key)
+  const closeOpenTab = useCallback(
+    (key: string) => {
+      if (key === activeTabKey) {
+        const i = tabs.indexOf(key)
         const next = tabs[i + 1] ?? tabs[i - 1]
-        navigate(next ?? '/inbox')
+        navigate(next ? tabRoute(next) : '/inbox')
       }
-      closeTab(id)
+      closeTab(key)
     },
-    [tabs, currentId, navigate, closeTab],
+    [tabs, activeTabKey, navigate, closeTab],
   )
 
   // Global hotkeys. ⌘K works everywhere (even in inputs); single keys only
@@ -224,6 +274,7 @@ export function App() {
         goPrefix.current = undefined
         if (e.key === 'i') return navigate('/inbox')
         if (e.key === 's') return navigate(currentId ?? '')
+        if (e.key === 't') return goTo('terminals')
         if (e.key === 'c') return navigate('/connectors')
         if (e.key === 'p') return navigate('/projects')
         if (e.key === 'w') return navigate('/watches')
@@ -235,8 +286,10 @@ export function App() {
       }
       if (e.key === 'n') {
         e.preventDefault()
-        // In the inbox, `n` is "new work item"; everywhere else, a new session.
+        // In the inbox, `n` is "new work item"; among terminals, a new shell;
+        // everywhere else, a new session.
         if (route.page === 'inbox') setComposeSignal((n) => n + 1)
+        else if (route.page === 'terminal' || route.page === 'terminals') newTerminal(terminalCwd)
         else newSession()
       } else if (e.key === '?') {
         e.preventDefault()
@@ -245,7 +298,7 @@ export function App() {
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [navigate, newSession, currentId, route.page])
+  }, [navigate, newSession, newTerminal, terminalCwd, goTo, currentId, route.page])
 
   const create = useCallback((s: NewSession) => {
     store.send({
@@ -322,37 +375,46 @@ export function App() {
       ? 'inbox'
       : route.page === 'home' || route.page === 'session'
         ? 'sessions'
-        : route.page
+        : route.page === 'terminal'
+          ? 'terminals'
+          : route.page
 
-  const sessionTabs = useMemo<SessionTab[]>(
+  const openTabs = useMemo<OpenTab[]>(
     () =>
-      tabs
-        .map((id) => sessions.find((s) => s.id === id))
-        .filter((s): s is NonNullable<typeof s> => Boolean(s))
-        .map((s) => ({
-          id: s.id,
-          title: s.title,
-          color: projectColor(s.cwd),
-          running: s.status === 'running' || s.status === 'starting',
-        })),
-    [tabs, sessions],
+      tabs.flatMap((key): OpenTab[] => {
+        if (key.startsWith('term:')) {
+          const t: TerminalSummary | undefined = terminals.find((x) => x.id === key.slice(5))
+          return t ? [{ key, kind: 'terminal', title: t.title, color: projectColor(t.cwd), running: t.status === 'running' }] : []
+        }
+        const s = sessions.find((x) => x.id === key)
+        return s
+          ? [{ key, kind: 'session', title: s.title, color: projectColor(s.cwd), running: s.status === 'running' || s.status === 'starting' }]
+          : []
+      }),
+    [tabs, sessions, terminals],
   )
 
-  const activeTabKey =
-    route.page === 'inbox' || route.page === 'item'
-      ? 'inbox'
-      : route.page === 'session'
-        ? route.id
-        : route.page === 'home'
-          ? 'home'
-          : PAGE_TABS[route.page].key
-  const pageTab = route.page === 'watches' || route.page === 'projects' || route.page === 'connectors' ? PAGE_TABS[route.page] : null
+  const pageTab =
+    route.page === 'watches' || route.page === 'projects' || route.page === 'connectors' || route.page === 'terminals'
+      ? PAGE_TABS[route.page]
+      : null
 
   const runningCount = sessions.filter((s) => s.status === 'running' || s.status === 'starting').length
   const modelName = current ? findModel(models, current.model)?.name ?? current.model : undefined
 
   const panel =
-    railActive === 'inbox' ? (
+    railActive === 'terminals' ? (
+      <TerminalsPanel
+        terminals={terminals}
+        currentId={currentTerminalId}
+        defaultCwd={terminalCwd}
+        onSelect={(id) => navigate(`/terminal/${id}`)}
+        onNew={newTerminal}
+        onRename={renameTerminal}
+        onClose={closeTerminal}
+        onSearch={() => setPaletteOpen(true)}
+      />
+    ) : railActive === 'inbox' ? (
       <QueuePanel
         items={inbox.items}
         loaded={inbox.loaded}
@@ -396,6 +458,7 @@ export function App() {
           active={railActive}
           inboxCount={inbox.items.length}
           runningCount={runningCount}
+          terminalCount={terminals.filter((t) => t.status === 'running').length}
           workspaceColor={activeWorkspace?.color}
           conn={conn}
           onGo={goTo}
@@ -406,11 +469,11 @@ export function App() {
         <div id="main">
           <TabBand
             activeKey={activeTabKey}
-            sessionTabs={sessionTabs}
+            tabs={openTabs}
             pageTab={pageTab}
             onInbox={() => navigate('/inbox')}
-            onSelect={navigate}
-            onClose={closeSessionTab}
+            onSelect={(key) => navigate(tabRoute(key))}
+            onClose={closeOpenTab}
             onNew={newSession}
           />
 
@@ -424,6 +487,30 @@ export function App() {
               />
             ) : route.page === 'item' ? (
               <ItemPage key={route.id} id={route.id} onDispatch={dispatch} onNavigate={navigate} />
+            ) : route.page === 'terminal' ? (
+              currentTerminal ? (
+                <TerminalPage
+                  key={currentTerminal.id}
+                  terminal={currentTerminal}
+                  onRename={(title) => renameTerminal(currentTerminal.id, title)}
+                  onClose={() => closeTerminal(currentTerminal.id)}
+                  onNewHere={() => newTerminal(currentTerminal.cwd)}
+                />
+              ) : (
+                <div id="empty">Terminal not found — it may have been closed.</div>
+              )
+            ) : route.page === 'terminals' ? (
+              <div className="termHome">
+                <div className="glow green" aria-hidden="true" />
+                <h2 className="display">Terminals.</h2>
+                <p>
+                  A real shell, run by the daemon in a project folder. It lands as a tab beside your
+                  sessions, and anything you start in it keeps running while you look elsewhere.
+                </p>
+                <div className="choices">
+                  <NewTerminalMenu defaultCwd={terminalCwd} onNew={newTerminal} className="btn primary" />
+                </div>
+              </div>
             ) : route.page === 'watches' ? (
               <WatchesPage />
             ) : route.page === 'connectors' ? (
@@ -490,9 +577,11 @@ export function App() {
       <CommandPalette
         open={paletteOpen}
         sessions={sessions}
+        terminals={terminals}
         onClose={() => setPaletteOpen(false)}
         onNavigate={navigate}
         onNewSession={newSession}
+        onNewTerminal={() => newTerminal(terminalCwd)}
         onOpenItem={(item) => openItem(item.id)}
         onNewSessionIn={newSessionIn}
         onSyncInbox={syncInbox}

@@ -15,6 +15,7 @@ import type {
   ServerMessage,
   SessionEvent,
   SessionSummary,
+  TerminalSummary,
   Workspace,
   WorkspacesResponse,
 } from '../../shared/protocol.js'
@@ -46,6 +47,13 @@ export class Store {
   /** Set by the app so a locally-created session can be selected on arrival. */
   #onSessionCreated?: (s: SessionSummary) => void
 
+  // Terminals: the list is structural state; output bypasses React entirely and
+  // goes straight to the xterm instance that asked for it.
+  #terminals: readonly TerminalSummary[] = []
+  #terminalListeners = new Map<string, Set<(data: string, replay: boolean) => void>>()
+  #subscribedTerminals = new Set<string>()
+  #onTerminalCreated?: (t: TerminalSummary) => void
+
   #ws: WebSocket | null = null
   #subscribedTo: string | null = null
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined
@@ -59,6 +67,7 @@ export class Store {
   getWorkspaceId = (): string => this.#workspaceId
   getWorkspaces = (): readonly Workspace[] => this.#workspaces
   getOnboarded = (): boolean => this.#onboarded
+  getTerminals = (): readonly TerminalSummary[] => this.#terminals
 
   subscribeStructural = (fn: () => void) => {
     this.#structuralListeners.add(fn)
@@ -91,6 +100,7 @@ export class Store {
       // A reconnect leaves the UI holding a stale transcript; re-subscribing
       // replays the session log from the server.
       if (this.#subscribedTo) this.send({ type: 'subscribe', sessionId: this.#subscribedTo })
+      for (const id of this.#subscribedTerminals) this.send({ type: 'terminal_subscribe', terminalId: id })
       this.#notify()
     }
     ws.onclose = () => {
@@ -111,6 +121,37 @@ export class Store {
   subscribeSession(sessionId: string) {
     this.#subscribedTo = sessionId
     this.send({ type: 'subscribe', sessionId })
+  }
+
+  // -- terminals --------------------------------------------------------------
+
+  /**
+   * Stream one terminal's output to `fn`. `replay` is true for the scrollback
+   * that arrives right after subscribing (and again after a reconnect), so the
+   * listener can reset before writing it.
+   */
+  onTerminalData(terminalId: string, fn: (data: string, replay: boolean) => void) {
+    let set = this.#terminalListeners.get(terminalId)
+    if (!set) this.#terminalListeners.set(terminalId, (set = new Set()))
+    set.add(fn)
+    this.#subscribedTerminals.add(terminalId)
+    this.send({ type: 'terminal_subscribe', terminalId })
+    return () => {
+      set!.delete(fn)
+      if (set!.size === 0) {
+        this.#terminalListeners.delete(terminalId)
+        this.#subscribedTerminals.delete(terminalId)
+      }
+    }
+  }
+
+  onTerminalCreated(fn: (t: TerminalSummary) => void) {
+    this.#onTerminalCreated = fn
+  }
+
+  #emitTerminal(terminalId: string, data: string, replay: boolean) {
+    const set = this.#terminalListeners.get(terminalId)
+    if (set) for (const fn of set) fn(data, replay)
   }
 
   // -- workspaces -------------------------------------------------------------
@@ -154,6 +195,7 @@ export class Store {
         this.#workspaceId = msg.workspaceId
         this.#workspaces = msg.workspaces
         this.#onboarded = msg.onboarded
+        this.#terminals = msg.terminals
         this.#notify()
         break
       case 'sessions':
@@ -184,6 +226,35 @@ export class Store {
         break
       case 'session_event':
         this.#applyEvent(msg.sessionId, msg.event)
+        break
+      case 'terminals':
+        this.#terminals = msg.terminals
+        this.#notify()
+        break
+      case 'terminal_created':
+        if (!this.#terminals.some((t) => t.id === msg.terminal.id)) {
+          this.#terminals = [...this.#terminals, msg.terminal]
+        }
+        this.#onTerminalCreated?.(msg.terminal)
+        this.#notify()
+        break
+      case 'terminal_history':
+        this.#emitTerminal(msg.terminalId, msg.data, true)
+        break
+      case 'terminal_output':
+        this.#emitTerminal(msg.terminalId, msg.data, false)
+        break
+      case 'terminal_exit':
+        this.#terminals = this.#terminals.map((t) =>
+          t.id === msg.terminalId ? { ...t, status: 'exited', exitCode: msg.exitCode } : t,
+        )
+        this.#notify()
+        break
+      case 'terminal_closed':
+        this.#terminals = this.#terminals.filter((t) => t.id !== msg.terminalId)
+        this.#terminalListeners.delete(msg.terminalId)
+        this.#subscribedTerminals.delete(msg.terminalId)
+        this.#notify()
         break
       case 'error':
         // Server-level failure, not scoped to a session.

@@ -5,6 +5,8 @@
  */
 import {
   ExternalLink,
+  Folder,
+  Home,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -12,10 +14,12 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Terminal,
   Trash2,
+  X,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { ScoredItem, SessionSummary } from '../../../shared/protocol.js'
+import type { Project, ProjectsResponse, ScoredItem, SessionSummary, TerminalSummary } from '../../../shared/protocol.js'
 import { GROUP_ORDER, GROUP_SHORT, itemTone, kindIcon } from '../itemUi.js'
 import { MOD_LABEL } from '../keys.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
@@ -342,5 +346,212 @@ function DeleteSessionDialog({
         </button>
       </div>
     </dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Terminals — the shells the daemon is running for this workspace
+// ---------------------------------------------------------------------------
+
+type TerminalsProps = {
+  terminals: readonly TerminalSummary[]
+  currentId: string | null
+  /** Where "+" opens a shell by default — the active tab's folder, when there is one. */
+  defaultCwd?: string
+  onSelect: (id: string) => void
+  onNew: (cwd?: string) => void
+  onRename: (id: string, title: string) => void
+  onClose: (id: string) => void
+  onSearch: () => void
+}
+
+const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
+
+export function TerminalsPanel({ terminals, currentId, defaultCwd, onSelect, onNew, onRename, onClose, onSearch }: TerminalsProps) {
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const running = terminals.filter((t) => t.status === 'running').length
+
+  return (
+    <aside className="panel" aria-label="Terminals">
+      <PanelSearch onSearch={onSearch} placeholder="Search terminals, sessions…" />
+      <div className="panelBody">
+        <div className="panelHead">
+          <span>Terminals</span>
+          <span className="n">{terminals.length}</span>
+          {running > 0 && running !== terminals.length && <span className="n">· {running} running</span>}
+          <span className="acts">
+            <NewTerminalMenu defaultCwd={defaultCwd} onNew={onNew} />
+          </span>
+        </div>
+        {terminals.length === 0 && (
+          <div className="panelEmpty">No terminals yet. Open one with + — it starts in the active tab's folder.</div>
+        )}
+        {terminals.map((t) => (
+          <TerminalRow
+            key={t.id}
+            terminal={t}
+            active={t.id === currentId}
+            renaming={renaming === t.id}
+            onSelect={() => onSelect(t.id)}
+            onStartRename={() => setRenaming(t.id)}
+            onEndRename={(title) => {
+              setRenaming(null)
+              if (title !== undefined && title !== t.title) onRename(t.id, title)
+            }}
+            onClose={() => onClose(t.id)}
+          />
+        ))}
+      </div>
+      <div className="panelFoot">
+        <Terminal size={13} aria-hidden="true" />
+        <span>New terminals open in the active tab's folder.</span>
+      </div>
+    </aside>
+  )
+}
+
+/** "+" for a terminal: the active folder first, then every project, then home. */
+export function NewTerminalMenu({ defaultCwd, onNew, className }: { defaultCwd?: string; onNew: (cwd?: string) => void; className?: string }) {
+  const [projects, setProjects] = useState<Project[]>([])
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    void fetch('/api/projects')
+      .then((r) => r.json() as Promise<ProjectsResponse>)
+      .then((b) => {
+        if (b.ok) setProjects(b.projects)
+      })
+      .catch(() => {})
+  }, [open])
+
+  return (
+    <Menu open={open} onOpenChange={setOpen}>
+      <MenuTrigger asChild>
+        <button type="button" className={className ?? 'iconBtn sm'} title="New terminal">
+          <Plus size={13} aria-hidden="true" />
+        </button>
+      </MenuTrigger>
+      <MenuContent align="end" className="wide">
+        {defaultCwd && (
+          <>
+            <MenuItem onSelect={() => onNew(defaultCwd)}>
+              <Terminal size={14} aria-hidden="true" />
+              <span className="text">
+                <span className="name">New terminal here</span>
+                <span className="desc">{homely(defaultCwd)}</span>
+              </span>
+            </MenuItem>
+            <MenuSeparator />
+          </>
+        )}
+        {projects.map((p) => (
+          <MenuItem key={p.id} onSelect={() => onNew(p.path)}>
+            <Folder size={14} aria-hidden="true" />
+            <span className="text">
+              <span className="name">{p.name}</span>
+              <span className="desc">{homely(p.path)}</span>
+            </span>
+          </MenuItem>
+        ))}
+        {projects.length > 0 && <MenuSeparator />}
+        <MenuItem onSelect={() => onNew(undefined)}>
+          <Home size={14} aria-hidden="true" />
+          Home folder
+        </MenuItem>
+      </MenuContent>
+    </Menu>
+  )
+}
+
+function TerminalRow({
+  terminal: t,
+  active,
+  renaming,
+  onSelect,
+  onStartRename,
+  onEndRename,
+  onClose,
+}: {
+  terminal: TerminalSummary
+  active: boolean
+  renaming: boolean
+  onSelect: () => void
+  onStartRename: () => void
+  onEndRename: (title?: string) => void
+  onClose: () => void
+}) {
+  const input = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (renaming) input.current?.select()
+  }, [renaming])
+
+  const running = t.status === 'running'
+
+  if (renaming) {
+    return (
+      <div className={`prow${active ? ' sel' : ''}`}>
+        <span className={`dot sm ${running ? 'green' : 'stone'}`} aria-hidden="true" />
+        <input
+          ref={input}
+          className="renameInput"
+          defaultValue={t.title}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onEndRename(e.currentTarget.value.trim() || undefined)
+            else if (e.key === 'Escape') {
+              e.stopPropagation()
+              onEndRename()
+            }
+          }}
+          onBlur={(e) => onEndRename(e.currentTarget.value.trim() || undefined)}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={`prow term${active ? ' sel' : ''}${running ? '' : ' off'}`}
+      role="button"
+      tabIndex={0}
+      title={`${t.title} — ${homely(t.cwd)}`}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
+    >
+      <span className={`dot sm ${running ? 'green' : 'stone'}`} aria-hidden="true" />
+      <span className="t">
+        {t.title}
+        <span className="sub">{running ? homely(t.cwd) : `exited · ${t.exitCode ?? '?'}`}</span>
+      </span>
+      <Menu>
+        <MenuTrigger asChild>
+          <button
+            type="button"
+            className="iconBtn rowMenu"
+            aria-label={`Terminal options for ${t.title}`}
+            title="Terminal options"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreHorizontal size={14} aria-hidden="true" />
+          </button>
+        </MenuTrigger>
+        <MenuContent align="end">
+          <MenuItem onSelect={onStartRename}>
+            <Pencil size={14} aria-hidden="true" />
+            Rename
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem className="danger" onSelect={onClose}>
+            <X size={14} aria-hidden="true" />
+            {running ? 'Kill and close' : 'Close'}
+          </MenuItem>
+        </MenuContent>
+      </Menu>
+    </div>
   )
 }

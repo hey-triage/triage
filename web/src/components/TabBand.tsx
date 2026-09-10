@@ -1,29 +1,32 @@
-import { Inbox, MessagesSquare, Plus, X, type LucideProps } from 'lucide-react'
+import { Inbox, MessagesSquare, Plus, Terminal, X, type LucideProps } from 'lucide-react'
 import type { ComponentType, MouseEvent } from 'react'
 
-export type SessionTab = {
-  id: string
+export type OpenTab = {
+  /** the tab-band key: a session id, or `term:<id>` for a terminal */
+  key: string
+  kind: 'session' | 'terminal'
   title: string
   color: string
+  /** live: a working session, or a running shell */
   running: boolean
 }
 
 export type PageTab = { key: string; label: string; icon: ComponentType<LucideProps> }
 
 type Props = {
-  /** 'inbox', a session id, or a page tab key */
+  /** 'inbox', a tab key, or a page tab key */
   activeKey: string
-  sessionTabs: readonly SessionTab[]
+  tabs: readonly OpenTab[]
   /** A transient tab for a rail page (Watches, Projects, …) — never persisted. */
   pageTab?: PageTab | null
   onInbox: () => void
-  onSelect: (id: string) => void
-  onClose: (id: string) => void
+  onSelect: (key: string) => void
+  onClose: (key: string) => void
   onNew: () => void
 }
 
-/** The tab band: Inbox pinned, one closable tab per open session, + for a new one. */
-export function TabBand({ activeKey, sessionTabs, pageTab, onInbox, onSelect, onClose, onNew }: Props) {
+/** The tab band: Inbox pinned, one closable tab per open session or terminal, + for a new session. */
+export function TabBand({ activeKey, tabs, pageTab, onInbox, onSelect, onClose, onNew }: Props) {
   return (
     <div className="tabband" role="tablist">
       <button
@@ -37,35 +40,30 @@ export function TabBand({ activeKey, sessionTabs, pageTab, onInbox, onSelect, on
         <span className="t">Inbox</span>
       </button>
 
-      {sessionTabs.map((t) => {
-        const active = activeKey === t.id
+      {tabs.map((t) => {
+        const active = activeKey === t.key
         const close = (e: MouseEvent) => {
           e.stopPropagation()
-          onClose(t.id)
+          onClose(t.key)
         }
+        const Icon = t.kind === 'terminal' ? Terminal : MessagesSquare
         return (
           <button
-            key={t.id}
+            key={t.key}
             type="button"
             role="tab"
             aria-selected={active}
             className={`tab${active ? ' active' : ''}`}
             title={t.title}
-            onClick={() => onSelect(t.id)}
+            onClick={() => onSelect(t.key)}
             onAuxClick={(e) => e.button === 1 && close(e)}
           >
-            <MessagesSquare size={13} aria-hidden="true" />
+            <Icon size={13} aria-hidden="true" />
             <span className="t">
               <span className={`pdot${t.running ? ' live' : ''}`} style={{ background: t.color }} aria-hidden="true" />
               {t.title}
             </span>
-            <span
-              className="cl"
-              role="button"
-              aria-label={`Close ${t.title}`}
-              tabIndex={-1}
-              onClick={close}
-            >
+            <span className="cl" role="button" aria-label={`Close ${t.title}`} tabIndex={-1} onClick={close}>
               <X size={11} aria-hidden="true" />
             </span>
           </button>

@@ -7,6 +7,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['Shift+Tab', 'Composer: cycle how much the session asks before acting'],
   ['g i', 'Go to Inbox'],
   ['g s', 'Go to Sessions'],
+  ['g t', 'Go to Terminals (n opens a new one there)'],
   ['g w', 'Go to Watches'],
   ['g p', 'Go to Projects'],
   ['g c', 'Go to Connectors'],
