@@ -42,7 +42,19 @@ export function useOpenTabs(workspaceId: string) {
     setTabs((prev) => prev.filter((t) => t !== id))
   }, [])
 
-  return { tabs, open, close }
+  /** A draft tab becoming a session tab: same slot, new key. */
+  const replace = useCallback((from: string, to: string) => {
+    setTabs((prev) => {
+      const without = prev.filter((t) => t !== to)
+      const i = without.indexOf(from)
+      if (i === -1) return without.includes(to) ? without : [...without, to]
+      const next = [...without]
+      next[i] = to
+      return next
+    })
+  }, [])
+
+  return { tabs, open, close, replace }
 }
 
 /**

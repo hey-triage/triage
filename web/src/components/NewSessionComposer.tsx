@@ -1,6 +1,7 @@
 import { ArrowUp, ChevronDown, FolderGit2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { EffortLevel, PermissionMode, Project, ProjectsResponse } from '../../../shared/protocol.js'
+import type { Draft } from '../drafts.js'
 import { isEffort } from '../models.js'
 import { isPermissionMode, nextMode } from '../permissionModes.js'
 import { FastModeToggle } from './FastModeToggle.js'
@@ -17,11 +18,10 @@ export type NewSession = {
   permissionMode?: PermissionMode
 }
 
-export type SessionPreset = { title: string; firstMessage: string; cwd?: string }
-
 type Props = {
-  /** Prefill (e.g. dispatching a work item). Applied each time it changes. */
-  preset?: SessionPreset | null
+  /** The draft this tab edits; text and folder round-trip through it so they survive a tab switch. */
+  draft: Draft
+  onChange: (patch: { text?: string; cwd?: string }) => void
   onCreate: (s: NewSession) => void
 }
 
@@ -54,11 +54,11 @@ function titleFrom(text: string): string {
   return text.trim().split('\n')[0].slice(0, 80)
 }
 
-/** The home screen: a blank composer that spins up a session on first send. */
-export function NewSessionComposer({ preset, onCreate }: Props) {
+/** A draft tab: the composer that becomes a session on first send. */
+export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
   const [projects, setProjects] = useState<Project[]>([])
-  const [cwd, setCwd] = useState(DEFAULT_CWD)
-  const [text, setText] = useState('')
+  const cwd = draft.cwd ?? DEFAULT_CWD
+  const text = draft.text
   const [model, setModel] = useState<string | undefined>(() => remembered(MODEL_KEY))
   const [effort, setEffort] = useState<EffortLevel | undefined>(() => {
     const stored = remembered(EFFORT_KEY)
@@ -81,15 +81,12 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
   }, [])
 
   useEffect(() => {
-    if (preset) {
-      setText(preset.firstMessage)
-      if (preset.cwd) setCwd(preset.cwd)
-    } else {
-      setText('')
-      setCwd(DEFAULT_CWD)
-    }
-    box.current?.focus()
-  }, [preset])
+    const el = box.current
+    if (!el) return
+    el.focus()
+    // Land the caret at the end — a dispatched draft arrives prefilled.
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [draft.id])
 
   const autosize = useCallback(() => {
     const el = box.current
@@ -104,7 +101,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
     const trimmed = text.trim()
     if (!trimmed) return
     onCreate({
-      title: titleFrom(trimmed),
+      title: draft.label ?? titleFrom(trimmed),
       cwd,
       firstMessage: trimmed,
       model,
@@ -112,14 +109,12 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
       fastMode,
       permissionMode,
     })
-    setText('')
-    requestAnimationFrame(autosize)
   }
 
   return (
     <div id="newSessionHome">
       <div className="glow blue" aria-hidden="true" />
-      <h2>{preset?.title ? 'Dispatching.' : 'What are we working on?'}</h2>
+      <h2>{draft.label ? 'Dispatching.' : 'What are we working on?'}</h2>
       <div id="composer">
         <div className="frame card">
           <textarea
@@ -129,7 +124,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
             rows={1}
             value={text}
             placeholder="Describe what you want to work on — a bug, a feature, a question…"
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => onChange({ text: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -151,7 +146,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
                 value={projects.find((p) => p.path === cwd)?.id ?? ''}
                 onChange={(e) => {
                   const p = projects.find((x) => x.id === e.target.value)
-                  if (p) setCwd(p.path)
+                  if (p) onChange({ cwd: p.path })
                 }}
               >
                 {!projects.some((p) => p.path === cwd) && <option value="">{homely(cwd)}</option>}

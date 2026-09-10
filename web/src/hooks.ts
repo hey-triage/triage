@@ -42,6 +42,7 @@ export function useLiveText(sessionId: string | null) {
 export type Route =
   | { page: 'home' }
   | { page: 'session'; id: string }
+  | { page: 'draft'; id: string }
   | { page: 'inbox' }
   | { page: 'item'; id: string }
   | { page: 'terminal'; id: string }
@@ -56,6 +57,7 @@ export const itemHash = (id: string) => `/item/${encodeURIComponent(id)}`
 function parseRoute(hash: string): Route {
   if (!hash) return { page: 'home' }
   if (hash === '/inbox') return { page: 'inbox' }
+  if (hash.startsWith('/new/')) return { page: 'draft', id: hash.slice('/new/'.length) }
   if (hash.startsWith('/item/')) {
     try {
       return { page: 'item', id: decodeURIComponent(hash.slice('/item/'.length)) }

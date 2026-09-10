@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, Home, Inbox, MessagesSquare, Plus, Terminal, X, type LucideProps } from 'lucide-react'
+import { ChevronRight, Folder, Home, Inbox, MessagesSquare, PenLine, Plus, Terminal, X, type LucideProps } from 'lucide-react'
 import { useEffect, useState, type ComponentType, type MouseEvent } from 'react'
 import type { Project, ProjectsResponse } from '../../../shared/protocol.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger, MenuTrigger } from '../ui/Menu.js'
@@ -6,9 +6,9 @@ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuSub, MenuSubContent, Me
 const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 
 export type OpenTab = {
-  /** the tab-band key: a session id, or `term:<id>` for a terminal */
+  /** the tab-band key: a session id, `term:<id>` for a terminal, `draft:<id>` for an unsent session */
   key: string
-  kind: 'session' | 'terminal'
+  kind: 'session' | 'terminal' | 'draft'
   title: string
   color: string
   /** live: a working session, or a running shell */
@@ -54,7 +54,7 @@ export function TabBand({ activeKey, tabs, pageTab, onInbox, onSelect, onClose, 
           e.stopPropagation()
           onClose(t.key)
         }
-        const Icon = t.kind === 'terminal' ? Terminal : MessagesSquare
+        const Icon = t.kind === 'terminal' ? Terminal : t.kind === 'draft' ? PenLine : MessagesSquare
         return (
           <button
             key={t.key}
@@ -67,8 +67,10 @@ export function TabBand({ activeKey, tabs, pageTab, onInbox, onSelect, onClose, 
             onAuxClick={(e) => e.button === 1 && close(e)}
           >
             <Icon size={13} aria-hidden="true" />
-            <span className="t">
-              <span className={`pdot${t.running ? ' live' : ''}`} style={{ background: t.color }} aria-hidden="true" />
+            <span className={`t${t.kind === 'draft' ? ' draft' : ''}`}>
+              {t.kind !== 'draft' && (
+                <span className={`pdot${t.running ? ' live' : ''}`} style={{ background: t.color }} aria-hidden="true" />
+              )}
               {t.title}
             </span>
             <span className="cl" role="button" aria-label={`Close ${t.title}`} tabIndex={-1} onClick={close}>

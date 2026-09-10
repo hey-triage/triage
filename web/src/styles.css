@@ -985,3 +985,7 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .panelResize:hover::after, .shell.resizing .panelResize::after { background: var(--hair-bright); }
 .shell.resizing, .shell.resizing * { cursor: col-resize !important; user-select: none !important; }
 .shell.resizing .panel, .shell.resizing #main { transition: none; }
+.tab .t.draft { font-style: italic; color: var(--mute); }
+.tab.active .t.draft { color: var(--body); }
+.prow.draft > svg { color: var(--stone); }
+.prow.draft .t { font-style: italic; }

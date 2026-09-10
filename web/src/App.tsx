@@ -1,4 +1,4 @@
-import { Eye, Folder, Plug, Terminal as TerminalIcon } from 'lucide-react'
+import { Eye, Folder, PenLine, Plug, Terminal as TerminalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type {
   EffortLevel,
@@ -18,11 +18,12 @@ import { NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './co
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { InboxPage } from './components/InboxPage.js'
 import { ItemPage } from './components/ItemPage.js'
-import { NewSessionComposer, type NewSession, type SessionPreset } from './components/NewSessionComposer.js'
+import { NewSessionComposer, type NewSession } from './components/NewSessionComposer.js'
 import { ProjectsPage } from './components/ProjectsPage.js'
 import { Rail, type RailSection } from './components/Rail.js'
 import { SystemModal, type SystemTab } from './components/SystemModal.js'
 import { TabBand, type OpenTab, type PageTab } from './components/TabBand.js'
+import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
 import { Transcript } from './components/Transcript.js'
@@ -67,13 +68,14 @@ export function App() {
   const conn = useConn()
   const sessions = useSessions()
   const terminals = useTerminals()
+  const drafts = useDrafts()
   const models = useModels()
   const inbox = useInbox()
   const [route, navigate] = useHashRoute()
   const currentId = route.page === 'session' ? route.id : null
   const currentTerminalId = route.page === 'terminal' ? route.id : null
+  const currentDraftId = route.page === 'draft' ? route.id : null
   const events = useEvents(currentId)
-  const [preset, setPreset] = useState<SessionPreset | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [system, setSystem] = useState<{ open: boolean; tab: SystemTab }>({ open: false, tab: 'status' })
@@ -83,7 +85,7 @@ export function App() {
   const onboarded = useOnboarded()
   const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
-  const { tabs, open: openTab, close: closeTab } = useOpenTabs(workspaceId)
+  const { tabs, open: openTab, close: closeTab, replace: replaceTab } = useOpenTabs(workspaceId)
   const panelSize = usePanelWidth()
 
   // First run: the workspace modal doubles as onboarding — introduce the
@@ -99,21 +101,47 @@ export function App() {
 
   const current = sessions.find((s) => s.id === currentId) ?? null
   const currentTerminal = terminals.find((t) => t.id === currentTerminalId) ?? null
+  const currentDraft = drafts.find((d) => d.id === currentDraftId) ?? null
   const termKey = (id: string) => `term:${id}`
+  const draftKey = (id: string) => `draft:${id}`
+  const draftRoute = (id: string) => `/new/${id}`
+  // Drafts are per workspace; bind before anything reads them.
+  useEffect(() => draftStore.bind(workspaceId), [workspaceId])
+  // The old home route: the inbox is the product's home now.
+  useEffect(() => {
+    if (route.page === 'home') navigate('/inbox')
+  }, [route.page, navigate])
 
   // The open inbox feeds the rail badge and the Queue panel from the start.
   useEffect(() => {
     if (conn === 'connected') void inboxStore.refresh()
   }, [conn])
 
-  // A session or terminal created from this tab becomes the selected one.
-  useEffect(() => store.onSessionCreated((s) => navigate(s.id)), [navigate])
+  // A session created from this tab becomes the selected one — and when it
+  // came from a draft tab, it takes that tab's slot.
+  const pendingDraft = useRef<string | null>(null)
+  useEffect(
+    () =>
+      store.onSessionCreated((s) => {
+        const d = pendingDraft.current
+        pendingDraft.current = null
+        if (d) {
+          replaceTab(draftKey(d), s.id)
+          draftStore.remove(d)
+        }
+        navigate(s.id)
+      }),
+    [navigate, replaceTab],
+  )
   useEffect(() => store.onTerminalCreated((t) => navigate(`/terminal/${t.id}`)), [navigate])
 
-  // A visited terminal gets a tab too.
+  // A visited terminal or draft gets a tab too.
   useEffect(() => {
     if (currentTerminalId) openTab(termKey(currentTerminalId))
   }, [currentTerminalId, openTab])
+  useEffect(() => {
+    if (currentDraftId) openTab(draftKey(currentDraftId))
+  }, [currentDraftId, openTab])
 
   // Replay the log whenever the selection changes (and after a reconnect);
   // a visited session gets a tab.
@@ -182,17 +210,28 @@ export function App() {
     [currentId, navigate, closeTab],
   )
 
+  // New session = a draft tab. An untouched draft is reused rather than
+  // stacking blank tabs; a folder-specific one is always fresh.
   const newSession = useCallback(() => {
-    setPreset(null)
-    navigate('')
+    const d = draftStore.findEmpty() ?? draftStore.create()
+    navigate(draftRoute(d.id))
   }, [navigate])
 
   const newSessionIn = useCallback(
     (project: Project) => {
-      setPreset({ title: '', firstMessage: '', cwd: project.path })
-      navigate('')
+      const d = draftStore.create({ cwd: project.path })
+      navigate(draftRoute(d.id))
     },
     [navigate],
+  )
+
+  const discardDraft = useCallback(
+    (id: string) => {
+      draftStore.remove(id)
+      closeTab(draftKey(id))
+      if (id === currentDraftId) navigate('/inbox')
+    },
+    [closeTab, currentDraftId, navigate],
   )
 
   const syncInbox = useCallback(() => {
@@ -220,18 +259,22 @@ export function App() {
     [closeTab, currentTerminalId, terminals, navigate],
   )
   // Where "+" opens a shell: the folder of whatever tab is in front.
-  const terminalCwd = current?.cwd ?? currentTerminal?.cwd
+  const terminalCwd = current?.cwd ?? currentTerminal?.cwd ?? currentDraft?.cwd
 
   const goTo = useCallback(
     (section: RailSection) => {
       if (section === 'inbox') navigate('/inbox')
-      else if (section === 'sessions') navigate(currentId ?? '')
-      else if (section === 'terminals') {
+      else if (section === 'sessions') {
+        // The session in front, else the last session tab, else a fresh draft.
+        const last = currentId ?? [...tabs].reverse().find((k) => sessions.some((s) => s.id === k))
+        if (last) navigate(last)
+        else newSession()
+      } else if (section === 'terminals') {
         const last = currentTerminalId ?? terminals[terminals.length - 1]?.id
         navigate(last ? `/terminal/${last}` : '/terminals')
       } else navigate(`/${section}`)
     },
-    [navigate, currentId, currentTerminalId, terminals],
+    [navigate, currentId, currentTerminalId, terminals, tabs, sessions, newSession],
   )
 
   // Closing the tab you are on lands you on its neighbour, else the inbox.
@@ -243,10 +286,13 @@ export function App() {
         ? route.id
         : route.page === 'terminal'
           ? termKey(route.id)
-          : route.page === 'home'
-            ? 'home'
-            : PAGE_TABS[route.page].key
-  const tabRoute = (key: string) => (key.startsWith('term:') ? `/terminal/${key.slice(5)}` : key)
+          : route.page === 'draft'
+            ? draftKey(route.id)
+            : route.page === 'home'
+              ? 'home'
+              : PAGE_TABS[route.page].key
+  const tabRoute = (key: string) =>
+    key.startsWith('term:') ? `/terminal/${key.slice(5)}` : key.startsWith('draft:') ? draftRoute(key.slice(6)) : key
   const closeOpenTab = useCallback(
     (key: string) => {
       if (key === activeTabKey) {
@@ -254,6 +300,8 @@ export function App() {
         const next = tabs[i + 1] ?? tabs[i - 1]
         navigate(next ? tabRoute(next) : '/inbox')
       }
+      // Closing a draft tab discards the draft — there is nowhere else it lives.
+      if (key.startsWith('draft:')) draftStore.remove(key.slice(6))
       closeTab(key)
     },
     [tabs, activeTabKey, navigate, closeTab],
@@ -275,7 +323,7 @@ export function App() {
         clearTimeout(goPrefix.current)
         goPrefix.current = undefined
         if (e.key === 'i') return navigate('/inbox')
-        if (e.key === 's') return navigate(currentId ?? '')
+        if (e.key === 's') return goTo('sessions')
         if (e.key === 't') return goTo('terminals')
         if (e.key === 'c') return navigate('/connectors')
         if (e.key === 'p') return navigate('/projects')
@@ -302,7 +350,8 @@ export function App() {
     return () => document.removeEventListener('keydown', onKey)
   }, [navigate, newSession, newTerminal, terminalCwd, goTo, currentId, route.page])
 
-  const create = useCallback((s: NewSession) => {
+  const create = useCallback((draftId: string, s: NewSession) => {
+    pendingDraft.current = draftId
     store.send({
       type: 'create_session',
       title: s.title,
@@ -313,7 +362,6 @@ export function App() {
       fastMode: s.fastMode,
       permissionMode: s.permissionMode,
     })
-    setPreset(null)
   }, [])
 
   const addWatch = useCallback(() => {
@@ -351,8 +399,8 @@ export function App() {
               '',
               'Use `gh` to pull the full context (diff, comments, CI) and get started.',
             ]
-        setPreset({ title: item.title.slice(0, 80), cwd, firstMessage: lines.join('\n') })
-        navigate('')
+        const d = draftStore.create({ label: item.title.slice(0, 80), cwd, text: lines.join('\n') })
+        navigate(draftRoute(d.id))
       }
       // An explicit project (manual items) decides the folder; otherwise a project
       // tied to the item's repo does.
@@ -375,7 +423,7 @@ export function App() {
   const railActive: RailSection | null =
     route.page === 'inbox' || route.page === 'item'
       ? 'inbox'
-      : route.page === 'home' || route.page === 'session'
+      : route.page === 'home' || route.page === 'session' || route.page === 'draft'
         ? 'sessions'
         : route.page === 'terminal'
           ? 'terminals'
@@ -384,6 +432,10 @@ export function App() {
   const openTabs = useMemo<OpenTab[]>(
     () =>
       tabs.flatMap((key): OpenTab[] => {
+        if (key.startsWith('draft:')) {
+          const d = drafts.find((x) => x.id === key.slice(6))
+          return d ? [{ key, kind: 'draft', title: draftTitle(d), color: 'var(--stone)', running: false }] : []
+        }
         if (key.startsWith('term:')) {
           const t: TerminalSummary | undefined = terminals.find((x) => x.id === key.slice(5))
           return t ? [{ key, kind: 'terminal', title: t.title, color: projectColor(t.cwd), running: t.status === 'running' }] : []
@@ -393,7 +445,7 @@ export function App() {
           ? [{ key, kind: 'session', title: s.title, color: projectColor(s.cwd), running: s.status === 'running' || s.status === 'starting' }]
           : []
       }),
-    [tabs, sessions, terminals],
+    [tabs, sessions, terminals, drafts],
   )
 
   const pageTab =
@@ -433,6 +485,10 @@ export function App() {
       <SessionsPanel
         sessions={sessions}
         currentId={currentId}
+        drafts={drafts}
+        currentDraftId={currentDraftId}
+        onSelectDraft={(id) => navigate(draftRoute(id))}
+        onDiscardDraft={discardDraft}
         onSelect={navigate}
         onNew={newSession}
         onRename={renameSession}
@@ -532,9 +588,18 @@ export function App() {
               <ConnectorsPage />
             ) : route.page === 'projects' ? (
               <ProjectsPage />
-            ) : route.page === 'home' ? (
-              <NewSessionComposer preset={preset} onCreate={create} />
-            ) : current ? (
+            ) : route.page === 'draft' ? (
+              currentDraft ? (
+                <NewSessionComposer
+                  key={currentDraft.id}
+                  draft={currentDraft}
+                  onChange={(patch) => draftStore.update(currentDraft.id, patch)}
+                  onCreate={(s) => create(currentDraft.id, s)}
+                />
+              ) : (
+                <div id="empty">This draft was discarded.</div>
+              )
+            ) : route.page === 'home' ? null : current ? (
               <>
                 <div id="chatHeader">
                   <span id="chatTitle" title={current.title}>

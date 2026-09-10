@@ -9,6 +9,7 @@ import {
   Home,
   MoreHorizontal,
   Pencil,
+  PenLine,
   Pin,
   PinOff,
   Plus,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Project, ProjectsResponse, ScoredItem, SessionSummary, TerminalSummary } from '../../../shared/protocol.js'
+import { draftTitle, type Draft } from '../drafts.js'
 import { GROUP_ORDER, GROUP_SHORT, itemTone, kindIcon } from '../itemUi.js'
 import { MOD_LABEL } from '../keys.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
@@ -115,6 +117,11 @@ export function QueuePanel({ items, loaded, selectedId, onOpenItem, onAdd, onRef
 type SessionsProps = {
   sessions: readonly SessionSummary[]
   currentId: string | null
+  /** unsent session tabs — listed first so a half-written prompt is never lost */
+  drafts: readonly Draft[]
+  currentDraftId: string | null
+  onSelectDraft: (id: string) => void
+  onDiscardDraft: (id: string) => void
   onSelect: (id: string) => void
   onNew: () => void
   onRename: (id: string, title: string) => void
@@ -126,6 +133,10 @@ type SessionsProps = {
 export function SessionsPanel({
   sessions,
   currentId,
+  drafts,
+  currentDraftId,
+  onSelectDraft,
+  onDiscardDraft,
   onSelect,
   onNew,
   onRename,
@@ -173,8 +184,51 @@ export function SessionsPanel({
             </button>
           </span>
         </div>
-        {sessions.length === 0 && (
+        {sessions.length === 0 && drafts.length === 0 && (
           <div className="panelEmpty">No sessions yet. Dispatch a work item, or start one from the composer.</div>
+        )}
+        {drafts.length > 0 && (
+          <>
+            <div className="panelGroup">
+              Unsent <span className="n">{drafts.length}</span>
+            </div>
+            {drafts.map((d) => (
+              <div
+                key={d.id}
+                className={`prow draft${d.id === currentDraftId ? ' sel' : ''}`}
+                role="button"
+                tabIndex={0}
+                title={draftTitle(d)}
+                onClick={() => onSelectDraft(d.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelectDraft(d.id)
+                  }
+                }}
+              >
+                <PenLine size={13} aria-hidden="true" />
+                <span className="t">{draftTitle(d)}</span>
+                <button
+                  type="button"
+                  className="iconBtn rowMenu"
+                  aria-label={`Discard draft ${draftTitle(d)}`}
+                  title="Discard draft"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDiscardDraft(d.id)
+                  }}
+                >
+                  <X size={13} aria-hidden="true" />
+                </button>
+              </div>
+            ))}
+          </>
+        )}
+        {(pinned.length > 0 || (drafts.length > 0 && rest.length > 0)) && pinned.length === 0 && (
+          <div className="panelGroup">
+            Recent <span className="n">{rest.length}</span>
+          </div>
         )}
         {pinned.length > 0 && (
           <>
