@@ -1,3 +1,9 @@
+/**
+ * The system sheet — anchored top-right under the gauge icon. An icon rail of
+ * three views (status · activity · logs) beside the body, the way the design's
+ * "Usage & providers" sheet is laid out.
+ */
+import { Activity, Gauge, RefreshCw, ScrollText } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   ActivityResponse,
@@ -27,45 +33,72 @@ function uptime(ms: number): string {
   return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
 }
 
-type Tab = 'status' | 'activity' | 'logs'
+export type SystemTab = 'status' | 'activity' | 'logs'
 
-export function SystemModal({ open, conn, onClose }: { open: boolean; conn: ConnState; onClose: () => void }) {
+const TABS: Array<{ id: SystemTab; label: string; icon: typeof Gauge }> = [
+  { id: 'status', label: 'Status', icon: Gauge },
+  { id: 'activity', label: 'Activity', icon: Activity },
+  { id: 'logs', label: 'Logs', icon: ScrollText },
+]
+
+export function SystemModal({
+  open,
+  initialTab = 'status',
+  conn,
+  onClose,
+}: {
+  open: boolean
+  initialTab?: SystemTab
+  conn: ConnState
+  onClose: () => void
+}) {
   const dialog = useRef<HTMLDialogElement>(null)
-  const [tab, setTab] = useState<Tab>('status')
+  const [tab, setTab] = useState<SystemTab>(initialTab)
+  const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
     const el = dialog.current
     if (!el) return
     if (open && !el.open) {
       el.showModal()
-      setTab('status')
+      setTab(initialTab)
     }
     if (!open && el.open) el.close()
-  }, [open])
+  }, [open, initialTab])
+
+  const title = TABS.find((t) => t.id === tab)?.label ?? ''
 
   return (
-    <dialog
-      ref={dialog}
-      className="systemModal"
-      onClose={onClose}
-      onClick={(e) => e.target === dialog.current && onClose()}
-    >
-      <div className="systemTabs" role="tablist">
-        {(['status', 'activity', 'logs'] as Tab[]).map((t) => (
+    <dialog ref={dialog} className="sheet" onClose={onClose} onClick={(e) => e.target === dialog.current && onClose()}>
+      <div className="sheetRail" role="tablist">
+        {TABS.map(({ id, label, icon: Icon }) => (
           <button
-            key={t}
+            key={id}
+            type="button"
             role="tab"
-            aria-selected={tab === t}
-            className={`systemTab${tab === t ? ' active' : ''}`}
-            onClick={() => setTab(t)}
+            aria-selected={tab === id}
+            title={label}
+            className={`sheetTab${tab === id ? ' active' : ''}`}
+            onClick={() => setTab(id)}
           >
-            {t[0].toUpperCase() + t.slice(1)}
+            <Icon size={15} aria-hidden="true" />
           </button>
         ))}
       </div>
-      {open && tab === 'status' && <StatusTab conn={conn} />}
-      {open && tab === 'activity' && <ActivityTab />}
-      {open && tab === 'logs' && <LogsTab />}
+      <div className="sheetBody">
+        <div className="sheetHead">
+          <span className="title">{title}</span>
+          <span className="sub">{tab === 'status' ? 'the daemon and its sources' : tab === 'activity' ? 'recent watch runs' : 'daemon log'}</span>
+          <span className="right">
+            <button type="button" className="iconBtn" title="Refresh" onClick={() => setNonce((n) => n + 1)}>
+              <RefreshCw size={13} aria-hidden="true" />
+            </button>
+          </span>
+        </div>
+        {open && tab === 'status' && <StatusTab key={nonce} conn={conn} />}
+        {open && tab === 'activity' && <ActivityTab key={nonce} />}
+        {open && tab === 'logs' && <LogsTab key={nonce} />}
+      </div>
     </dialog>
   )
 }
@@ -74,7 +107,9 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: 'ok'
   return (
     <div className="sysRow">
       <span className="sysLabel">{label}</span>
-      <span className={`sysValue${tone ? ' ' + tone : ''}`}>{value}</span>
+      <span className={`sysValue${tone ? ' ' + tone : ''}`} title={value}>
+        {value}
+      </span>
     </div>
   )
 }
@@ -100,12 +135,16 @@ function StatusTab({ conn }: { conn: ConnState }) {
   if (!status) return <div className="pickerLoading">Loading…</div>
 
   const slack =
-    status.slackConnected === true ? ['connected', 'ok'] : status.slackConnected === false ? ['disconnected', 'bad'] : ['probing…', 'dim']
+    status.slackConnected === true
+      ? ['connected', 'ok']
+      : status.slackConnected === false
+        ? ['disconnected', 'bad']
+        : ['probing…', 'dim']
   return (
-    <div className="sysBody">
+    <div className="card soft sysCard">
       <div className="sysHead">
-        <span className={`sysDot ${conn === 'connected' ? 'ok' : 'bad'}`} />
-        <b>{conn === 'connected' ? 'Daemon running' : 'Reconnecting…'}</b>
+        <span className={`dot lg ${conn === 'connected' ? 'green' : 'red'}`} />
+        <span>{conn === 'connected' ? 'Daemon running' : 'Reconnecting…'}</span>
         <span className="sysSub">
           v{status.version} · up {uptime(status.uptimeMs)}
         </span>
@@ -148,7 +187,7 @@ function ActivityTab() {
   if (!runs) return <div className="pickerLoading">Loading…</div>
   if (runs.length === 0) return <div className="pickerLoading">No runs yet.</div>
   return (
-    <div className="sysBody">
+    <div>
       {runs.map((r) => {
         const st = r.status ?? 'running'
         return (
@@ -203,7 +242,7 @@ function LogsTab() {
       <div className="logFilters">
         <div className="logTabs">
           {LEVELS.map((l) => (
-            <button key={l} className={`logTab${level === l ? ' active' : ''}`} onClick={() => setLevel(l)}>
+            <button key={l} type="button" className={`logTab${level === l ? ' active' : ''}`} onClick={() => setLevel(l)}>
               {l}
             </button>
           ))}

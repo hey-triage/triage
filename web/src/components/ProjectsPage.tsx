@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FolderOpen } from 'lucide-react'
 import type { PickFolderResponse, Project, ProjectsResponse } from '../../../shared/protocol.js'
+import { projectColor } from '../tabs.js'
 
 type LoadState =
   | { phase: 'loading' }
@@ -35,18 +36,18 @@ export function ProjectsPage() {
   }
 
   return (
-    <div id="projectsPage">
+    <div id="projectsPage" className="page">
       <div className="inner">
         <div className="pageHead">
           <div>
-            <h2>Projects</h2>
+            <h1 className="display md">Projects</h1>
             <p className="sub">
               A project names a local folder, optionally tied to a repo. Sessions run in the
               folder; dispatch matches a work item's repo to land there automatically.
             </p>
           </div>
           {state.phase === 'ready' && (
-            <button className="refresh add" onClick={() => setAdding(true)}>
+            <button className="btn primary" onClick={() => setAdding(true)}>
               Add a project
             </button>
           )}
@@ -61,7 +62,10 @@ export function ProjectsPage() {
               <div className="projList">
                 {state.projects.map((p) => (
                   <div key={p.id} className="projRow">
-                    <span className="projName">{p.name}</span>
+                    <span className="projName">
+                      <span className="pdot" style={{ background: projectColor(p.path) }} aria-hidden="true" />
+                      {p.name}
+                    </span>
                     <span className="projRepo">{p.repo || '—'}</span>
                     <span className="projPath" title={p.path}>
                       {tilde(p.path)}

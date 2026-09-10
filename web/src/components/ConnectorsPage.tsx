@@ -37,18 +37,19 @@ export function ConnectorsPage() {
   }, [load])
 
   return (
-    <div id="connectorsPage">
+    <div id="connectorsPage" className="page">
+      <div className="glow green" aria-hidden="true" />
       <div className="inner">
         <div className="pageHead">
           <div>
-            <h2>Connectors</h2>
+            <h1 className="display md">Connectors</h1>
             <p className="sub">
               What a dispatched session can reach — your claude.ai connectors and local MCP
               servers, exactly as a session loads them.
             </p>
           </div>
           <button
-            className="refresh"
+            className="btn"
             disabled={state.phase === 'loading'}
             onClick={() => void load(true)}
           >

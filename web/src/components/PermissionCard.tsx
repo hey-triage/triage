@@ -33,7 +33,7 @@ export const PermissionCard = memo(function PermissionCard({ item, onRespond }: 
           </>
         )}
       </div>
-      <pre>{truncate(JSON.stringify(item.input, null, 2), 1200)}</pre>
+      <pre className="well">{truncate(JSON.stringify(item.input, null, 2), 1200)}</pre>
       {item.resolved ? (
         <span className={`verdict ${item.resolved}`}>
           {item.resolved === 'allow'
@@ -45,25 +45,25 @@ export const PermissionCard = memo(function PermissionCard({ item, onRespond }: 
                 : '— expired (session ended before it was answered)'}
         </span>
       ) : (
-        <>
-          <button className="allow" onClick={() => onRespond(item.id, 'allow')}>
+        <div className="actions">
+          <button className="btn primary" onClick={() => onRespond(item.id, 'allow')}>
             Allow
           </button>
           {/* Only offered when the SDK handed over rules to widen; without
               them "always" would silently be a plain one-off allow. */}
           {item.canAlwaysAllow && (
             <button
-              className="allowAlways"
+              className="btn"
               title="Allow this, and stop asking for calls like it — for this session only"
               onClick={() => onRespond(item.id, 'allow_always')}
             >
               Always allow
             </button>
           )}
-          <button className="deny" onClick={() => onRespond(item.id, 'deny')}>
+          <button className="btn danger" onClick={() => onRespond(item.id, 'deny')}>
             Deny
           </button>
-        </>
+        </div>
       )}
     </div>
   )

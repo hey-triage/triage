@@ -112,17 +112,18 @@ export function WatchesPage() {
   }
 
   return (
-    <div id="watchesPage">
+    <div id="watchesPage" className="page">
+      <div className="glow yellow" aria-hidden="true" />
       <div className="inner">
         <div className="pageHead">
           <div>
-            <h2>Watches</h2>
+            <h1 className="display md">Watches</h1>
             <p className="sub">
               One plain-English sentence, scoped to a place, that tells the scanner what you care
               about. Matches land in the inbox, scored like everything else.
             </p>
           </div>
-          <button className="refresh add" onClick={() => setModal({ editing: null })}>
+          <button className="btn primary" onClick={() => setModal({ editing: null })}>
             + Add watch
           </button>
         </div>
@@ -575,7 +576,7 @@ function CoverageProbe() {
           value={scope}
           onChange={(e) => setScope(e.target.value)}
         />
-        <button className="refresh" type="submit" disabled={checking || !scope.trim()}>
+        <button className="btn" type="submit" disabled={checking || !scope.trim()}>
           {checking ? 'Checking…' : 'Check coverage'}
         </button>
       </form>

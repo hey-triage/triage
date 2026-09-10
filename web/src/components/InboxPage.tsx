@@ -1,10 +1,19 @@
-import { Clock, Flag, Folder, X } from 'lucide-react'
+import {
+  AlarmClock,
+  Archive,
+  Check,
+  ExternalLink,
+  Flag,
+  Folder,
+  Pencil,
+  RefreshCw,
+  ThumbsDown,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Group,
-  InboxResponse,
-  ItemEvent,
-  ItemEventsResponse,
   ItemListResponse,
   ItemStatus,
   ManualItemResponse,
@@ -14,13 +23,19 @@ import type {
   ScoredItem,
   WatchesResponse,
 } from '../../../shared/protocol.js'
-import { GROUP_LABELS } from '../../../core/work/types.js'
+import { inboxStore, useInbox } from '../inboxStore.js'
+import {
+  GROUP_ORDER,
+  GROUP_TITLE,
+  KIND_LABEL,
+  PRIORITY_LABEL,
+  PRIORITY_VALUES,
+  itemTone,
+  kindIcon,
+  ago,
+  weekday,
+} from '../itemUi.js'
 import { anyDialogOpen, isTypingTarget } from '../keys.js'
-
-type LoadState =
-  | { phase: 'loading' }
-  | { phase: 'ready'; syncedAt: number; items: ScoredItem[]; notices: string[] }
-  | { phase: 'error'; message: string }
 
 /** The status tabs (.docs/watches-v2.md): items are durable and never deleted,
  *  so done/snoozed/archived are viewable, not just write-only. */
@@ -32,37 +47,25 @@ const TABS = [
 ] as const
 type Tab = (typeof TABS)[number]['id']
 
-const GROUP_ORDER: Group[] = ['blocking', 'blocked-stale', 'cycle', 'fyi']
+type OtherState =
+  | { phase: 'loading' }
+  | { phase: 'ready'; items: ScoredItem[] }
+  | { phase: 'error'; message: string }
 
-const KIND_LABEL: Record<string, string> = {
-  'review-requested': 'review',
-  'reply-needed': 'reply',
-  'own-pr-approved': 'merge',
-  'own-pr-conflicting': 'conflicts',
-  'own-pr-stale': 'stale',
-  'own-pr-open': 'open PR',
-  mention: 'mention',
-  'slack-reply-pending': 'slack · reply',
-  'slack-mention': 'slack · tag',
-  'ticket-assigned': 'ticket',
-  'watch-hit': 'watch',
-  manual: 'task',
-  fyi: 'fyi',
-}
-
-// Priority, source-derived or a user override (1 urgent … 4 low; 0 = none).
-const PRIORITY_LABEL: Record<number, string> = { 0: 'none', 1: 'Urgent', 2: 'High', 3: 'Normal', 4: 'Low' }
-const PRIORITY_VALUES = [0, 1, 2, 3, 4]
-
-export function InboxPage({
-  onDispatch,
-  onRefineWatch,
-}: {
+type Props = {
   onDispatch: (item: ScoredItem) => void
   onRefineWatch: (item: ScoredItem) => void
-}) {
+  onOpenItem: (id: string) => void
+  /** Bumped by the shell (Queue panel "+") to open the new-item composer. */
+  composeSignal?: number
+}
+
+export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal = 0 }: Props) {
   const [tab, setTab] = useState<Tab>('open')
-  const [state, setState] = useState<LoadState>({ phase: 'loading' })
+  // The open tab reads the shared snapshot (the Queue panel shows the same
+  // list); the other tabs are loaded here on demand.
+  const snap = useInbox()
+  const [other, setOther] = useState<OtherState>({ phase: 'loading' })
   const [reposOpen, setReposOpen] = useState(false)
   const [repoCount, setRepoCount] = useState<number | null>(null)
   const [watchTitles, setWatchTitles] = useState<Map<string, string>>(new Map())
@@ -71,20 +74,39 @@ export function InboxPage({
     open: false,
     editing: null,
   })
-  const [history, setHistory] = useState<ScoredItem | null>(null)
   const [scanning, setScanning] = useState(false)
   const [sel, setSel] = useState(0)
+
+  const isOpen = tab === 'open'
+
+  const loadOther = useCallback(async (which: Exclude<Tab, 'open'>) => {
+    setOther({ phase: 'loading' })
+    try {
+      const res = await fetch(`/api/items?status=${which}`)
+      const body = (await res.json()) as ItemListResponse
+      setOther(body.ok ? { phase: 'ready', items: body.items } : { phase: 'error', message: body.error })
+    } catch (err) {
+      setOther({ phase: 'error', message: String(err) })
+    }
+  }, [])
+
+  const reload = useCallback(
+    (refresh: boolean) => {
+      if (tab === 'open') void inboxStore.refresh(refresh)
+      else void loadOther(tab)
+    },
+    [tab, loadOther],
+  )
 
   const scanNow = useCallback(async () => {
     setScanning(true)
     try {
       await fetch('/api/scan', { method: 'POST' }).catch(() => {})
-      // give the forced GitHub reconcile a moment, then reload the open tab
-      setTimeout(() => void load('open', true), 1200)
+      // give the forced GitHub reconcile a moment, then reload
+      setTimeout(() => void inboxStore.refresh(true), 1200)
     } finally {
       setTimeout(() => setScanning(false), 1200)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const projectName = useCallback(
@@ -92,32 +114,32 @@ export function InboxPage({
     [projects],
   )
 
+  const removeLocally = useCallback(
+    (id: string) => {
+      if (isOpen) inboxStore.patch((items) => items.filter((i) => i.id !== id))
+      else setOther((prev) => (prev.phase === 'ready' ? { ...prev, items: prev.items.filter((i) => i.id !== id) } : prev))
+    },
+    [isOpen],
+  )
+
   // A status change is a recorded transition on a durable item — the row leaves
   // the current tab optimistically; the item is never deleted (.docs/watches-v2.md).
-  const setItemState = useCallback(async (item: ScoredItem, status: ItemStatus, snoozeUntil?: number) => {
-    setState((prev) =>
-      prev.phase === 'ready' ? { ...prev, items: prev.items.filter((i) => i.id !== item.id) } : prev,
-    )
-    await fetch('/api/items/state', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: item.id, status, snoozeUntil }),
-    }).catch(() => {})
-  }, [])
+  const setItemState = useCallback(
+    async (item: ScoredItem, status: ItemStatus, snoozeUntil?: number) => {
+      removeLocally(item.id)
+      await fetch('/api/items/state', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id, status, snoozeUntil }),
+      }).catch(() => {})
+    },
+    [removeLocally],
+  )
 
   // A priority override applies to any item and survives re-sync. Reflect the
   // chip immediately; re-ranking lands on the next refresh.
   const setPriority = useCallback((item: ScoredItem, priority: number) => {
-    setState((prev) =>
-      prev.phase === 'ready'
-        ? {
-            ...prev,
-            items: prev.items.map((i) =>
-              i.id === item.id ? { ...i, priority: priority || undefined } : i,
-            ),
-          }
-        : prev,
-    )
+    inboxStore.patch((items) => items.map((i) => (i.id === item.id ? { ...i, priority: priority || undefined } : i)))
     void fetch('/api/items/priority', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -126,12 +148,13 @@ export function InboxPage({
   }, [])
 
   // "Delete" a manual item archives it (never a hard delete); it moves to Archived.
-  const deleteManual = useCallback((item: ScoredItem) => {
-    setState((prev) =>
-      prev.phase === 'ready' ? { ...prev, items: prev.items.filter((i) => i.id !== item.id) } : prev,
-    )
-    void fetch(`/api/items/manual?id=${encodeURIComponent(item.id)}`, { method: 'DELETE' }).catch(() => {})
-  }, [])
+  const deleteManual = useCallback(
+    (item: ScoredItem) => {
+      removeLocally(item.id)
+      void fetch(`/api/items/manual?id=${encodeURIComponent(item.id)}`, { method: 'DELETE' }).catch(() => {})
+    },
+    [removeLocally],
+  )
 
   const snooze1d = useCallback(
     (item: ScoredItem) => {
@@ -143,90 +166,63 @@ export function InboxPage({
     [setItemState],
   )
 
-  const load = useCallback(
-    async (which: Tab, refresh: boolean) => {
-      setState({ phase: 'loading' })
-      try {
-        if (which === 'open') {
-          const res = await fetch(`/api/inbox${refresh ? '?refresh=1' : ''}`)
-          const body = (await res.json()) as InboxResponse
-          setState(
-            body.ok
-              ? { phase: 'ready', syncedAt: body.syncedAt, items: body.items, notices: body.notices }
-              : { phase: 'error', message: body.error },
-          )
-        } else {
-          const res = await fetch(`/api/items?status=${which}`)
-          const body = (await res.json()) as ItemListResponse
-          setState(
-            body.ok
-              ? { phase: 'ready', syncedAt: Date.now(), items: body.items, notices: [] }
-              : { phase: 'error', message: body.error },
-          )
-        }
-      } catch (err) {
-        setState({ phase: 'error', message: String(err) })
-      }
-    },
-    [],
-  )
-
   const selectTab = useCallback(
     (next: Tab) => {
       setTab(next)
       setSel(0)
-      void load(next, false)
+      if (next !== 'open') void loadOther(next)
     },
-    [load],
+    [loadOther],
   )
 
   // Items in on-screen order. The Open tab renders in GROUP_ORDER; the other
   // tabs are a flat, source-time-ordered list.
-  const ordered = useMemo(
+  const ordered = useMemo<readonly ScoredItem[]>(
     () =>
-      state.phase === 'ready'
-        ? tab === 'open'
-          ? GROUP_ORDER.flatMap((g) => state.items.filter((i) => i.group === g))
-          : state.items
-        : [],
-    [state, tab],
+      isOpen
+        ? GROUP_ORDER.flatMap((g) => snap.items.filter((i) => i.group === g))
+        : other.phase === 'ready'
+          ? other.items
+          : [],
+    [isOpen, snap.items, other],
   )
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (isTypingTarget(e) || anyDialogOpen() || e.metaKey || e.ctrlKey || e.altKey) return
+      const cur = ordered[sel]
       if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault()
         setSel((v) => Math.min(v + 1, Math.max(0, ordered.length - 1)))
       } else if (e.key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault()
         setSel((v) => Math.max(v - 1, 0))
-      } else if ((e.key === 'o' || e.key === 'Enter') && ordered[sel]?.url) {
+      } else if (e.key === 'Enter' && cur) {
         e.preventDefault()
-        window.open(ordered[sel].url, '_blank', 'noopener')
-      } else if (e.key === 'd' && ordered[sel]) {
+        onOpenItem(cur.id)
+      } else if (e.key === 'o' && cur?.url) {
         e.preventDefault()
-        onDispatch(ordered[sel])
-      } else if (e.key === 'e' && ordered[sel]) {
+        window.open(cur.url, '_blank', 'noopener')
+      } else if (e.key === 'd' && cur) {
         e.preventDefault()
-        void setItemState(ordered[sel], tab === 'open' ? 'done' : 'open')
-      } else if (e.key === 'x' && ordered[sel]) {
+        onDispatch(cur)
+      } else if (e.key === 'e' && cur) {
         e.preventDefault()
-        void setItemState(ordered[sel], 'archived')
-      } else if (e.key === 'z' && ordered[sel] && tab === 'open') {
+        void setItemState(cur, isOpen ? 'done' : 'open')
+      } else if (e.key === 'x' && cur) {
         e.preventDefault()
-        snooze1d(ordered[sel])
-      } else if (e.key === 'n') {
+        void setItemState(cur, 'archived')
+      } else if (e.key === 'z' && cur && isOpen) {
         e.preventDefault()
-        setComposer({ open: true, editing: null })
+        snooze1d(cur)
       } else if (e.key === 'r') {
         e.preventDefault()
-        void load(tab, true)
+        reload(true)
       }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [ordered, sel, tab, onDispatch, load, setItemState, snooze1d])
+  }, [ordered, sel, isOpen, onDispatch, onOpenItem, reload, setItemState, snooze1d])
 
   const loadProjects = useCallback(() => {
     void fetch('/api/projects')
@@ -238,7 +234,7 @@ export function InboxPage({
   }, [])
 
   useEffect(() => {
-    void load('open', false)
+    if (!snap.loaded) void inboxStore.refresh(false)
     loadProjects()
     void fetch('/api/repos')
       .then((r) => r.json() as Promise<ReposResponse>)
@@ -252,134 +248,142 @@ export function InboxPage({
         if (b.ok) setWatchTitles(new Map(b.watches.map((w) => [w.id, w.title])))
       })
       .catch(() => {})
-  }, [load, loadProjects])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadProjects])
 
-  const isOpen = tab === 'open'
+  // The shell's "+" (Queue panel) opens the composer from anywhere in the inbox.
+  const lastSignal = useRef(composeSignal)
+  useEffect(() => {
+    if (composeSignal !== lastSignal.current) {
+      lastSignal.current = composeSignal
+      setComposer({ open: true, editing: null })
+    }
+  }, [composeSignal])
+
+  const loading = isOpen ? !snap.loaded && snap.loading : other.phase === 'loading'
+  const error = isOpen ? (!snap.loaded ? snap.error : undefined) : other.phase === 'error' ? other.message : undefined
+  const items = ordered
+  const blocking = isOpen ? snap.items.filter((i) => i.group === 'blocking').length : 0
+  const tabLabel = TABS.find((t) => t.id === tab)?.label ?? ''
   const emptyText = isOpen
-    ? state.phase === 'ready' && state.notices.length > 0
-      ? 'No open items to show — but a source above is degraded, so this may be incomplete.'
+    ? snap.notices.length > 0
+      ? 'No open items to show — but a source is degraded, so this may be incomplete.'
       : 'Inbox zero — nothing is waiting on you.'
-    : `Nothing in ${TABS.find((t) => t.id === tab)?.label.toLowerCase()}.`
+    : `Nothing in ${tabLabel.toLowerCase()}.`
+
+  const rowProps: RowActions = {
+    tab,
+    watchTitles,
+    projectName,
+    onSelect: (id) => setSel(ordered.findIndex((i) => i.id === id)),
+    onOpen: onOpenItem,
+    onDispatch,
+    onDone: (i) => void setItemState(i, 'done'),
+    onSnooze: snooze1d,
+    onArchive: (i) => void setItemState(i, 'archived'),
+    onReopen: (i) => void setItemState(i, 'open'),
+    onRefineWatch,
+    onSetPriority: setPriority,
+    onEdit: (i) => setComposer({ open: true, editing: i }),
+    onDelete: deleteManual,
+  }
 
   return (
-    <div id="inboxPage">
+    <div className="page wide" id="inboxPage">
+      <div className="glow blue" aria-hidden="true" />
       <div className="inner">
         <div className="pageHead">
-          <div>
-            <h2>Inbox</h2>
-            <p className="sub">
-              The work already waiting on you — ranked by who it blocks, not by recency.
-            </p>
+          <h1 className="display">
+            {isOpen ? weekday() : tabLabel}.{' '}
+            <span className="muted">
+              {loading && items.length === 0
+                ? 'syncing…'
+                : `${items.length} item${items.length === 1 ? '' : 's'}${blocking ? `, ${blocking} blocking` : ''}.`}
+            </span>
+          </h1>
+          <span className="pageMeta" title={snap.syncedAt ? new Date(snap.syncedAt).toLocaleString() : undefined}>
+            <RefreshCw size={12} aria-hidden="true" />
+            {snap.syncedAt ? `synced ${ago(snap.syncedAt)}` : 'not synced yet'}
+            {repoCount != null && ` · ${repoCount === 0 ? 'no repos' : `${repoCount} repo${repoCount === 1 ? '' : 's'}`}`}
+            {watchTitles.size > 0 && ` · ${watchTitles.size} watch${watchTitles.size === 1 ? '' : 'es'}`}
+          </span>
+        </div>
+
+        <div className="toolRow">
+          <div className="seg" role="tablist">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                className={`segBtn${tab === t.id ? ' active' : ''}`}
+                onClick={() => selectTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
-          <button className="refresh add" onClick={() => setComposer({ open: true, editing: null })}>
-            + Add item
-          </button>
-          <button className="refresh repos" onClick={() => setReposOpen(true)}>
-            {repoCount == null ? 'Repos' : repoCount === 0 ? 'Repos: all' : `Repos: ${repoCount}`}
-          </button>
-          <button className="refresh" disabled={scanning} onClick={() => void scanNow()}>
-            {scanning ? 'Scanning…' : 'Scan now'}
-          </button>
-          <button
-            className="refresh"
-            disabled={state.phase === 'loading'}
-            onClick={() => void load(tab, true)}
-          >
-            {state.phase === 'loading' ? 'Syncing…' : 'Refresh'}
-          </button>
-        </div>
-
-        <div className="inboxTabs" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={tab === t.id}
-              className={`inboxTab${tab === t.id ? ' active' : ''}`}
-              onClick={() => selectTab(t.id)}
-            >
-              {t.label}
+          <div className="right">
+            <button type="button" className="btn sm ghost" onClick={() => setComposer({ open: true, editing: null })}>
+              + Add item
             </button>
-          ))}
+            <button type="button" className="btn sm ghost mono" onClick={() => setReposOpen(true)}>
+              {repoCount == null ? 'Repos' : repoCount === 0 ? 'Repos: none' : `Repos: ${repoCount}`}
+            </button>
+            <button type="button" className="btn sm ghost" disabled={scanning} onClick={() => void scanNow()}>
+              {scanning ? 'Scanning…' : 'Scan now'}
+            </button>
+            <button type="button" className="btn sm ghost" disabled={loading} onClick={() => reload(true)}>
+              {loading ? 'Syncing…' : 'Refresh'}
+            </button>
+          </div>
         </div>
 
-        {state.phase === 'loading' && (
+        {loading && items.length === 0 && (
           <div className="probing">
             <span className="pip" /> {isOpen ? 'Syncing sources…' : 'Loading…'}
           </div>
         )}
 
-        {state.phase === 'error' && <div className="msg error">Sync failed: {state.message}</div>}
+        {error && <div className="msg error">Sync failed: {error}</div>}
 
-        {state.phase === 'ready' && (
+        {!loading && !error && (
           <>
-            {state.notices.map((n) => (
-              <div key={n} className="notice">
-                {n}
-              </div>
-            ))}
-            {state.items.length === 0 ? (
+            {isOpen &&
+              snap.notices.map((n) => (
+                <div key={n} className="notice">
+                  {n}
+                </div>
+              ))}
+            {items.length === 0 ? (
               <div className="inboxEmpty">
                 {emptyText}
                 {isOpen && (
-                  <button className="emptyAdd" onClick={() => setComposer({ open: true, editing: null })}>
+                  <button type="button" className="btn" onClick={() => setComposer({ open: true, editing: null })}>
                     Add a work item
                   </button>
                 )}
               </div>
             ) : isOpen ? (
-              GROUP_ORDER.map((g) => (
-                <ItemGroup
-                  key={g}
-                  group={g}
-                  items={state.items.filter((i) => i.group === g)}
-                  selectedId={ordered[sel]?.id ?? null}
-                  watchTitles={watchTitles}
-                  projectName={projectName}
-                  onSelect={(id) => setSel(ordered.findIndex((i) => i.id === id))}
-                  onDispatch={onDispatch}
-                  onDone={(item) => void setItemState(item, 'done')}
-                  onSnooze={snooze1d}
-                  onArchive={(item) => void setItemState(item, 'archived')}
-                  onReopen={(item) => void setItemState(item, 'open')}
-                  onRefineWatch={onRefineWatch}
-                  onSetPriority={setPriority}
-                  onEdit={(item) => setComposer({ open: true, editing: item })}
-                  onDelete={deleteManual}
-                  onHistory={setHistory}
-                  tab={tab}
-                />
-              ))
+              <div className="homeList">
+                {GROUP_ORDER.map((g) => (
+                  <ItemGroup
+                    key={g}
+                    group={g}
+                    items={snap.items.filter((i) => i.group === g)}
+                    selectedId={ordered[sel]?.id ?? null}
+                    {...rowProps}
+                  />
+                ))}
+              </div>
             ) : (
-              <section className="itemGroup">
-                <div className="itemList">
-                  {state.items.map((item) => (
-                    <ItemRow
-                      key={item.id}
-                      item={item}
-                      selected={item.id === (ordered[sel]?.id ?? null)}
-                      watchTitles={watchTitles}
-                      projectName={projectName}
-                      onSelect={(id) => setSel(ordered.findIndex((i) => i.id === id))}
-                      onDispatch={onDispatch}
-                      onDone={(i) => void setItemState(i, 'done')}
-                      onSnooze={snooze1d}
-                      onArchive={(i) => void setItemState(i, 'archived')}
-                      onReopen={(i) => void setItemState(i, 'open')}
-                      onRefineWatch={onRefineWatch}
-                      onSetPriority={setPriority}
-                      onEdit={(i) => setComposer({ open: true, editing: i })}
-                      onDelete={deleteManual}
-                      onHistory={setHistory}
-                      tab={tab}
-                    />
-                  ))}
-                </div>
-              </section>
+              <div className="homeList">
+                {items.map((item) => (
+                  <WorkCard key={item.id} item={item} selected={item.id === (ordered[sel]?.id ?? null)} {...rowProps} />
+                ))}
+              </div>
             )}
-            <div className="probedAt">
-              {isOpen ? `synced ${new Date(state.syncedAt).toLocaleTimeString()}` : `${state.items.length} item(s)`}
-            </div>
           </>
         )}
       </div>
@@ -390,7 +394,7 @@ export function InboxPage({
         onSaved={(count) => {
           setRepoCount(count)
           setReposOpen(false)
-          void load(tab, true) // scope changed — resync now
+          void inboxStore.refresh(true) // scope changed — resync now
         }}
       />
 
@@ -401,105 +405,211 @@ export function InboxPage({
         onClose={() => setComposer({ open: false, editing: null })}
         onSaved={() => {
           setComposer({ open: false, editing: null })
-          void load(tab, false) // include the new/edited item
+          reload(false) // include the new/edited item
         }}
-        onSavedMore={() => void load(tab, false)} // "Add more" — refresh, stay open
+        onSavedMore={() => reload(false)} // "Add more" — refresh, stay open
       />
-
-      <ItemTimeline item={history} watchTitles={watchTitles} onClose={() => setHistory(null)} />
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Item timeline: the append-only transition log for one item — proof of when it
-// was found, by which run, and every state change since (.docs/watches-v2.md).
+// Cards
 // ---------------------------------------------------------------------------
 
-const EVENT_LABEL: Record<string, string> = {
-  created: 'found',
-  updated: 'new activity',
-  reopened: 'reopened',
-  done: 'marked done',
-  archived: 'archived',
-  snoozed: 'snoozed',
-  woken: 'snooze ended',
-}
-
-function actorLabel(actor: string): string {
-  if (actor === 'user') return 'you'
-  if (actor === 'system') return 'system'
-  if (actor === 'agent' || actor.startsWith('agent:')) return 'an agent'
-  if (actor.startsWith('watch:')) return 'a watch run'
-  return actor
-}
-
-function ItemTimeline({
-  item,
-  watchTitles,
-  onClose,
-}: {
-  item: ScoredItem | null
+type RowActions = {
+  tab: Tab
   watchTitles: Map<string, string>
-  onClose: () => void
-}) {
-  const dialog = useRef<HTMLDialogElement>(null)
-  const [events, setEvents] = useState<ItemEvent[] | null>(null)
+  projectName: (id?: string) => string | undefined
+  onSelect: (id: string) => void
+  onOpen: (id: string) => void
+  onDispatch: (item: ScoredItem) => void
+  onDone: (item: ScoredItem) => void
+  onSnooze: (item: ScoredItem) => void
+  onArchive: (item: ScoredItem) => void
+  onReopen: (item: ScoredItem) => void
+  onRefineWatch: (item: ScoredItem) => void
+  onSetPriority: (item: ScoredItem, priority: number) => void
+  onEdit: (item: ScoredItem) => void
+  onDelete: (item: ScoredItem) => void
+}
 
-  useEffect(() => {
-    const el = dialog.current
-    if (!el) return
-    if (item && !el.open) {
-      el.showModal()
-      setEvents(null)
-      void fetch(`/api/items/events?id=${encodeURIComponent(item.id)}`)
-        .then((r) => r.json() as Promise<ItemEventsResponse>)
-        .then((b) => setEvents(b.ok ? b.events : []))
-        .catch(() => setEvents([]))
-    }
-    if (!item && el.open) el.close()
-  }, [item])
+function ItemGroup({
+  group,
+  items,
+  selectedId,
+  ...actions
+}: { group: Group; items: ScoredItem[]; selectedId: string | null } & RowActions) {
+  if (items.length === 0) return null
+  return (
+    <>
+      <div className="secLabel">{GROUP_TITLE[group]}</div>
+      {items.map((item) => (
+        <WorkCard key={item.id} item={item} selected={item.id === selectedId} {...actions} />
+      ))}
+    </>
+  )
+}
+
+function WorkCard({
+  item,
+  selected,
+  tab,
+  watchTitles,
+  projectName,
+  onSelect,
+  onOpen,
+  onDispatch,
+  onDone,
+  onSnooze,
+  onArchive,
+  onReopen,
+  onRefineWatch,
+  onSetPriority,
+  onEdit,
+  onDelete,
+}: { item: ScoredItem; selected: boolean } & RowActions) {
+  const isManual = item.source === 'manual'
+  const isOpen = tab === 'open'
+  const proj = projectName(item.projectId)
+  const pri = item.priority ?? 0
+  // watchId now rides in the provenance list; fall back to the item field.
+  const watchId = item.watchId ?? item.foundBy?.[item.foundBy.length - 1]?.watchId
+  const Icon = kindIcon(item)
+  const tone = itemTone(item)
+  const quiet = item.group === 'cycle' || item.group === 'fyi'
 
   return (
-    <dialog ref={dialog} className="itemComposer" onClose={onClose} onClick={(e) => e.target === dialog.current && onClose()}>
-      <div className="composerHead">
-        <div className="crumbs">
-          <span className="crumb">Item</span>
-          <span className="crumbSep">›</span>
-          <span className="crumb now">Timeline</span>
+    <div
+      className={`card wcard${selected ? ' sel' : ''}${quiet ? ' quiet' : ''}`}
+      ref={selected ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+      onMouseMove={() => !selected && onSelect(item.id)}
+    >
+      <div className="main">
+        <div className="cmeta">
+          <Icon size={13} aria-hidden="true" />
+          <span className="repo">{item.repo}</span>
+          <span className="sep">·</span>
+          <span>{KIND_LABEL[item.kind] ?? item.kind}</span>
+          {item.peopleWaiting > 0 && (
+            <>
+              <span className="sep">·</span>
+              <span>{item.peopleWaiting} waiting</span>
+            </>
+          )}
+          {item.ciFailing && (
+            <>
+              <span className="sep">·</span>
+              <span style={{ color: 'var(--red)' }}>CI red</span>
+            </>
+          )}
+          <span className="score">↑ {Math.round(item.score)}</span>
         </div>
-        <button type="button" className="composerClose" onClick={onClose} aria-label="Close">
-          <X size={16} aria-hidden="true" />
+        <button type="button" className="title" title={item.title} onClick={() => onOpen(item.id)}>
+          {item.returned && (
+            <span className="returned" title="Was done — the source updated since">
+              ↩ returned
+            </span>
+          )}
+          {item.title}
         </button>
+        <div className="status">
+          <span className={`dot ${tone ?? (item.group === 'blocking' ? 'green' : 'stone')}`} aria-hidden="true" />
+          <span>{item.reason}</span>
+          {item.why && <span className="why">“{item.why}”</span>}
+          {proj && (
+            <span className="pill" title="Project">
+              <Folder size={10} aria-hidden="true" />
+              {proj}
+            </span>
+          )}
+          {pri > 0 && (
+            <span className={`pill ${pri <= 2 ? 'yellow' : ''}`} title="Priority">
+              {PRIORITY_LABEL[pri]}
+            </span>
+          )}
+          {watchId && watchTitles.has(watchId) && (
+            <span className="pill blue" title="Matched by this watch">
+              {watchTitles.get(watchId)}
+            </span>
+          )}
+          {item.linked?.map((l) => (
+            <a key={l.url} className="pill" href={l.url} target="_blank" rel="noreferrer" title="Same work, another source">
+              + {l.source} · {l.repo}
+            </a>
+          ))}
+        </div>
       </div>
-      {item && <div className="timelineTitle">{item.title}</div>}
-      {events === null ? (
-        <div className="pickerLoading">Loading…</div>
-      ) : events.length === 0 ? (
-        <div className="pickerLoading">No history recorded.</div>
-      ) : (
-        <ol className="timeline">
-          {events.map((ev) => {
-            const why = typeof ev.detail?.why === 'string' ? ev.detail.why : undefined
-            const reason = typeof ev.detail?.reason === 'string' ? ev.detail.reason : undefined
-            const wid = typeof ev.detail?.watchId === 'string' ? ev.detail.watchId : undefined
-            return (
-              <li key={ev.seq} className="timelineRow">
-                <span className={`timelineDot ${ev.event}`} />
-                <div>
-                  <div className="timelineHead">
-                    <b>{EVENT_LABEL[ev.event] ?? ev.event}</b> · {actorLabel(ev.actor)}
-                    <span className="timelineWhen">{new Date(ev.at).toLocaleString()}</span>
-                  </div>
-                  {(why || reason) && <div className="timelineWhy">{why ?? reason}</div>}
-                  {wid && watchTitles.has(wid) && <div className="timelineWatch">watch: {watchTitles.get(wid)}</div>}
-                </div>
-              </li>
-            )
-          })}
-        </ol>
-      )}
-    </dialog>
+
+      <div className="side">
+        {isOpen ? (
+          <button
+            type="button"
+            className={`btn${selected ? ' primary' : ''}`}
+            title="Start a Claude Code session on this item (d)"
+            onClick={() => onDispatch(item)}
+          >
+            Dispatch
+          </button>
+        ) : (
+          <button type="button" className={`btn${selected ? ' primary' : ''}`} title="Move back to the open inbox (e)" onClick={() => onReopen(item)}>
+            Reopen
+          </button>
+        )}
+        <div className="sideRow">
+          {item.url && (
+            <a className="iconBtn sm" href={item.url} target="_blank" rel="noreferrer" title="Open at the source (o)">
+              <ExternalLink size={13} aria-hidden="true" />
+            </a>
+          )}
+          {isOpen && (
+            <>
+              <button type="button" className="iconBtn sm green" title="Mark done (e)" onClick={() => onDone(item)}>
+                <Check size={14} aria-hidden="true" />
+              </button>
+              <button type="button" className="iconBtn sm" title="Snooze until tomorrow 9am (z)" onClick={() => onSnooze(item)}>
+                <AlarmClock size={13} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="iconBtn sm"
+                title={isManual ? 'Delete — moves to Archived (x)' : 'Archive (x)'}
+                onClick={() => (isManual ? onDelete(item) : onArchive(item))}
+              >
+                {isManual ? <Trash2 size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
+              </button>
+              {isManual && (
+                <button type="button" className="iconBtn sm" title="Edit" onClick={() => onEdit(item)}>
+                  <Pencil size={13} aria-hidden="true" />
+                </button>
+              )}
+              {watchId && (
+                <button type="button" className="iconBtn sm red" title="Bad match — refine this watch" onClick={() => onRefineWatch(item)}>
+                  <ThumbsDown size={13} aria-hidden="true" />
+                </button>
+              )}
+              <select
+                className={`prioSelect prio${pri}`}
+                title="Set priority"
+                value={pri}
+                onChange={(e) => onSetPriority(item, Number(e.target.value))}
+              >
+                {PRIORITY_VALUES.map((v) => (
+                  <option key={v} value={v}>
+                    {v === 0 ? '— priority' : PRIORITY_LABEL[v]}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+          {!isOpen && tab !== 'archived' && (
+            <button type="button" className="iconBtn sm" title="Archive" onClick={() => onArchive(item)}>
+              <Archive size={13} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -552,9 +662,7 @@ function ItemComposer({
     setError(null)
     try {
       const payload = { title, projectId: projectId || undefined, priority, note: note || undefined }
-      const path = editing
-        ? `/api/items/manual?id=${encodeURIComponent(editing.id)}`
-        : '/api/items/manual'
+      const path = editing ? `/api/items/manual?id=${encodeURIComponent(editing.id)}` : '/api/items/manual'
       const res = await fetch(path, {
         method: editing ? 'PUT' : 'POST',
         headers: { 'content-type': 'application/json' },
@@ -618,7 +726,7 @@ function ItemComposer({
 
         <div className="pillRow">
           <label className={`pill prio${priority}`} title="Priority">
-            <Flag size={13} aria-hidden="true" />
+            <Flag size={12} aria-hidden="true" />
             <select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
               {PRIORITY_VALUES.map((v) => (
                 <option key={v} value={v}>
@@ -628,7 +736,7 @@ function ItemComposer({
             </select>
           </label>
           <label className={`pill${projectId ? ' set' : ''}`} title="Project">
-            <Folder size={13} aria-hidden="true" />
+            <Folder size={12} aria-hidden="true" />
             <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
               <option value="">Project</option>
               {projects.map((p) => (
@@ -645,11 +753,7 @@ function ItemComposer({
         <div className="composerFoot">
           {!editing && (
             <label className="addMore" title="Keep this open to add another after saving">
-              <input
-                type="checkbox"
-                checked={addMore}
-                onChange={(e) => setAddMore(e.target.checked)}
-              />
+              <input type="checkbox" checked={addMore} onChange={(e) => setAddMore(e.target.checked)} />
               <span className="switch" aria-hidden="true" />
               Add more
             </label>
@@ -752,8 +856,8 @@ function RepoPicker({
     <dialog ref={dialog} className="repoDialog" onClose={onClose}>
       <h3>Connected repos</h3>
       <p className="pickerSub">
-        The GitHub source only pulls from checked repos, and this scope is per workspace.
-        Nothing checked = no GitHub items here.
+        The GitHub source only pulls from checked repos, and this scope is per workspace. Nothing
+        checked = no GitHub items here.
       </p>
       {state.phase === 'loading' && <div className="pickerLoading">Loading your repos…</div>}
       {state.phase === 'error' && <div className="msg error">{state.message}</div>}
@@ -777,7 +881,7 @@ function RepoPicker({
           <div className="pickerCount">
             {selected.size === 0 ? 'no repos — no GitHub items' : `${selected.size} selected`}
             {selected.size > 0 && (
-              <button className="clearSel" onClick={() => setSelected(new Set())}>
+              <button type="button" className="clearSel" onClick={() => setSelected(new Set())}>
                 clear
               </button>
             )}
@@ -785,161 +889,13 @@ function RepoPicker({
         </>
       )}
       <div className="row">
-        <button className="cancel" onClick={onClose}>
+        <button type="button" className="cancel" onClick={onClose}>
           Cancel
         </button>
-        <button className="go" disabled={state.phase !== 'ready' || saving} onClick={() => void save()}>
+        <button type="button" className="go" disabled={state.phase !== 'ready' || saving} onClick={() => void save()}>
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
     </dialog>
-  )
-}
-
-type RowActions = {
-  watchTitles: Map<string, string>
-  projectName: (id?: string) => string | undefined
-  onSelect: (id: string) => void
-  onDispatch: (item: ScoredItem) => void
-  onDone: (item: ScoredItem) => void
-  onSnooze: (item: ScoredItem) => void
-  onArchive: (item: ScoredItem) => void
-  onReopen: (item: ScoredItem) => void
-  onRefineWatch: (item: ScoredItem) => void
-  onSetPriority: (item: ScoredItem, priority: number) => void
-  onEdit: (item: ScoredItem) => void
-  onDelete: (item: ScoredItem) => void
-  onHistory: (item: ScoredItem) => void
-  tab: Tab
-}
-
-function ItemGroup({ group, items, selectedId, ...actions }: { group: Group; items: ScoredItem[]; selectedId: string | null } & RowActions) {
-  if (items.length === 0) return null
-  return (
-    <section className="itemGroup">
-      <h3 className={group}>{GROUP_LABELS[group]}</h3>
-      <div className="itemList">
-        {items.map((item) => (
-          <ItemRow key={item.id} item={item} selected={item.id === selectedId} {...actions} />
-        ))}
-      </div>
-    </section>
-  )
-}
-
-function ItemRow({
-  item,
-  selected,
-  watchTitles,
-  projectName,
-  onSelect,
-  onDispatch,
-  onDone,
-  onSnooze,
-  onArchive,
-  onReopen,
-  onRefineWatch,
-  onSetPriority,
-  onEdit,
-  onDelete,
-  onHistory,
-  tab,
-}: { item: ScoredItem; selected: boolean } & RowActions) {
-  const isManual = item.source === 'manual'
-  const isOpen = tab === 'open'
-  const proj = projectName(item.projectId)
-  const pri = item.priority ?? 0
-  // watchId now rides in the provenance list; fall back to the item field.
-  const watchId = item.watchId ?? item.foundBy?.[item.foundBy.length - 1]?.watchId
-  return (
-    <div
-      className={`itemRow${selected ? ' sel' : ''}`}
-      ref={selected ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
-      onMouseMove={() => !selected && onSelect(item.id)}
-    >
-      <span className="itemScore">{Math.round(item.score)}</span>
-      <span className={`itemKind ${item.group}`}>{KIND_LABEL[item.kind] ?? item.kind}</span>
-      <div className="itemBody">
-        {item.url ? (
-          <a className="itemTitle" href={item.url} target="_blank" rel="noreferrer">
-            {item.returned && <span className="itemReturned" title="Was done — the source updated since">↩ returned</span>}
-            {item.title}
-          </a>
-        ) : (
-          <span className="itemTitle plain">
-            {item.returned && <span className="itemReturned" title="Was done — updated since">↩ returned</span>}
-            {item.title}
-          </span>
-        )}
-        <div className="itemMeta">
-          {item.repo && <><span className="itemRepo">{item.repo}</span> · </>}
-          {item.reason}
-          {proj && <span className="projChip" title="Project">{proj}</span>}
-          {item.why && <span className="itemWhy"> · “{item.why}”</span>}
-          {watchId && watchTitles.has(watchId) && (
-            <span className="watchChip" title="Matched by this watch">{watchTitles.get(watchId)}</span>
-          )}
-          {item.linked?.map((l) => (
-            <a key={l.url} className="linkedChip" href={l.url} target="_blank" rel="noreferrer" title="Same work, another source">
-              + {l.source} · {l.repo}
-            </a>
-          ))}
-        </div>
-      </div>
-      {isOpen && (
-        <select
-          className={`prioSelect prio${pri}`}
-          title="Set priority"
-          value={pri}
-          onChange={(e) => onSetPriority(item, Number(e.target.value))}
-        >
-          {PRIORITY_VALUES.map((v) => (
-            <option key={v} value={v}>
-              {v === 0 ? '— priority' : PRIORITY_LABEL[v]}
-            </option>
-          ))}
-        </select>
-      )}
-      {isOpen && isManual && (
-        <button className="rowIcon" title="Edit" onClick={() => onEdit(item)}>
-          Edit
-        </button>
-      )}
-      {isOpen && watchId && (
-        <button className="thumbsDown" title="Bad match — refine this watch" onClick={() => onRefineWatch(item)}>
-          👎
-        </button>
-      )}
-      <button className="rowIcon" title="History — this item’s timeline" onClick={() => onHistory(item)}>
-        <Clock size={13} aria-hidden="true" />
-      </button>
-      {isOpen ? (
-        <>
-          <button className="dispatch" title="Snooze until tomorrow 9am (z)" onClick={() => onSnooze(item)}>
-            Snooze
-          </button>
-          <button className="dispatch" title="Archive (x)" onClick={() => (isManual ? onDelete(item) : onArchive(item))}>
-            Archive
-          </button>
-          <button className="dispatch done" title="Mark done (e)" onClick={() => onDone(item)}>
-            Done
-          </button>
-          <button className="dispatch" title="Start a Claude Code session on this item" onClick={() => onDispatch(item)}>
-            Dispatch
-          </button>
-        </>
-      ) : (
-        <>
-          <button className="dispatch done" title="Move back to the open inbox" onClick={() => onReopen(item)}>
-            Reopen
-          </button>
-          {tab !== 'archived' && (
-            <button className="dispatch" title="Archive" onClick={() => onArchive(item)}>
-              Archive
-            </button>
-          )}
-        </>
-      )}
-    </div>
   )
 }

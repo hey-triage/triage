@@ -23,7 +23,7 @@ type Props = {
   onClose: () => void
   onNavigate: (hash: string) => void
   onNewSession: () => void
-  onDispatch: (item: ScoredItem) => void
+  onOpenItem: (item: ScoredItem) => void
   onNewSessionIn: (project: Project) => void
   onSyncInbox: () => void
   onAddWatch: () => void
@@ -38,7 +38,7 @@ export function CommandPalette({
   onClose,
   onNavigate,
   onNewSession,
-  onDispatch,
+  onOpenItem,
   onNewSessionIn,
   onSyncInbox,
   onAddWatch,
@@ -88,6 +88,7 @@ export function CommandPalette({
       { id: 'addwatch', section: 'Actions', label: 'Add watch', run: onAddWatch },
       { id: 'help', section: 'Actions', label: 'Keyboard shortcuts', hint: '?', run: onHelp },
       { id: 'inbox', section: 'Pages', label: 'Inbox', hint: 'g i', run: () => onNavigate('/inbox') },
+      { id: 'sessions', section: 'Pages', label: 'Sessions', hint: 'g s', run: () => onNavigate('') },
       { id: 'watches', section: 'Pages', label: 'Watches', hint: 'g w', run: () => onNavigate('/watches') },
       { id: 'projects', section: 'Pages', label: 'Projects', hint: 'g p', run: () => onNavigate('/projects') },
       { id: 'connectors', section: 'Pages', label: 'Connectors', hint: 'g c', run: () => onNavigate('/connectors') },
@@ -121,12 +122,12 @@ export function CommandPalette({
       ...items.map((i): Command => ({
         id: `w:${i.id}`,
         section: 'Work items',
-        label: `Dispatch: ${i.title}`,
+        label: i.title,
         hint: `${i.repo} · ${i.reason}`,
-        run: () => onDispatch(i),
+        run: () => onOpenItem(i),
       })),
     ],
-    [sessions, items, projects, watches, onNavigate, onNewSession, onDispatch, onNewSessionIn, onSyncInbox, onAddWatch, onHelp],
+    [sessions, items, projects, watches, onNavigate, onNewSession, onOpenItem, onNewSessionIn, onSyncInbox, onAddWatch, onHelp],
   )
 
   const shown = useMemo(() => {
@@ -152,7 +153,7 @@ export function CommandPalette({
     <dialog ref={dialog} id="palette" onClose={onClose} onClick={(e) => e.target === dialog.current && onClose()}>
       <input
         autoFocus
-        placeholder="Type a command, session, or work item…"
+        placeholder="Search sessions, items, projects, commands…"
         value={query}
         onChange={(e) => {
           setQuery(e.target.value)

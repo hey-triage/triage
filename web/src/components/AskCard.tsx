@@ -82,11 +82,11 @@ export const AskCard = memo(function AskCard({ item, questions, onRespond }: Pro
           </div>
         )
       })}
-      <button className="allow" disabled={!complete} onClick={submit}>
+      <button className="btn primary" disabled={!complete} onClick={submit}>
         Send answer{questions.length > 1 ? 's' : ''}
       </button>
       {/* Denying is still on the table: the reader may want none of the above. */}
-      <button className="deny" onClick={() => onRespond(item.id, 'deny')}>
+      <button className="btn" onClick={() => onRespond(item.id, 'deny')}>
         Don't answer
       </button>
     </div>

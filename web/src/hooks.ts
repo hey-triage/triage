@@ -39,13 +39,24 @@ export type Route =
   | { page: 'home' }
   | { page: 'session'; id: string }
   | { page: 'inbox' }
+  | { page: 'item'; id: string }
   | { page: 'connectors' }
   | { page: 'projects' }
   | { page: 'watches' }
 
+/** The hash for a work item — ids carry `:` `/` `#`, so they travel encoded. */
+export const itemHash = (id: string) => `/item/${encodeURIComponent(id)}`
+
 function parseRoute(hash: string): Route {
   if (!hash) return { page: 'home' }
   if (hash === '/inbox') return { page: 'inbox' }
+  if (hash.startsWith('/item/')) {
+    try {
+      return { page: 'item', id: decodeURIComponent(hash.slice('/item/'.length)) }
+    } catch {
+      return { page: 'inbox' }
+    }
+  }
   if (hash === '/connectors') return { page: 'connectors' }
   if (hash === '/projects') return { page: 'projects' }
   if (hash === '/watches') return { page: 'watches' }

@@ -1,4 +1,4 @@
-import { Folder, GitBranch } from 'lucide-react'
+import { ArrowUp, Square } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
 import type {
   EffortLevel,
@@ -14,8 +14,6 @@ import { PermissionModePicker } from './PermissionModePicker.js'
 
 type Props = {
   status: SessionStatus
-  cwd: string
-  branch?: string
   model?: string
   effort?: EffortLevel
   fastMode?: boolean
@@ -29,22 +27,13 @@ type Props = {
   onPermissionModeChange: (mode: PermissionMode) => void
 }
 
-/** `/Users/you/Code/x` → `~/Code/x` — display only. */
-function homely(p: string): string {
-  return p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
-}
-
-const STATUS_LABEL: Record<SessionStatus, string> = {
-  starting: 'starting…',
-  running: 'working…',
-  idle: 'ready',
-  error: 'error',
-}
-
+/**
+ * The session composer: a card with the message on top and the session's
+ * knobs as pills underneath — model, fast mode, how much it asks — and the one
+ * bright control on the page, the send button.
+ */
 export function Composer({
   status,
-  cwd,
-  branch,
   model,
   effort,
   fastMode,
@@ -78,19 +67,35 @@ export function Composer({
 
   return (
     <div id="composer">
-      <div className="frame">
+      <div className="frame card">
+        <textarea
+          id="box"
+          ref={box}
+          autoFocus
+          rows={1}
+          value={text}
+          placeholder={running ? 'Steer the session… (queued until this turn ends)' : 'Steer the session…'}
+          onChange={(e) => {
+            setText(e.target.value)
+            autosize()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              submit()
+            } else if (e.key === 'Tab' && e.shiftKey) {
+              // Claude Code's own gesture, and the composer is where the
+              // hands already are — so it lives here rather than in the
+              // global map, which ignores keys typed into a text field.
+              e.preventDefault()
+              onPermissionModeChange(nextMode(permissionMode))
+            }
+          }}
+        />
+
         <div className="statusline">
-          <span className="chip cwd" title={cwd}>
-            <Folder size={14} aria-hidden="true" />
-            {homely(cwd)}
-          </span>
-          {branch && (
-            <span className="chip branch" title={`git branch: ${branch}`}>
-              <GitBranch size={14} aria-hidden="true" />
-              {branch}
-            </span>
-          )}
           <ModelPicker model={model} effort={effort} onChange={onModelChange} />
+          <PermissionModePicker mode={permissionMode} onChange={onPermissionModeChange} />
           <FastModeToggle
             model={model}
             fastMode={fastMode}
@@ -98,51 +103,15 @@ export function Composer({
             reason={fastModeDisabledReason}
             onChange={onFastModeChange}
           />
-          <PermissionModePicker mode={permissionMode} onChange={onPermissionModeChange} />
-          <span className={`state ${status}`}>
-            <span className="pip" />
-            {STATUS_LABEL[status]}
-          </span>
-        </div>
-
-        <div className="inputRow">
-          <textarea
-            id="box"
-            ref={box}
-            autoFocus
-            rows={1}
-            value={text}
-            placeholder="Message Claude…"
-            onChange={(e) => {
-              setText(e.target.value)
-              autosize()
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                submit()
-              } else if (e.key === 'Tab' && e.shiftKey) {
-                // Claude Code's own gesture, and the composer is where the
-                // hands already are — so it lives here rather than in the
-                // global map, which ignores keys typed into a text field.
-                e.preventDefault()
-                onPermissionModeChange(nextMode(permissionMode))
-              }
-            }}
-          />
+          <span className="spacer" />
           {running && (
-            <button id="stopBtn" onClick={onInterrupt} title="Interrupt the current turn">
-              Stop
+            <button id="stopBtn" onClick={onInterrupt} title="Interrupt the current turn" aria-label="Stop">
+              <Square size={11} aria-hidden="true" />
             </button>
           )}
-          <button id="sendBtn" onClick={submit} disabled={!text.trim()}>
-            Send
+          <button id="sendBtn" onClick={submit} disabled={!text.trim()} title="Send (Enter)">
+            <ArrowUp size={15} aria-hidden="true" />
           </button>
-        </div>
-
-        <div className="hint">
-          <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for a new line · <kbd>Shift+Tab</kbd> to
-          change what gets asked
         </div>
       </div>
     </div>

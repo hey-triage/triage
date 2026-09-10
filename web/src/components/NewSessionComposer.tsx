@@ -1,11 +1,6 @@
-import { ChevronDown, FolderGit2 } from 'lucide-react'
+import { ArrowUp, ChevronDown, FolderGit2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type {
-  EffortLevel,
-  PermissionMode,
-  Project,
-  ProjectsResponse,
-} from '../../../shared/protocol.js'
+import type { EffortLevel, PermissionMode, Project, ProjectsResponse } from '../../../shared/protocol.js'
 import { isEffort } from '../models.js'
 import { isPermissionMode, nextMode } from '../permissionModes.js'
 import { FastModeToggle } from './FastModeToggle.js'
@@ -100,8 +95,10 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
     const el = box.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 240) + 'px'
+    el.style.height = Math.min(el.scrollHeight, 320) + 'px'
   }, [])
+
+  useEffect(autosize, [text, autosize])
 
   function submit() {
     const trimmed = text.trim()
@@ -121,12 +118,34 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
 
   return (
     <div id="newSessionHome">
-      <h2>What are we working on?</h2>
+      <div className="glow blue" aria-hidden="true" />
+      <h2>{preset?.title ? 'Dispatching.' : 'What are we working on?'}</h2>
       <div id="composer">
-        <div className="frame">
+        <div className="frame card">
+          <textarea
+            id="box"
+            ref={box}
+            autoFocus
+            rows={1}
+            value={text}
+            placeholder="Describe what you want to work on — a bug, a feature, a question…"
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                submit()
+              } else if (e.key === 'Tab' && e.shiftKey) {
+                e.preventDefault()
+                const m = nextMode(permissionMode)
+                setPermissionMode(m)
+                remember(PERMISSION_KEY, m)
+              }
+            }}
+          />
+
           <div className="statusline">
             <label className="chip cwd pick" title={`Project folder: ${cwd}`}>
-              <FolderGit2 size={13} aria-hidden="true" />
+              <FolderGit2 size={12} aria-hidden="true" />
               <select
                 aria-label="Project"
                 value={projects.find((p) => p.path === cwd)?.id ?? ''}
@@ -143,7 +162,7 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
                   </option>
                 ))}
               </select>
-              <ChevronDown size={12} aria-hidden="true" />
+              <ChevronDown size={11} aria-hidden="true" />
             </label>
 
             <ModelPicker
@@ -157,6 +176,14 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
               }}
             />
 
+            <PermissionModePicker
+              mode={permissionMode}
+              onChange={(m) => {
+                setPermissionMode(m)
+                remember(PERMISSION_KEY, m)
+              }}
+            />
+
             <FastModeToggle
               model={model}
               fastMode={fastMode}
@@ -166,47 +193,12 @@ export function NewSessionComposer({ preset, onCreate }: Props) {
               }}
             />
 
-            <PermissionModePicker
-              mode={permissionMode}
-              onChange={(m) => {
-                setPermissionMode(m)
-                remember(PERMISSION_KEY, m)
-              }}
-            />
-          </div>
-
-          <div className="inputRow">
-            <textarea
-              id="box"
-              ref={box}
-              autoFocus
-              rows={1}
-              value={text}
-              placeholder="Describe what you want to work on — a bug, a feature, a question…"
-              onChange={(e) => {
-                setText(e.target.value)
-                autosize()
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  submit()
-                } else if (e.key === 'Tab' && e.shiftKey) {
-                  e.preventDefault()
-                  const m = nextMode(permissionMode)
-                  setPermissionMode(m)
-                  remember(PERMISSION_KEY, m)
-                }
-              }}
-            />
-          </div>
-
-          <div className="actions">
+            <span className="spacer" />
             <span className="hint">
-              <kbd>Enter</kbd> to start · <kbd>Shift+Enter</kbd> for a new line
+              <kbd>Enter</kbd> starts · <kbd>Shift+Enter</kbd> newline
             </span>
-            <button id="sendBtn" onClick={submit} disabled={!text.trim()}>
-              Start
+            <button id="sendBtn" onClick={submit} disabled={!text.trim()} title="Start the session (Enter)">
+              <ArrowUp size={15} aria-hidden="true" />
             </button>
           </div>
         </div>
