@@ -409,6 +409,10 @@ export type ProjectsResponse =
   | { ok: true; projects: Project[] }
   | { ok: false; error: string }
 
+// GET /api/git/branch?cwd=… — the checked-out branch of a folder, for the
+// draft composer's header (a session derives its own once it exists).
+export type BranchResponse = { ok: true; branch: string | null } | { ok: false; error: string }
+
 // POST /api/pick-folder — opens the OS's native folder chooser on the machine
 // running the server (which is the user's own machine) and returns the picked
 // absolute path. `cancelled` is the user dismissing the dialog, not an error.

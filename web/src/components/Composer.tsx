@@ -9,7 +9,7 @@ import type {
 } from '../../../shared/protocol.js'
 import { nextMode } from '../permissionModes.js'
 import { FastModeToggle } from './FastModeToggle.js'
-import { ModelPicker } from './ModelPicker.js'
+import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 
 type Props = {
@@ -94,8 +94,9 @@ export function Composer({
         />
 
         <div className="statusline">
-          <ModelPicker model={model} effort={effort} onChange={onModelChange} />
+          <ModelPopover model={model} effort={effort} onModelChange={onModelChange} />
           <PermissionModePicker mode={permissionMode} onChange={onPermissionModeChange} />
+          <span className="spacer" />
           <FastModeToggle
             model={model}
             fastMode={fastMode}
@@ -103,7 +104,6 @@ export function Composer({
             reason={fastModeDisabledReason}
             onChange={onFastModeChange}
           />
-          <span className="spacer" />
           {running && (
             <button id="stopBtn" onClick={onInterrupt} title="Interrupt the current turn" aria-label="Stop">
               <Square size={11} aria-hidden="true" />

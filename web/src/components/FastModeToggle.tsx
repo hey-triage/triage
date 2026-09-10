@@ -16,7 +16,7 @@ type Props = {
 }
 
 /**
- * A binary the user flips, so a plain toggle button rather than a menu — the
+ * A binary the user flips, so a plain toggle chip rather than a menu — the
  * chip is both the control and the readout. When the session says it asked for
  * fast mode and the subprocess says it isn't serving, the chip shows that
  * disagreement instead of quietly claiming speed it isn't getting.
@@ -48,7 +48,7 @@ export function FastModeToggle({ model, fastMode, state, reason, onChange, disab
       title={title}
       onClick={() => onChange(!fastMode)}
     >
-      <Zap size={14} aria-hidden="true" />
+      <Zap size={12} aria-hidden="true" />
       <span className="name">Fast</span>
     </button>
   )

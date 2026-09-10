@@ -23,6 +23,7 @@ import { ProjectsPage } from './components/ProjectsPage.js'
 import { Rail, type RailSection } from './components/Rail.js'
 import { SystemModal, type SystemTab } from './components/SystemModal.js'
 import { TabBand, type OpenTab, type PageTab } from './components/TabBand.js'
+import { dispatchPrompt, dispatchTitle } from './dispatch.js'
 import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
@@ -383,23 +384,7 @@ export function App() {
   const dispatch = useCallback(
     (item: ScoredItem) => {
       const openWith = (cwd?: string) => {
-        const isManual = item.source === 'manual'
-        const lines = isManual
-          ? [
-              'Work item from the triage inbox — a to-do you added:',
-              item.title,
-              ...(item.url ? [item.url] : []),
-              ...(item.why ? [`Note: ${item.why}`] : []),
-            ]
-          : [
-              `Work item from the triage inbox — ${item.kind}:`,
-              item.title,
-              item.url,
-              `Why it ranked: ${item.reason}`,
-              '',
-              'Use `gh` to pull the full context (diff, comments, CI) and get started.',
-            ]
-        const d = draftStore.create({ label: item.title.slice(0, 80), cwd, text: lines.join('\n') })
+        const d = draftStore.create({ label: dispatchTitle(item), cwd, text: dispatchPrompt(item) })
         navigate(draftRoute(d.id))
       }
       // An explicit project (manual items) decides the folder; otherwise a project

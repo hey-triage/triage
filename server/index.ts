@@ -1912,6 +1912,19 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  if (url.pathname === '/api/git/branch') {
+    // Which branch a folder has checked out — the draft composer shows it
+    // beside the project before any session exists. Not a repo → null.
+    const cwd = expandHome(url.searchParams.get('cwd') ?? '')
+    try {
+      const { stdout } = await pExecFile('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'])
+      json(200, { ok: true, branch: stdout.trim() || null })
+    } catch {
+      json(200, { ok: true, branch: null })
+    }
+    return
+  }
+
   // --- workspace management (daemon-wide, not workspace-scoped) --------------
   if (url.pathname === '/api/workspaces' && req.method === 'GET') {
     const body: WorkspacesResponse = {

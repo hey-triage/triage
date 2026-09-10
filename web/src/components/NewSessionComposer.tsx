@@ -1,11 +1,18 @@
-import { ArrowUp, ChevronDown, FolderGit2 } from 'lucide-react'
+import { ArrowUp, ChevronDown, GitBranch } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { EffortLevel, PermissionMode, Project, ProjectsResponse } from '../../../shared/protocol.js'
+import type {
+  BranchResponse,
+  EffortLevel,
+  PermissionMode,
+  Project,
+  ProjectsResponse,
+} from '../../../shared/protocol.js'
 import type { Draft } from '../drafts.js'
 import { isEffort } from '../models.js'
 import { isPermissionMode, nextMode } from '../permissionModes.js'
+import { projectColor } from '../tabs.js'
 import { FastModeToggle } from './FastModeToggle.js'
-import { ModelPicker } from './ModelPicker.js'
+import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 
 export type NewSession = {
@@ -21,7 +28,7 @@ export type NewSession = {
 type Props = {
   /** The draft this tab edits; text and folder round-trip through it so they survive a tab switch. */
   draft: Draft
-  onChange: (patch: { text?: string; cwd?: string }) => void
+  onChange: (patch: { text?: string; cwd?: string; label?: string }) => void
   onCreate: (s: NewSession) => void
 }
 
@@ -54,9 +61,11 @@ function titleFrom(text: string): string {
   return text.trim().split('\n')[0].slice(0, 80)
 }
 
+
 /** A draft tab: the composer that becomes a session on first send. */
 export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
   const [projects, setProjects] = useState<Project[]>([])
+  const [branch, setBranch] = useState<string | null>(null)
   const cwd = draft.cwd ?? DEFAULT_CWD
   const text = draft.text
   const [model, setModel] = useState<string | undefined>(() => remembered(MODEL_KEY))
@@ -80,6 +89,21 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
       .catch(() => {})
   }, [])
 
+  // The header names the branch the session will start on.
+  useEffect(() => {
+    let live = true
+    setBranch(null)
+    void fetch(`/api/git/branch?cwd=${encodeURIComponent(cwd)}`)
+      .then((r) => r.json() as Promise<BranchResponse>)
+      .then((b) => {
+        if (live && b.ok) setBranch(b.branch)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [cwd])
+
   useEffect(() => {
     const el = box.current
     if (!el) return
@@ -96,6 +120,8 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
   }, [])
 
   useEffect(autosize, [text, autosize])
+
+  const project = projects.find((p) => p.path === cwd)
 
   function submit() {
     const trimmed = text.trim()
@@ -117,6 +143,40 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
       <h2>{draft.label ? 'Dispatching.' : 'What are we working on?'}</h2>
       <div id="composer">
         <div className="frame card">
+          <div className="cardHead">
+            <label className="chip ink pick" title={`Project folder: ${cwd}`}>
+              <span className="pdot" style={{ background: projectColor(cwd) }} aria-hidden="true" />
+              <span className="name">{project?.name ?? homely(cwd).split('/').pop() ?? cwd}</span>
+              <ChevronDown size={11} aria-hidden="true" />
+              <select
+                id="draftProject"
+                aria-label="Project"
+                value={project?.id ?? ''}
+                onChange={(e) => {
+                  const p = projects.find((x) => x.id === e.target.value)
+                  if (p) onChange({ cwd: p.path })
+                }}
+              >
+                {!project && <option value="">{homely(cwd)}</option>}
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.repo ? ` (${p.repo})` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {branch && (
+              <span className="branch" title="Current branch">
+                <GitBranch size={12} aria-hidden="true" />
+                {branch}
+              </span>
+            )}
+            <span className="path" title={cwd}>
+              {homely(cwd)}
+            </span>
+          </div>
+
           <textarea
             id="box"
             ref={box}
@@ -139,38 +199,16 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
           />
 
           <div className="statusline">
-            <label className="chip cwd pick" title={`Project folder: ${cwd}`}>
-              <FolderGit2 size={12} aria-hidden="true" />
-              <select
-                aria-label="Project"
-                value={projects.find((p) => p.path === cwd)?.id ?? ''}
-                onChange={(e) => {
-                  const p = projects.find((x) => x.id === e.target.value)
-                  if (p) onChange({ cwd: p.path })
-                }}
-              >
-                {!projects.some((p) => p.path === cwd) && <option value="">{homely(cwd)}</option>}
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                    {p.repo ? ` (${p.repo})` : ''}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={11} aria-hidden="true" />
-            </label>
-
-            <ModelPicker
+            <ModelPopover
               model={model}
               effort={effort}
-              onChange={(m, e) => {
+              onModelChange={(m, e) => {
                 setModel(m)
                 setEffort(e)
                 remember(MODEL_KEY, m)
                 remember(EFFORT_KEY, e)
               }}
             />
-
             <PermissionModePicker
               mode={permissionMode}
               onChange={(m) => {
@@ -178,7 +216,7 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
                 remember(PERMISSION_KEY, m)
               }}
             />
-
+            <span className="spacer" />
             <FastModeToggle
               model={model}
               fastMode={fastMode}
@@ -187,17 +225,16 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
                 remember(FAST_MODE_KEY, on ? '1' : undefined)
               }}
             />
-
-            <span className="spacer" />
-            <span className="hint">
-              <kbd>Enter</kbd> starts · <kbd>Shift+Enter</kbd> newline
-            </span>
             <button id="sendBtn" onClick={submit} disabled={!text.trim()} title="Start the session (Enter)">
               <ArrowUp size={15} aria-hidden="true" />
             </button>
           </div>
         </div>
       </div>
+      <div className="keysHint">
+        <kbd>Enter</kbd> starts · <kbd>Shift+Enter</kbd> newline · <kbd>Shift+Tab</kbd> changes what gets asked
+      </div>
+
     </div>
   )
 }

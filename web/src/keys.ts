@@ -12,7 +12,7 @@ export function isTypingTarget(e: KeyboardEvent): boolean {
  * stay quiet, or "n" typed at an open menu starts a new session behind it.
  */
 export function anyDialogOpen(): boolean {
-  return document.querySelector('dialog[open], [data-popover-open]') !== null
+  return document.querySelector('dialog[open], [data-popover-open], [data-radix-popper-content-wrapper]') !== null
 }
 
 export const isMac = navigator.platform.startsWith('Mac')
