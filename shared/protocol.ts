@@ -377,6 +377,81 @@ export type LogsResponse =
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
+// Usage (GET /api/usage?days=N)
+//
+// What Claude Code has spent on this machine, read from its own transcripts
+// (`~/.claude/projects/**/*.jsonl`) rather than from anything we write — so it
+// covers sessions started here, in a terminal, or anywhere else. Cost is
+// derived from list prices: on a Pro/Max subscription it is what the same
+// tokens would have cost on the API, not a bill.
+// ---------------------------------------------------------------------------
+
+export type UsageTotals = {
+  input: number
+  output: number
+  /** Both TTLs of cache write, summed. */
+  cacheWrite: number
+  cacheRead: number
+  /** Every token of every kind. */
+  tokens: number
+  /** Dollars, priced models only. */
+  cost: number
+  messages: number
+  sessions: number
+  /** Messages on a model we have no price for — counted, not costed. */
+  unpricedMessages: number
+}
+
+/** One calendar day, with the per-model split the stacked chart draws. */
+export type UsageDay = {
+  date: string
+  cost: number
+  tokens: number
+  byModel: Record<string, { cost: number; tokens: number }>
+}
+
+export type UsageByModel = {
+  model: string
+  messages: number
+  input: number
+  output: number
+  cacheWrite: number
+  cacheRead: number
+  tokens: number
+  cost: number
+  /** False when the model has no price row — its cost reads as 0. */
+  priced: boolean
+}
+
+export type UsageByProject = {
+  path: string
+  sessions: number
+  messages: number
+  tokens: number
+  cost: number
+}
+
+export type UsageSummary = {
+  /** `YYYY-MM-DD`, inclusive. */
+  from: string
+  to: string
+  days: number
+  totals: UsageTotals
+  /** Every day in the window, zeros included. */
+  daily: UsageDay[]
+  models: UsageByModel[]
+  projects: UsageByProject[]
+  /** Models seen with no price row — surfaced so the total is honest. */
+  unpricedModels: string[]
+  scan: { files: number; reread: number; ms: number }
+}
+
+export type UsageResponse = { ok: true; usage: UsageSummary } | { ok: false; error: string }
+
+/** The windows the Usage tab offers. */
+export const USAGE_WINDOWS = [7, 30, 90] as const
+
+// ---------------------------------------------------------------------------
 // Connected repos (GET /api/repos, PUT /api/repos)
 //
 // The repos the GitHub source is scoped to, per workspace. Empty = NO GitHub

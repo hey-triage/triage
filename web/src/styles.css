@@ -1194,3 +1194,70 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .projRowItem .desc .path { overflow: hidden; text-overflow: ellipsis; }
 .projRowItem .check { margin-top: 2px; }
 .projRowItem.on { background: rgba(255,255,255,0.04); }
+
+/* ---------- usage tab (settings → diagnostics) ---------- */
+.usage { display: flex; flex-direction: column; gap: 18px; padding-bottom: 8px; }
+.usageEmpty { color: var(--ash); font-size: 13px; padding: 28px 0; }
+
+.usageBar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.segmented { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--hair-strong); border-radius: var(--r-full); background: var(--card); }
+.segmented button {
+  height: 22px; padding: 0 11px; border: none; border-radius: var(--r-full); background: transparent;
+  color: var(--ash); font-size: 11.5px; line-height: 1; cursor: pointer; transition: color 0.1s, background 0.1s;
+}
+.segmented button:hover { color: var(--ink); }
+.segmented button.on { background: var(--elev); color: var(--ink); }
+.usageRange { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--stone); }
+
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tile { display: flex; flex-direction: column; gap: 3px; padding: 13px 15px; background: var(--card); border: 1px solid var(--hair); border-radius: var(--r-lg); min-width: 0; }
+.tileLabel { font-size: 11px; color: var(--ash); }
+.tileValue { font-size: 24px; line-height: 1.15; letter-spacing: -0.4px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tileSub { font-size: 11px; color: var(--stone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.chartHost { position: relative; background: var(--card); border: 1px solid var(--hair); border-radius: var(--r-lg); padding: 10px 12px 4px; }
+.chartHost svg { display: block; }
+.chartHost .grid { stroke: var(--hair); stroke-width: 1; shape-rendering: crispEdges; }
+.chartHost .axis { fill: var(--stone); font-family: var(--mono); font-size: 10px; }
+.chartHost .axis.end { text-anchor: end; }
+.chartHost .axis.mid { text-anchor: middle; }
+.chartHost .hit { fill: transparent; cursor: default; }
+.chartHost .hit.on { fill: rgba(255, 255, 255, 0.035); }
+
+.chartTip {
+  position: absolute; top: 8px; transform: translateX(-50%); pointer-events: none; z-index: 2;
+  min-width: 148px; padding: 8px 10px; background: var(--elev); border: 1px solid var(--hair-strong);
+  border-radius: var(--r); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7); font-size: 11.5px;
+}
+.chartTip .tipHead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; color: var(--ink); }
+.chartTip .tipHead span { font-family: var(--mono); font-size: 11px; }
+.chartTip .tipRow { display: flex; align-items: center; gap: 7px; color: var(--charcoal); line-height: 1.7; }
+.chartTip .tipRow .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chartTip .tipRow .v { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--body); }
+.chartTip .tipRow.dim { color: var(--stone); }
+
+.usageLegend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11.5px; color: var(--charcoal); margin-top: -6px; }
+.usageLegend .key { display: inline-flex; align-items: center; gap: 7px; }
+.swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; display: inline-block; }
+
+.usageSection { display: flex; flex-direction: column; gap: 8px; }
+.usageSection h3 { margin: 0; font-size: 12px; font-weight: 500; color: var(--ash); letter-spacing: 0.02em; }
+.usageTable { width: 100%; border-collapse: collapse; }
+.usageTable th { text-align: left; font-size: 10.5px; font-weight: 500; color: var(--stone); text-transform: uppercase; letter-spacing: 0.05em; padding: 0 10px 7px; border-bottom: 1px solid var(--hair); white-space: nowrap; }
+.usageTable td { padding: 8px 10px; font-size: 12.5px; color: var(--body); border-bottom: 1px solid var(--hair-soft); }
+.usageTable tr:last-child td { border-bottom: none; }
+.usageTable th:first-child, .usageTable td:first-child { padding-left: 0; }
+.usageTable th:last-child, .usageTable td:last-child { padding-right: 0; }
+.usageTable td:first-child { display: flex; align-items: center; gap: 8px; color: var(--ink); }
+.usageTable .n { text-align: right; font-family: var(--mono); font-size: 11.5px; color: var(--charcoal); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usageTable .strong { color: var(--ink); }
+.usageTable .path { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; display: block; }
+.usageTable .unpriced { font-size: 10px; color: var(--yellow); border: 1px solid rgba(255, 197, 61, 0.35); border-radius: var(--r-full); padding: 0 6px; line-height: 15px; }
+
+.usageFoot { margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--hair); font-size: 11.5px; line-height: 1.6; color: var(--stone); max-width: 78ch; }
+.usageFoot .dim { color: var(--stone); opacity: 0.7; font-family: var(--mono); font-size: 10.5px; }
+
+@media (max-width: 900px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.usageLegend .key .n { font-family: var(--mono); font-size: 10.5px; color: var(--stone); margin-left: 2px; }

@@ -21,6 +21,7 @@ import {
   RefreshCw,
   ScrollText,
   Settings2,
+  Wallet,
   X,
   type LucideProps,
 } from 'lucide-react'
@@ -44,6 +45,7 @@ import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 import { ConnectorsPanel } from './Connectors.js'
 import { RepoScopeEditor } from './RepoScope.js'
+import { UsageTab } from './UsageTab.js'
 import { ActivityTab, LogsTab, type SystemTab } from './SystemModal.js'
 import { AuthCards, authTitle, ColorPicker, VerifyPanel, verifyWorkspace, type VerifyState } from './workspaceAuth.js'
 
@@ -53,6 +55,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   sources: Plug,
   connectors: Plug,
   activity: Activity,
+  usage: Wallet,
   logs: ScrollText,
   sessions: MessagesSquare,
   shortcuts: Keyboard,
@@ -157,6 +160,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="activity" className="settingsFill">
                     <ActivityTab key={nonce} />
+                  </Tabs.Content>
+                  <Tabs.Content value="usage" className="settingsFill">
+                    <UsageTab refreshNonce={nonce} />
                   </Tabs.Content>
                   <Tabs.Content value="logs" className="settingsFill">
                     <LogsTab key={nonce} />

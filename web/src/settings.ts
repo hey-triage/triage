@@ -14,6 +14,7 @@ export type SettingsTab =
   | 'sources'
   | 'connectors'
   | 'activity'
+  | 'usage'
   | 'logs'
   | 'sessions'
   | 'shortcuts'
@@ -34,6 +35,7 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTabMeta> = [
   { id: 'sources', label: 'Sources', sub: 'What feeds this inbox: GitHub repos, Slack, and the connectors a session can reach.', group: 'workspace' },
   { id: 'connectors', label: 'Connectors', sub: 'What a dispatched session can reach — claude.ai connectors and local MCP servers.', group: 'workspace', fill: true },
   { id: 'activity', label: 'Activity', sub: 'Recent watch runs in this workspace — what ran, when, and what it filed.', group: 'diagnostics', fill: true },
+  { id: 'usage', label: 'Usage', sub: 'What Claude Code has cost on this machine — tokens, spend, and where they went.', group: 'diagnostics', fill: true },
   { id: 'logs', label: 'Logs', sub: 'The daemon’s log, filterable by level and subsystem.', group: 'diagnostics', fill: true },
   { id: 'sessions', label: 'Sessions', sub: 'Defaults for every new session started from this browser.', group: 'app' },
   { id: 'shortcuts', label: 'Shortcuts', sub: 'Every key the workbench answers to.', group: 'app' },

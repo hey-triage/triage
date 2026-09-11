@@ -62,7 +62,7 @@ import type {
   ToolEffect,
   Workspace,
 } from '../shared/protocol.js'
-import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES, isImageMediaType } from '../shared/protocol.js'
+import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES, USAGE_WINDOWS, isImageMediaType } from '../shared/protocol.js'
 import type {
   ActivityResponse,
   CoverageResponse,
@@ -73,6 +73,7 @@ import type {
   ItemStateResponse,
   LogLevel,
   LogsResponse,
+  UsageResponse,
   ManualItemInput,
   SystemResponse,
   SystemStatus,
@@ -107,6 +108,8 @@ import {
   READ_ONLY_SLACK_TOOLS,
   safeWhen,
 } from '../core/sources/slack.js'
+import { scanUsage } from '../core/usage/ledger.js'
+import { summarize as summarizeUsage } from '../core/usage/summary.js'
 import { isDue } from '../core/watch/schedule.js'
 import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
 import type { NewWatch, Watch, WatchCadence, WatchRunStatus } from '../core/watch/types.js'
@@ -937,6 +940,21 @@ function overdueWatch(w: Watch, now: number): boolean {
 }
 
 /** The daemon's live status for one workspace, for the System modal. */
+/**
+ * Where Claude Code keeps its transcripts. The user's own `~/.claude` (or
+ * whatever `CLAUDE_CONFIG_DIR` points at), plus the private config dir of
+ * every workspace on the `config-dir` auth backend — those sessions are the
+ * user's spend too, and they log somewhere else.
+ */
+function claudeProjectRoots(): string[] {
+  const roots = new Set<string>()
+  roots.add(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects'))
+  for (const ws of loadRegistry().workspaces) {
+    if (ws.authBackend === 'config-dir') roots.add(path.join(workspaceClaudeDir(ws.id), 'projects'))
+  }
+  return [...roots]
+}
+
 async function systemStatus(rt: WorkspaceRuntime): Promise<SystemStatus> {
   const now = Date.now()
   const watches = await rt.store.watches.list()
@@ -2406,6 +2424,30 @@ const server = http.createServer(async (req, res) => {
       subsystems: logSubsystems(),
     }
     json(200, body)
+    return
+  }
+  // What Claude Code has spent on this machine, read from its own transcripts.
+  // Machine-wide on purpose: a session started in a terminal costs the same
+  // money as one started here, and the user asked what they are spending.
+  if (url.pathname === '/api/usage' && req.method === 'GET') {
+    const asked = Number(url.searchParams.get('days'))
+    const days = USAGE_WINDOWS.includes(asked as (typeof USAGE_WINDOWS)[number]) ? asked : 30
+    const now = Date.now()
+    // From the start of the day `days - 1` ago, so "7 days" is seven columns.
+    const start = new Date(now)
+    start.setHours(0, 0, 0, 0)
+    const since = start.getTime() - (days - 1) * 86_400_000
+    const began = Date.now()
+    let body: UsageResponse
+    try {
+      const { entries, files, reread } = await scanUsage(claudeProjectRoots(), since)
+      const usage = summarizeUsage(entries, since, now)
+      usage.scan = { files, reread, ms: Date.now() - began }
+      body = { ok: true, usage }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    json(body.ok ? 200 : 500, body)
     return
   }
   // Manual "scan now": force every due (and overdue) watch to run and refresh GitHub.
