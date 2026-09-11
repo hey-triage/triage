@@ -11,6 +11,7 @@ import {
   isThinkingBlock,
   isToolResultBlock,
   isToolUseBlock,
+  type ImageAttachment,
   type McpServerInfo,
   type PermissionBehavior,
   type QuestionAnswers,
@@ -22,7 +23,7 @@ import {
 export type ToolResult = { text: string; isError: boolean }
 
 export type TranscriptItem =
-  | { key: string; kind: 'user'; text: string }
+  | { key: string; kind: 'user'; text: string; images?: ImageAttachment[] }
   | { key: string; kind: 'assistant'; text: string }
   | { key: string; kind: 'thinking'; text: string }
   | { key: string; kind: 'error'; text: string }
@@ -62,7 +63,7 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
   events.forEach((ev, i) => {
     switch (ev.kind) {
       case 'local_user':
-        items.push({ key: `u${i}`, kind: 'user', text: ev.text })
+        items.push({ key: `u${i}`, kind: 'user', text: ev.text, images: ev.images })
         break
       case 'error':
         items.push({ key: `e${i}`, kind: 'error', text: ev.message })

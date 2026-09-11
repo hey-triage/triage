@@ -2,6 +2,7 @@ import { Eye, Folder, PenLine, Plug, Terminal as TerminalIcon } from 'lucide-rea
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type {
   EffortLevel,
+  ImageAttachment,
   PermissionBehavior,
   PermissionMode,
   Project,
@@ -162,8 +163,8 @@ export function App() {
   )
 
   const sendMessage = useCallback(
-    (text: string) => {
-      if (currentId) store.send({ type: 'user_message', sessionId: currentId, text })
+    (text: string, images?: ImageAttachment[]) => {
+      if (currentId) store.send({ type: 'user_message', sessionId: currentId, text, images })
     },
     [currentId],
   )
@@ -362,6 +363,7 @@ export function App() {
       effort: s.effort,
       fastMode: s.fastMode,
       permissionMode: s.permissionMode,
+      images: s.images,
     })
   }, [])
 

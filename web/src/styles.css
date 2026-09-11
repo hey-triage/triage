@@ -468,6 +468,9 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
   background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
   padding: 10px 14px; font-size: 13px; color: var(--body); line-height: 1.5;
 }
+.msg.user .msgImages { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.msg.user .msgImages img { max-width: 200px; max-height: 200px; border-radius: var(--r); border: 1px solid var(--hair-strong); display: block; }
+
 .msg.assistant { align-self: stretch; font-size: 14px; line-height: 1.6; color: var(--body); }
 .msg.assistant.live .md > :last-child::after { content: "▍"; color: var(--ink); margin-left: 1px; animation: caret 1s steps(1) infinite; }
 .msg.thinking { color: var(--mute); font-style: italic; font-size: 13px; white-space: pre-wrap; padding-left: 12px; border-left: 1px solid var(--hair-strong); }
@@ -531,6 +534,24 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
   font-size: 14px; line-height: 1.5; min-height: 21px; max-height: 200px; outline: none;
 }
 #box::placeholder { color: var(--stone); opacity: 1; }
+#composer .frame.dragging { border-color: var(--blue); }
+
+/* ---------- attachments ---------- */
+.attachments { display: flex; flex-direction: column; gap: 6px; }
+.attachments .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.attachments .thumb { position: relative; width: 56px; height: 56px; }
+.attachments .thumb img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  border-radius: var(--r-sm); border: 1px solid var(--hair-strong); background: var(--elev);
+}
+.attachments .thumb .drop {
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; display: grid; place-items: center;
+  border-radius: var(--r-full); background: var(--elev); border: 1px solid var(--hair-bright);
+  color: var(--ash); cursor: pointer; padding: 0;
+}
+.attachments .thumb .drop:hover { color: var(--ink); }
+.attachError { font-size: 11px; color: var(--red); }
+.chip.attachBtn { cursor: pointer; padding: 0 7px; }
 .statusline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 2px 8px; height: 22px;

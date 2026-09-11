@@ -1,18 +1,21 @@
-import { ArrowUp, GitBranch } from 'lucide-react'
+import { ArrowUp, GitBranch, ImagePlus } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   BranchResponse,
   EffortLevel,
+  ImageAttachment,
   PermissionMode,
   Project,
   ProjectsResponse,
 } from '../../../shared/protocol.js'
+import { useAttachments } from '../attachments.js'
 import type { Draft } from '../drafts.js'
 import { isEffort } from '../models.js'
 import { isPermissionMode, nextMode } from '../permissionModes.js'
 import { FastModeToggle } from './FastModeToggle.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
+import { AttachmentStrip } from './AttachmentStrip.js'
 import { ProjectPicker } from './ProjectPicker.js'
 
 export type NewSession = {
@@ -23,6 +26,7 @@ export type NewSession = {
   effort?: EffortLevel
   fastMode?: boolean
   permissionMode?: PermissionMode
+  images?: ImageAttachment[]
 }
 
 type Props = {
@@ -79,6 +83,9 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
     return isPermissionMode(stored) ? stored : undefined
   })
   const box = useRef<HTMLTextAreaElement>(null)
+  const filePicker = useRef<HTMLInputElement>(null)
+  const [dragging, setDragging] = useState(false)
+  const attach = useAttachments()
 
   useEffect(() => {
     void fetch('/api/projects')
@@ -125,7 +132,8 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
 
   function submit() {
     const trimmed = text.trim()
-    if (!trimmed) return
+    const images = attach.payload()
+    if (!trimmed && !images) return
     onCreate({
       title: draft.label ?? titleFrom(trimmed),
       cwd,
@@ -134,7 +142,9 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
       effort,
       fastMode,
       permissionMode,
+      images,
     })
+    attach.clear()
   }
 
   return (
@@ -142,7 +152,23 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
       <div className="glow blue" aria-hidden="true" />
       <h2>{draft.label ? 'Dispatching.' : 'What are we working on?'}</h2>
       <div id="composer">
-        <div className="frame card">
+        <div
+          className={'frame card' + (dragging ? ' dragging' : '')}
+          onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes('Files')) return
+            e.preventDefault()
+            setDragging(true)
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+          }}
+          onDrop={(e) => {
+            if (!e.dataTransfer.types.includes('Files')) return
+            e.preventDefault()
+            setDragging(false)
+            void attach.add(e.dataTransfer.files)
+          }}
+        >
           <div className="cardHead">
             <ProjectPicker projects={projects} cwd={cwd} onPick={(path) => onChange({ cwd: path })} />
             {branch && (
@@ -156,6 +182,8 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
             </span>
           </div>
 
+          <AttachmentStrip images={attach.images} error={attach.error} onRemove={attach.remove} />
+
           <textarea
             id="box"
             ref={box}
@@ -164,6 +192,7 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
             value={text}
             placeholder="Describe what you want to work on — a bug, a feature, a question…"
             onChange={(e) => onChange({ text: e.target.value })}
+            onPaste={attach.onPaste}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -178,6 +207,25 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
           />
 
           <div className="statusline">
+            <input
+              ref={filePicker}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              multiple
+              hidden
+              onChange={(e) => {
+                if (e.target.files) void attach.add(e.target.files)
+                e.target.value = ''
+              }}
+            />
+            <button
+              className="chip attachBtn"
+              onClick={() => filePicker.current?.click()}
+              title="Attach images (or paste / drop them)"
+              aria-label="Attach images"
+            >
+              <ImagePlus aria-hidden="true" />
+            </button>
             <ModelPopover
               model={model}
               effort={effort}
@@ -204,7 +252,12 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
                 remember(FAST_MODE_KEY, on ? '1' : undefined)
               }}
             />
-            <button id="sendBtn" onClick={submit} disabled={!text.trim()} title="Start the session (Enter)">
+            <button
+              id="sendBtn"
+              onClick={submit}
+              disabled={!text.trim() && attach.images.length === 0}
+              title="Start the session (Enter)"
+            >
               <ArrowUp size={15} aria-hidden="true" />
             </button>
           </div>

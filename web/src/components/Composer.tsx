@@ -1,13 +1,16 @@
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, ImagePlus, Square } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
 import type {
   EffortLevel,
+  ImageAttachment,
   FastModeDisabledReason,
   FastModeState,
   PermissionMode,
   SessionStatus,
 } from '../../../shared/protocol.js'
+import { useAttachments } from '../attachments.js'
 import { nextMode } from '../permissionModes.js'
+import { AttachmentStrip } from './AttachmentStrip.js'
 import { FastModeToggle } from './FastModeToggle.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
@@ -20,7 +23,7 @@ type Props = {
   fastModeState?: FastModeState
   fastModeDisabledReason?: FastModeDisabledReason
   permissionMode?: PermissionMode
-  onSend: (text: string) => void
+  onSend: (text: string, images?: ImageAttachment[]) => void
   onInterrupt: () => void
   onModelChange: (model: string | undefined, effort: EffortLevel | undefined) => void
   onFastModeChange: (fastMode: boolean) => void
@@ -47,7 +50,10 @@ export function Composer({
   onPermissionModeChange,
 }: Props) {
   const [text, setText] = useState('')
+  const [dragging, setDragging] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
+  const filePicker = useRef<HTMLInputElement>(null)
+  const attach = useAttachments()
   const running = status === 'running' || status === 'starting'
 
   const autosize = useCallback(() => {
@@ -59,15 +65,34 @@ export function Composer({
 
   function submit() {
     const trimmed = text.trim()
-    if (!trimmed) return
-    onSend(trimmed)
+    const images = attach.payload()
+    if (!trimmed && !images) return
+    onSend(trimmed, images)
     setText('')
+    attach.clear()
     requestAnimationFrame(autosize)
   }
 
   return (
     <div id="composer">
-      <div className="frame card">
+      <div
+        className={'frame card' + (dragging ? ' dragging' : '')}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes('Files')) return
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.types.includes('Files')) return
+          e.preventDefault()
+          setDragging(false)
+          void attach.add(e.dataTransfer.files)
+        }}
+      >
+        <AttachmentStrip images={attach.images} error={attach.error} onRemove={attach.remove} />
         <textarea
           id="box"
           ref={box}
@@ -75,6 +100,7 @@ export function Composer({
           rows={1}
           value={text}
           placeholder={running ? 'Steer the session… (queued until this turn ends)' : 'Steer the session…'}
+          onPaste={attach.onPaste}
           onChange={(e) => {
             setText(e.target.value)
             autosize()
@@ -94,6 +120,26 @@ export function Composer({
         />
 
         <div className="statusline">
+          <input
+            ref={filePicker}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files) void attach.add(e.target.files)
+              // Reset, so picking the same file twice in a row still fires.
+              e.target.value = ''
+            }}
+          />
+          <button
+            className="chip attachBtn"
+            onClick={() => filePicker.current?.click()}
+            title="Attach images (or paste / drop them)"
+            aria-label="Attach images"
+          >
+            <ImagePlus aria-hidden="true" />
+          </button>
           <ModelPopover model={model} effort={effort} onModelChange={onModelChange} />
           <PermissionModePicker mode={permissionMode} onChange={onPermissionModeChange} />
           <span className="spacer" />
@@ -109,7 +155,12 @@ export function Composer({
               <Square size={11} aria-hidden="true" />
             </button>
           )}
-          <button id="sendBtn" onClick={submit} disabled={!text.trim()} title="Send (Enter)">
+          <button
+            id="sendBtn"
+            onClick={submit}
+            disabled={!text.trim() && attach.images.length === 0}
+            title="Send (Enter)"
+          >
             <ArrowUp size={15} aria-hidden="true" />
           </button>
         </div>

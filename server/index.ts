@@ -58,9 +58,11 @@ import type {
   SessionEvent,
   SessionStatus,
   SessionSummary,
+  ImageAttachment,
   ToolEffect,
   Workspace,
 } from '../shared/protocol.js'
+import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES, isImageMediaType } from '../shared/protocol.js'
 import type {
   ActivityResponse,
   CoverageResponse,
@@ -468,13 +470,21 @@ class LiveSession {
     if (changed) broadcastSessionList(this.rt)
   }
 
-  sendUserMessage(text: string) {
-    this.emit({ kind: 'local_user', text }, true)
+  sendUserMessage(text: string, images?: ImageAttachment[]) {
+    this.emit({ kind: 'local_user', text, images }, true)
     this.setStatus('running')
     void this.rt.store.sessions.touch(this.row.id)
+    // Images lead: the model reads them as context for the text that follows.
+    const content = [
+      ...(images ?? []).map((img) => ({
+        type: 'image' as const,
+        source: { type: 'base64' as const, media_type: img.mediaType, data: img.data },
+      })),
+      ...(text ? [{ type: 'text' as const, text }] : []),
+    ]
     const msg: SDKUserMessage = {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text }] },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
     } as SDKUserMessage
     this.input.push(msg)
@@ -2626,6 +2636,34 @@ const questionAnswers = (v: unknown): QuestionAnswers | undefined => {
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+/** Rough decoded size of a base64 payload, without decoding it. */
+const base64Bytes = (b64: string) => Math.floor((b64.length * 3) / 4)
+
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+
+/**
+ * Image attachments off the socket. Anything malformed, oversized, or of an
+ * unsupported media type is dropped rather than forwarded — these bytes go
+ * both into the event log and up to the API.
+ */
+const imageAttachments = (v: unknown): ImageAttachment[] | undefined => {
+  if (!Array.isArray(v)) return undefined
+  const out: ImageAttachment[] = []
+  for (const raw of v.slice(0, MAX_IMAGES_PER_MESSAGE)) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const a = raw as Record<string, unknown>
+    if (!isImageMediaType(a.mediaType)) continue
+    if (typeof a.data !== 'string' || !a.data || !BASE64.test(a.data)) continue
+    if (base64Bytes(a.data) > MAX_IMAGE_BYTES) continue
+    out.push({
+      mediaType: a.mediaType,
+      data: a.data,
+      name: typeof a.name === 'string' && a.name ? a.name.slice(0, 200) : undefined,
+    })
+  }
+  return out.length > 0 ? out : undefined
+}
+
 /**
  * The socket is untrusted input (vision principle 6), so incoming frames are
  * validated into the ClientMessage union rather than cast into it.
@@ -2642,6 +2680,7 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         title: str(m.title),
         cwd: str(m.cwd),
         firstMessage: typeof m.firstMessage === 'string' ? m.firstMessage : undefined,
+        images: imageAttachments(m.images),
         model: model(m.model),
         effort: effort(m.effort),
         fastMode: m.fastMode === true,
@@ -2677,7 +2716,12 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
       return typeof m.sessionId === 'string' ? { type: 'subscribe', sessionId: m.sessionId } : null
     case 'user_message':
       return typeof m.sessionId === 'string'
-        ? { type: 'user_message', sessionId: m.sessionId, text: str(m.text) }
+        ? {
+            type: 'user_message',
+            sessionId: m.sessionId,
+            text: str(m.text),
+            images: imageAttachments(m.images),
+          }
         : null
     case 'permission_response':
       return typeof m.sessionId === 'string' && typeof m.requestId === 'string'
@@ -2761,7 +2805,8 @@ wss.on('connection', (ws, req) => {
           )
           send(ws, { type: 'session_created', session: summarize(rt, row) })
           broadcastSessionList(rt)
-          if (msg.firstMessage?.trim()) rt.live.get(row.id)?.sendUserMessage(msg.firstMessage.trim())
+          if (msg.firstMessage?.trim() || msg.images?.length)
+            rt.live.get(row.id)?.sendUserMessage(msg.firstMessage?.trim() ?? '', msg.images)
           break
         }
         case 'set_model': {
@@ -2832,9 +2877,9 @@ wss.on('connection', (ws, req) => {
           break
         }
         case 'user_message': {
-          if (!msg.text.trim()) break
+          if (!msg.text.trim() && !msg.images?.length) break
           const session = await getOrRevive(rt, msg.sessionId)
-          session?.sendUserMessage(msg.text.trim())
+          session?.sendUserMessage(msg.text.trim(), msg.images)
           break
         }
         case 'permission_response': {

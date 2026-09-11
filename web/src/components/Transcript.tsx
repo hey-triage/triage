@@ -44,7 +44,23 @@ const Item = memo(function Item({
 }) {
   switch (item.kind) {
     case 'user':
-      return <div className="msg user">{item.text}</div>
+      return (
+        <div className="msg user">
+          {item.images && item.images.length > 0 && (
+            <div className="msgImages">
+              {item.images.map((img, i) => (
+                <img
+                  key={i}
+                  src={`data:${img.mediaType};base64,${img.data}`}
+                  alt={img.name ?? 'Attached image'}
+                  title={img.name}
+                />
+              ))}
+            </div>
+          )}
+          {item.text}
+        </div>
+      )
     case 'assistant':
       return (
         <div className="msg assistant">

@@ -504,12 +504,41 @@ export type SdkMessage = {
 }
 
 // ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+/**
+ * An image pasted, dropped, or picked into a composer, carried inline as
+ * base64 — the server holds no upload store, and the model wants the bytes
+ * anyway. Kept small on purpose (see `MAX_IMAGE_BYTES`): these ride the
+ * WebSocket and land in the event log so a reload still shows them.
+ */
+export type ImageAttachment = {
+  /** The original filename, when there was one — pasted screenshots have none. */
+  name?: string
+  /** An `image/*` media type the API accepts. */
+  mediaType: ImageMediaType
+  /** Base64 of the raw bytes — no `data:` prefix. */
+  data: string
+}
+
+export const IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
+export type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number]
+
+export const isImageMediaType = (v: unknown): v is ImageMediaType =>
+  typeof v === 'string' && (IMAGE_MEDIA_TYPES as readonly string[]).includes(v)
+
+/** Per-image ceiling on the decoded bytes, and how many ride one message. */
+export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
+export const MAX_IMAGES_PER_MESSAGE = 8
+
+// ---------------------------------------------------------------------------
 // Session events (the replay log, and the live stream)
 // ---------------------------------------------------------------------------
 
 export type SessionEvent =
   | { kind: 'sdk'; message: SdkMessage }
-  | { kind: 'local_user'; text: string }
+  | { kind: 'local_user'; text: string; images?: ImageAttachment[] }
   | { kind: 'error'; message: string }
   | {
       kind: 'permission_request'
@@ -572,6 +601,8 @@ export type ClientMessage =
       title: string
       cwd: string
       firstMessage?: string
+      /** Images attached to that first message. */
+      images?: ImageAttachment[]
       model?: string
       effort?: EffortLevel
       permissionMode?: PermissionMode
@@ -590,7 +621,7 @@ export type ClientMessage =
   /** Delete a session and its transcript. Irreversible — the UI confirms. */
   | { type: 'delete_session'; sessionId: string }
   | { type: 'subscribe'; sessionId: string }
-  | { type: 'user_message'; sessionId: string; text: string }
+  | { type: 'user_message'; sessionId: string; text: string; images?: ImageAttachment[] }
   | {
       type: 'permission_response'
       sessionId: string
