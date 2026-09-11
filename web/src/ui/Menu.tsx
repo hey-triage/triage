@@ -5,6 +5,12 @@
  * positioning, click-outside, Escape, submenu timing); we own the pixels via
  * the `uiMenu*` classes in styles.css. Content is portaled to <body>, so the
  * styling here never depends on where the trigger sits in the tree.
+ *
+ * The portal is a DOM portal only — React still bubbles events through the
+ * *component* tree, so a click on a menu item reaches whatever wraps the
+ * trigger. Our menus live inside clickable rows (sessions, terminals), so the
+ * content swallows click/keydown: picking "Delete" must not also select the
+ * row. Item actions run through `onSelect`, which Radix fires itself.
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import type { ComponentPropsWithoutRef } from 'react'
@@ -22,6 +28,8 @@ export function MenuContent({
   sideOffset = 6,
   collisionPadding = 8,
   align = 'start',
+  onClick,
+  onKeyDown,
   ...props
 }: ComponentPropsWithoutRef<typeof DropdownMenu.Content>) {
   return (
@@ -31,6 +39,14 @@ export function MenuContent({
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         align={align}
+        onClick={(e) => {
+          onClick?.(e)
+          e.stopPropagation()
+        }}
+        onKeyDown={(e) => {
+          onKeyDown?.(e)
+          e.stopPropagation()
+        }}
         {...props}
       />
     </DropdownMenu.Portal>
@@ -52,6 +68,8 @@ export function MenuSubContent({
   className,
   sideOffset = 4,
   collisionPadding = 8,
+  onClick,
+  onKeyDown,
   ...props
 }: ComponentPropsWithoutRef<typeof DropdownMenu.SubContent>) {
   return (
@@ -60,6 +78,14 @@ export function MenuSubContent({
         className={cx('uiMenu', className)}
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
+        onClick={(e) => {
+          onClick?.(e)
+          e.stopPropagation()
+        }}
+        onKeyDown={(e) => {
+          onKeyDown?.(e)
+          e.stopPropagation()
+        }}
         {...props}
       />
     </DropdownMenu.Portal>
