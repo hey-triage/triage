@@ -48,7 +48,6 @@ export type Route =
   | { page: 'item'; id: string }
   | { page: 'terminal'; id: string }
   | { page: 'terminals' }
-  | { page: 'connectors' }
   | { page: 'projects' }
   | { page: 'watches' }
   /** `#/settings/<tab>` — opens the settings modal on that tab, then yields to the page underneath */
@@ -70,7 +69,8 @@ function parseRoute(hash: string): Route {
   }
   if (hash === '/terminals') return { page: 'terminals' }
   if (hash.startsWith('/terminal/')) return { page: 'terminal', id: hash.slice('/terminal/'.length) }
-  if (hash === '/connectors') return { page: 'connectors' }
+  // Connectors used to be a page; the link still works, as a settings tab.
+  if (hash === '/connectors') return { page: 'settings', tab: 'connectors' }
   if (hash === '/projects') return { page: 'projects' }
   if (hash === '/watches') return { page: 'watches' }
   if (hash === '/settings' || hash.startsWith('/settings/')) {

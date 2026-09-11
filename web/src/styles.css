@@ -1009,6 +1009,9 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .settingsFill .logLines { flex: 1; min-height: 0; max-height: none; }
 .settingsFill > div:not(.sysBody) { overflow-y: auto; min-height: 0; }
 .settingsFill .sysRunRow { padding: 9px 0; }
+.settingsFill .connPanel { padding-bottom: 8px; }
+.settingsFill .connPanel .connGroup:last-of-type { margin-bottom: 12px; }
+.settingsFill .connPanel .probedAt { margin-top: 10px; }
 
 .setSection { padding: 22px 0; border-bottom: 1px solid var(--hair); }
 .setSection:last-child { border-bottom: none; }

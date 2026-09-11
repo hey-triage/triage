@@ -1,4 +1,4 @@
-import { Eye, Folder, PenLine, Plug, Terminal as TerminalIcon } from 'lucide-react'
+import { Eye, Folder, Terminal as TerminalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type {
   EffortLevel,
@@ -14,7 +14,6 @@ import type {
 } from '../../shared/protocol.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import { Composer } from './components/Composer.js'
-import { ConnectorsPage } from './components/ConnectorsPage.js'
 import { NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { InboxPage } from './components/InboxPage.js'
@@ -61,11 +60,10 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'error',
 }
 
-const PAGE_TABS: Record<'watches' | 'projects' | 'connectors' | 'terminals', PageTab> = {
+const PAGE_TABS: Record<'watches' | 'projects' | 'terminals', PageTab> = {
   terminals: { key: 'page:terminals', label: 'Terminals', icon: TerminalIcon },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
   projects: { key: 'page:projects', label: 'Projects', icon: Folder },
-  connectors: { key: 'page:connectors', label: 'Connectors', icon: Plug },
 }
 
 export function App() {
@@ -348,7 +346,7 @@ export function App() {
         if (e.key === 'i') return navigate('/inbox')
         if (e.key === 's') return goTo('sessions')
         if (e.key === 't') return goTo('terminals')
-        if (e.key === 'c') return navigate('/connectors')
+        if (e.key === 'c') return openSettings('connectors')
         if (e.key === 'p') return navigate('/projects')
         if (e.key === 'w') return navigate('/watches')
         return // unknown sequence — swallow
@@ -459,7 +457,7 @@ export function App() {
   )
 
   const pageTab =
-    route.page === 'watches' || route.page === 'projects' || route.page === 'connectors' || route.page === 'terminals'
+    route.page === 'watches' || route.page === 'projects' || route.page === 'terminals'
       ? PAGE_TABS[route.page]
       : null
 
@@ -595,8 +593,6 @@ export function App() {
               </div>
             ) : route.page === 'watches' ? (
               <WatchesPage />
-            ) : route.page === 'connectors' ? (
-              <ConnectorsPage />
             ) : route.page === 'projects' ? (
               <ProjectsPage />
             ) : route.page === 'draft' ? (
@@ -690,11 +686,7 @@ export function App() {
         onClose={() => setSystem((s) => ({ ...s, open: false }))}
       />
       <WorkspaceModal mode={wsModal} onClose={() => setWsModal(null)} />
-      <SettingsModal
-        workspace={activeWorkspace}
-        onNavigate={navigate}
-        onOpenSystem={(tab) => setSystem({ open: true, tab })}
-      />
+      <SettingsModal workspace={activeWorkspace} onOpenSystem={(tab) => setSystem({ open: true, tab })} />
     </div>
   )
 }

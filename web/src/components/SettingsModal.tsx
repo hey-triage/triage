@@ -12,7 +12,6 @@ import * as Switch from '@radix-ui/react-switch'
 import * as Tabs from '@radix-ui/react-tabs'
 import {
   Activity,
-  ExternalLink,
   Gauge,
   Info,
   Keyboard,
@@ -43,6 +42,7 @@ import { closeSettings, SETTINGS_TABS, setSettingsTab, useSettings, type Setting
 import { store } from '../store.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
+import { ConnectorsPanel } from './Connectors.js'
 import { RepoScopeEditor } from './RepoScope.js'
 import { ActivityTab, LogsTab, type SystemTab } from './SystemModal.js'
 import { AuthCards, authTitle, ColorPicker, VerifyPanel, verifyWorkspace, type VerifyState } from './workspaceAuth.js'
@@ -51,6 +51,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   workspace: Settings2,
   auth: KeyRound,
   sources: Plug,
+  connectors: Plug,
   activity: Activity,
   logs: ScrollText,
   sessions: MessagesSquare,
@@ -60,26 +61,19 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
 
 type Props = {
   workspace: Workspace | null
-  /** Open a page underneath (closes the modal first). */
-  onNavigate: (hash: string) => void
   /** Open the system sheet (status · activity · logs) — closes the modal first. */
   onOpenSystem: (tab: SystemTab) => void
 }
 
-export function SettingsModal({ workspace, onNavigate, onOpenSystem }: Props) {
+export function SettingsModal({ workspace, onOpenSystem }: Props) {
   const { open, tab } = useSettings()
   const meta = SETTINGS_TABS.find((t) => t.id === tab) ?? SETTINGS_TABS[0]
-  // Diagnostics are live read-outs: they fill the pane and get a refresh button.
-  const fill = meta.group === 'diagnostics'
+  // A read-out tab fills the pane and gets a Refresh button; the nonce it
+  // drives resets per tab, so arriving somewhere never counts as a refresh.
+  const fill = meta.fill === true
   const [nonce, setNonce] = useState(0)
+  useEffect(() => setNonce(0), [tab])
 
-  const go = useCallback(
-    (hash: string) => {
-      closeSettings()
-      onNavigate(hash)
-    },
-    [onNavigate],
-  )
   const openSystem = useCallback(
     (t: SystemTab) => {
       closeSettings()
@@ -156,7 +150,10 @@ export function SettingsModal({ workspace, onNavigate, onOpenSystem }: Props) {
                     {workspace ? <AuthTab key={workspace.id} workspace={workspace} /> : <Loading />}
                   </Tabs.Content>
                   <Tabs.Content value="sources">
-                    <SourcesTab onNavigate={go} />
+                    <SourcesTab />
+                  </Tabs.Content>
+                  <Tabs.Content value="connectors" className="settingsFill">
+                    <ConnectorsPanel refreshNonce={nonce} />
                   </Tabs.Content>
                   <Tabs.Content value="activity" className="settingsFill">
                     <ActivityTab key={nonce} />
@@ -171,7 +168,7 @@ export function SettingsModal({ workspace, onNavigate, onOpenSystem }: Props) {
                     <ShortcutsTab />
                   </Tabs.Content>
                   <Tabs.Content value="about">
-                    <AboutTab onOpenSystem={openSystem} onNavigate={go} />
+                    <AboutTab onOpenSystem={openSystem} />
                   </Tabs.Content>
                 </div>
               </div>
@@ -521,7 +518,7 @@ function AuthTab({ workspace }: { workspace: Workspace }) {
 // Sources — GitHub scope, connectors.
 // ---------------------------------------------------------------------------
 
-function SourcesTab({ onNavigate }: { onNavigate: (hash: string) => void }) {
+function SourcesTab() {
   const [connectors, setConnectors] = useState<{ total: number; connected: number; slack: boolean } | 'loading' | 'error'>(
     'loading',
   )
@@ -564,8 +561,8 @@ function SourcesTab({ onNavigate }: { onNavigate: (hash: string) => void }) {
                 : `${connectors.connected} of ${connectors.total} connected · Slack ${connectors.slack ? 'connected' : 'not connected'}`
           }
         >
-          <button type="button" className="btn" onClick={() => onNavigate('/connectors')}>
-            Open Connectors <ExternalLink size={12} aria-hidden="true" />
+          <button type="button" className="btn" onClick={() => setSettingsTab('connectors')}>
+            See connectors
           </button>
         </Row>
       </Section>
@@ -656,7 +653,7 @@ function ShortcutsTab() {
 // About — the daemon.
 // ---------------------------------------------------------------------------
 
-function AboutTab({ onOpenSystem, onNavigate }: { onOpenSystem: (t: SystemTab) => void; onNavigate: (hash: string) => void }) {
+function AboutTab({ onOpenSystem }: { onOpenSystem: (t: SystemTab) => void }) {
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [error, setError] = useState('')
   useEffect(() => {
@@ -711,8 +708,8 @@ function AboutTab({ onOpenSystem, onNavigate }: { onOpenSystem: (t: SystemTab) =
           <button type="button" className="btn" onClick={() => setSettingsTab('logs')}>
             <ScrollText size={13} aria-hidden="true" /> Logs
           </button>
-          <button type="button" className="btn ghost" onClick={() => onNavigate('/connectors')}>
-            Connectors <ExternalLink size={12} aria-hidden="true" />
+          <button type="button" className="btn ghost" onClick={() => setSettingsTab('connectors')}>
+            <Plug size={13} aria-hidden="true" /> Connectors
           </button>
         </div>
       </Section>

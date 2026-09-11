@@ -102,7 +102,7 @@ export function CommandPalette({
         id: `set:${t.id}`,
         section: 'Settings',
         label: `Settings: ${t.label}`,
-        hint: t.sub,
+        hint: t.id === 'connectors' ? 'g c' : t.sub,
         run: () => onOpenSettings(t.id),
       })),
       { id: 'inbox', section: 'Pages', label: 'Inbox', hint: 'g i', run: () => onNavigate('/inbox') },
@@ -110,7 +110,6 @@ export function CommandPalette({
       { id: 'terminals', section: 'Pages', label: 'Terminals', hint: 'g t', run: () => onNavigate('/terminals') },
       { id: 'watches', section: 'Pages', label: 'Watches', hint: 'g w', run: () => onNavigate('/watches') },
       { id: 'projects', section: 'Pages', label: 'Projects', hint: 'g p', run: () => onNavigate('/projects') },
-      { id: 'connectors', section: 'Pages', label: 'Connectors', hint: 'g c', run: () => onNavigate('/connectors') },
       ...watches.map((w): Command => ({
         id: `wa:${w.id}`,
         section: 'Watches',

@@ -1,8 +1,8 @@
-import { Eye, Folder, Inbox, MessagesSquare, Plug, Terminal, type LucideProps } from 'lucide-react'
+import { Eye, Folder, Inbox, MessagesSquare, Terminal, type LucideProps } from 'lucide-react'
 import type { ComponentType } from 'react'
 import type { ConnState } from '../store.js'
 
-export type RailSection = 'inbox' | 'sessions' | 'terminals' | 'watches' | 'projects' | 'connectors'
+export type RailSection = 'inbox' | 'sessions' | 'terminals' | 'watches' | 'projects'
 
 type Props = {
   active: RailSection | null
@@ -20,7 +20,6 @@ const ITEMS: Array<{ id: RailSection; label: string; icon: ComponentType<LucideP
   { id: 'terminals', label: 'Terminals', icon: Terminal },
   { id: 'watches', label: 'Watches', icon: Eye },
   { id: 'projects', label: 'Projects', icon: Folder },
-  { id: 'connectors', label: 'Connectors', icon: Plug },
 ]
 
 /** The labelled 64px rail — one button per destination, counts as small badges. */
