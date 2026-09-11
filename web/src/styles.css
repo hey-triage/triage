@@ -1283,3 +1283,39 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .usageLegend .key .n { font-family: var(--mono); font-size: 10.5px; color: var(--stone); margin-left: 2px; }
+
+/* ---------- @ mentions: picker, tray chips, transcript chips ---------- */
+.mnPop {
+  z-index: 60; width: 460px; max-width: calc(100vw - 24px); background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7); color: var(--body); font-size: 13px; overflow: hidden; outline: none;
+  transform-origin: var(--radix-popover-content-transform-origin);
+}
+.mnPop[data-state="open"] { animation: menuIn 0.12s ease; }
+.mnList { display: flex; flex-direction: column; gap: 2px; padding: 6px; max-height: 300px; overflow-y: auto; }
+.mnGroup { display: flex; flex-direction: column; gap: 1px; }
+.mnGroup + .mnGroup { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--hair); }
+.mnHead { padding: 4px 8px 3px; color: var(--stone); font-size: 10.5px; letter-spacing: 0.6px; text-transform: uppercase; }
+.mnOpt { display: flex; align-items: center; gap: 9px; width: 100%; height: 30px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--body); text-align: left; font-size: 13px; cursor: pointer; }
+.mnOpt svg { flex: none; color: var(--ash); }
+.mnOpt:hover, .mnOpt.sel { background: rgba(255, 255, 255, 0.07); color: var(--ink); outline: none; }
+.mnOpt.sel svg { color: var(--ink); }
+.mnOpt .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; max-width: 60%; }
+.mnOpt .d { margin-left: auto; color: var(--ash); font-family: var(--mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; direction: rtl; text-align: right; }
+.mnEmpty { padding: 10px 8px; color: var(--ash); font-size: 12px; }
+.mnFoot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border-top: 1px solid var(--hair); color: var(--stone); font-size: 11px; }
+.mnFoot kbd { color: var(--ash); font-size: 10px; }
+.mnFoot .mnHint { font-family: var(--mono); font-size: 10.5px; color: var(--stone); }
+
+.attachments .mchips, .msg.user .msgMentions { display: flex; flex-wrap: wrap; gap: 6px; }
+.msg.user .msgMentions { margin-top: 8px; }
+.mchip {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px 0 7px; max-width: 280px;
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-full);
+  font-family: var(--mono); font-size: 11px; color: var(--body); white-space: nowrap;
+}
+.mchip svg { flex: none; color: var(--ash); }
+.mchip .n { overflow: hidden; text-overflow: ellipsis; }
+.mchip.muted { color: var(--ash); border-style: dashed; }
+.mchip .x { border: 0; background: transparent; color: var(--stone); font-size: 13px; line-height: 1; padding: 0 0 0 2px; cursor: pointer; }
+.mchip .x:hover { color: var(--ink); }
+.msg.user .mtok { color: var(--ink); font-family: var(--mono); font-size: 12.5px; background: rgba(255, 255, 255, 0.06); border-radius: var(--r-xs); padding: 1px 5px; }
