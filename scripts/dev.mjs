@@ -1,9 +1,11 @@
 // Runs the two dev processes as one command: the node server (API + WebSocket,
-// :5178) and the Vite dev server (:5179, proxying /ws and /api back to it).
+// :5188) and the Vite dev server (:5189, proxying /ws and /api back to it).
 //
 // Deliberately not `tsx watch` for the server — a restart drops every live
 // Claude subprocess. Restart it by hand when you change server code.
 import { spawn } from 'node:child_process'
+
+process.env.PORT ||= '5188'
 
 const procs = [
   { name: 'server', color: '\x1b[33m', cmd: 'tsx', args: ['server/index.ts'] },

@@ -33,8 +33,11 @@ connectors.
 
 ```sh
 npm i -g @hey-triage/triage
-triage                    # → http://localhost:5178
+triage                    # → http://triage.localhost:5178  (or http://localhost:5178)
 ```
+
+`triage.localhost` resolves to your own machine automatically in Chrome, Edge, and Firefox
+— no DNS, no `/etc/hosts`, no extra tooling. On Safari, use `http://localhost:5178` instead.
 
 Requirements:
 
@@ -149,12 +152,13 @@ and bookmarks assume a stable port.
 ```sh
 git clone https://github.com/hey-triage/triage && cd triage
 npm install
-npm run dev          # → http://localhost:5179  (Vite dev server, proxies to :5178)
+npm run dev          # → http://localhost:5189  (Vite dev server, proxies to :5188)
 ```
 
-`npm run dev` starts both halves: the node server on `:5178` (API + WebSocket) and Vite
-on `:5179`, which proxies `/api` and `/ws` back to it. Open the Vite URL — HMR applies to
-the UI, and live sessions survive it.
+`npm run dev` starts both halves: the node server on `:5188` (API + WebSocket) and Vite
+on `:5189`, which proxies `/api` and `/ws` back to it. Open the Vite URL — HMR applies to
+the UI, and live sessions survive it. Dev runs on 5188/5189 (off the production default
+5178) so `npm run dev` and `triage start` never fight over a port.
 
 The server is deliberately **not** run under `tsx watch`: restarting it kills every live
 Claude subprocess. Restart it by hand when you change `server/`.

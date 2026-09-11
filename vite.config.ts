@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 /** The node server (API + WebSocket) that the dev server proxies back to. */
-const SERVER_PORT = Number(process.env.PORT || 5178)
+const SERVER_PORT = Number(process.env.PORT || 5188)
 
 export default defineConfig({
   root: 'web',
@@ -12,7 +12,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5179,
+    port: 5189,
     strictPort: true,
     // Same-origin in dev, so the client's `ws://${location.host}/ws` works
     // unchanged whether it is served by Vite or by the node server.

@@ -2,7 +2,8 @@
 // print init info (model + MCP servers) and the assistant's reply.
 import { WebSocket } from 'ws'
 
-const ws = new WebSocket('ws://localhost:5178/ws')
+const PORT = Number(process.env.PORT || 5178)
+const ws = new WebSocket(`ws://localhost:${PORT}/ws`)
 let sessionId = null
 let assistantText = ''
 const timeout = setTimeout(() => { console.log('TIMEOUT'); process.exit(2) }, 180000)

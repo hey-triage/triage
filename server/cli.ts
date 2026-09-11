@@ -152,7 +152,8 @@ function printRunning(health: Health, verb: string, showDb = false) {
   const lines = [
     `${green('●')} ${bold(`triage ${verb}`)}`,
     '',
-    `${dim('→')} ${bold(cyan(`http://localhost:${health.port}`))}`,
+    `${dim('→')} ${bold(cyan(`http://triage.localhost:${health.port}`))}`,
+    `${dim('  also http://localhost:' + health.port)}`,
     '',
     row('version', health.version),
     row('pid', String(health.pid)),
