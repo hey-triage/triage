@@ -1,7 +1,9 @@
+import { KeyRound } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { PermissionBehavior, QuestionAnswers, SessionEvent } from '../../../shared/protocol.js'
 import { parseQuestions } from '../askQuestions.js'
 import { useLiveText } from '../hooks.js'
+import { openSettings } from '../settings.js'
 import { buildTranscript, type TranscriptItem } from '../transcript.js'
 import { AskCard } from './AskCard.js'
 import { InitCard } from './InitCard.js'
@@ -70,7 +72,7 @@ const Item = memo(function Item({
     case 'thinking':
       return <div className="msg thinking">{item.text}</div>
     case 'error':
-      return <div className="msg error">{item.text}</div>
+      return <ErrorCard text={item.text} />
     case 'meta':
       return <div className="meta">{item.text}</div>
     case 'init':
@@ -129,4 +131,27 @@ function useStickToBottom() {
   }, [])
 
   return { ref, scrollToBottom }
+}
+
+/**
+ * A failed turn. When the text reads like a credentials problem, the card
+ * also offers the fix — the Claude auth tab, opened directly.
+ */
+const AUTH_ERROR = /api[ -]?key|authenticat|unauthori[sz]ed|not logged in|\/login|\b401\b|credential|oauth|token (?:has )?expired|billing|insufficient credits/i
+
+function ErrorCard({ text }: { text: string }) {
+  const authy = AUTH_ERROR.test(text)
+  return (
+    <div className="msg error">
+      {text}
+      {authy && (
+        <div className="fixRow">
+          <span>This looks like a Claude auth problem in this workspace.</span>
+          <button type="button" className="btn xs" onClick={() => openSettings('auth')}>
+            <KeyRound size={11} aria-hidden="true" /> Fix in Settings
+          </button>
+        </div>
+      )}
+    </div>
+  )
 }

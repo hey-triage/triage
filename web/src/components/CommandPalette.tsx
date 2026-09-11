@@ -9,10 +9,12 @@ import type {
   Watch,
   WatchesResponse,
 } from '../../../shared/protocol.js'
+import { MOD_LABEL } from '../keys.js'
+import { SETTINGS_TABS, type SettingsTab } from '../settings.js'
 
 export type Command = {
   id: string
-  section: 'Actions' | 'Pages' | 'Projects' | 'Sessions' | 'Terminals' | 'Watches' | 'Work items'
+  section: 'Actions' | 'Pages' | 'Settings' | 'Projects' | 'Sessions' | 'Terminals' | 'Watches' | 'Work items'
   label: string
   hint?: string
   run: () => void
@@ -30,10 +32,11 @@ type Props = {
   onNewSessionIn: (project: Project) => void
   onSyncInbox: () => void
   onAddWatch: () => void
+  onOpenSettings: (tab?: SettingsTab) => void
   onHelp: () => void
 }
 
-const SECTION_ORDER: Command['section'][] = ['Actions', 'Pages', 'Projects', 'Sessions', 'Terminals', 'Watches', 'Work items']
+const SECTION_ORDER: Command['section'][] = ['Actions', 'Pages', 'Settings', 'Projects', 'Sessions', 'Terminals', 'Watches', 'Work items']
 
 export function CommandPalette({
   open,
@@ -47,6 +50,7 @@ export function CommandPalette({
   onNewSessionIn,
   onSyncInbox,
   onAddWatch,
+  onOpenSettings,
   onHelp,
 }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -93,6 +97,14 @@ export function CommandPalette({
       { id: 'sync', section: 'Actions', label: 'Sync inbox now', run: onSyncInbox },
       { id: 'addwatch', section: 'Actions', label: 'Add watch', run: onAddWatch },
       { id: 'help', section: 'Actions', label: 'Keyboard shortcuts', hint: '?', run: onHelp },
+      { id: 'settings', section: 'Actions', label: 'Settings', hint: `${MOD_LABEL},`, run: () => onOpenSettings() },
+      ...SETTINGS_TABS.map((t): Command => ({
+        id: `set:${t.id}`,
+        section: 'Settings',
+        label: `Settings: ${t.label}`,
+        hint: t.sub,
+        run: () => onOpenSettings(t.id),
+      })),
       { id: 'inbox', section: 'Pages', label: 'Inbox', hint: 'g i', run: () => onNavigate('/inbox') },
       { id: 'sessions', section: 'Pages', label: 'Sessions', hint: 'g s', run: () => onNavigate('') },
       { id: 'terminals', section: 'Pages', label: 'Terminals', hint: 'g t', run: () => onNavigate('/terminals') },
@@ -141,7 +153,7 @@ export function CommandPalette({
         run: () => onOpenItem(i),
       })),
     ],
-    [sessions, terminals, items, projects, watches, onNavigate, onNewSession, onNewTerminal, onOpenItem, onNewSessionIn, onSyncInbox, onAddWatch, onHelp],
+    [sessions, terminals, items, projects, watches, onNavigate, onNewSession, onNewTerminal, onOpenItem, onNewSessionIn, onSyncInbox, onAddWatch, onOpenSettings, onHelp],
   )
 
   const shown = useMemo(() => {

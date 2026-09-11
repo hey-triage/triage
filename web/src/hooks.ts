@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { DEFAULT_SETTINGS_TAB, isSettingsTab, type SettingsTab } from './settings.js'
 import { store } from './store.js'
 
 export function useConn() {
@@ -50,6 +51,8 @@ export type Route =
   | { page: 'connectors' }
   | { page: 'projects' }
   | { page: 'watches' }
+  /** `#/settings/<tab>` — opens the settings modal on that tab, then yields to the page underneath */
+  | { page: 'settings'; tab: SettingsTab }
 
 /** The hash for a work item — ids carry `:` `/` `#`, so they travel encoded. */
 export const itemHash = (id: string) => `/item/${encodeURIComponent(id)}`
@@ -70,6 +73,10 @@ function parseRoute(hash: string): Route {
   if (hash === '/connectors') return { page: 'connectors' }
   if (hash === '/projects') return { page: 'projects' }
   if (hash === '/watches') return { page: 'watches' }
+  if (hash === '/settings' || hash.startsWith('/settings/')) {
+    const tab = hash.slice('/settings/'.length)
+    return { page: 'settings', tab: isSettingsTab(tab) ? tab : DEFAULT_SETTINGS_TAB }
+  }
   return { page: 'session', id: hash }
 }
 

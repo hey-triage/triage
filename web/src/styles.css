@@ -953,9 +953,110 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .wsRecheck:disabled { opacity: 0.45; cursor: default; }
 .wsModal .row .danger { margin-right: auto; }
 
+
+/* ---------- settings modal (Radix dialog, ~85% of the viewport) ----------
+   A tab list down the left on the deep surface, one pane on the right on the
+   card surface. The only bright thing in it is the Save button. */
+.settingsOverlay { position: fixed; inset: 0; z-index: 80; background: rgba(0, 0, 0, 0.6); animation: fadeIn 0.14s ease; }
+.settings {
+  position: fixed; z-index: 81; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(85vw, 1180px); height: min(85vh, 840px);
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 40px 120px rgba(0, 0, 0, 0.65);
+  overflow: hidden; outline: none;
+  animation: settingsIn 0.16s ease;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes settingsIn { from { opacity: 0; transform: translate(-50%, -50%) scale(0.985); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+.settingsTabs { display: grid; grid-template-columns: 228px minmax(0, 1fr); height: 100%; }
+
+.settingsNav { display: flex; flex-direction: column; min-height: 0; padding: 18px 10px 14px; background: var(--deep); border-right: 1px solid var(--hair); }
+.settingsNavHead { padding: 0 10px 12px; }
+.settingsNavHead .title { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 24px; line-height: 1; letter-spacing: -0.24px; color: var(--ink); }
+.settingsNavWs { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 12px; color: var(--mute); min-width: 0; }
+.settingsNavWs .wsDot { width: 7px; height: 7px; border-radius: var(--r-full); flex: none; }
+.settingsNavWs .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--body); }
+.settingsList { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; }
+.settingsNavGroup { padding: 14px 10px 5px; font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--stone); font-weight: 500; }
+.settingsNavGroup:first-child { padding-top: 4px; }
+.settingsTab {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 10px; text-align: left;
+  border-radius: var(--r); border: 1px solid transparent; background: transparent; color: var(--mute); font-size: 13px;
+  transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+}
+.settingsTab svg { flex: none; color: var(--ash); }
+.settingsTab:hover { color: var(--ink); background: var(--elev); }
+.settingsTab[data-state="active"] { color: var(--ink); background: var(--elev); border-color: var(--hair-strong); }
+.settingsTab[data-state="active"] svg { color: var(--ink); }
+.settingsTab:focus-visible { outline: 1px solid var(--ink); outline-offset: -1px; }
+.settingsNavFoot { margin-top: auto; padding: 12px 10px 0; font-size: 11px; color: var(--stone); display: flex; align-items: center; gap: 6px; }
+
+.settingsPane { display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
+.settingsHead { display: flex; align-items: flex-start; gap: 16px; padding: 26px 32px 18px; border-bottom: 1px solid var(--hair); flex: none; }
+.settingsHead > div { min-width: 0; }
+.settingsHead h2 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 28px; line-height: 1.1; letter-spacing: -0.28px; color: var(--ink); }
+.settingsHead p { margin: 6px 0 0; color: var(--mute); font-size: 13px; line-height: 1.5; max-width: 64ch; }
+.settingsClose { margin-left: auto; flex: none; }
+.settingsBody { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 32px 40px; }
+.settingsBody > .inner { max-width: 640px; }
+.settings [role="tabpanel"]:focus, .settings [role="tabpanel"]:focus-visible { outline: none; }
+
+.setSection { padding: 22px 0; border-bottom: 1px solid var(--hair); }
+.setSection:last-child { border-bottom: none; }
+.setSection > h3 { margin: 0 0 4px; font-size: 13px; font-weight: 500; color: var(--ink); }
+.setSection > .hint { margin: 0 0 14px; color: var(--ash); font-size: 12.5px; line-height: 1.55; }
+.setSection > .hint b { color: var(--body); font-weight: 500; }
+.setRow { display: flex; align-items: center; gap: 20px; padding: 12px 0; border-top: 1px solid var(--hair-soft); }
+.setRow:first-of-type { border-top: none; padding-top: 4px; }
+.setRow .lbl { flex: 1; min-width: 0; }
+.setRow .lbl b { display: block; font-weight: 500; color: var(--body); font-size: 13px; }
+.setRow .lbl small { display: block; color: var(--ash); font-size: 12px; line-height: 1.45; margin-top: 2px; }
+.setRow .ctl { flex: none; display: flex; align-items: center; gap: 8px; }
+.setActions { display: flex; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.setActions .saved { color: var(--green); font-size: 12px; animation: fadeIn 0.2s ease; }
+.setErr { color: var(--red); font-size: 12px; }
+.setField label { display: block; font-size: 12px; color: var(--mute); margin: 12px 0 5px; }
+.setField label:first-child { margin-top: 0; }
+.settings input[type="text"], .settings input[type="password"], .settings textarea, .settings input.pickerFilter {
+  width: 100%; background: var(--canvas); border: 1px solid var(--hair-strong); color: var(--ink);
+  border-radius: var(--r); padding: 8px 10px; font-size: 13px; line-height: 1.45; outline: none; transition: border-color 0.12s;
+}
+.settings input:focus { border-color: var(--ink); }
+.settings input::placeholder { color: var(--stone); }
+.settings .wsKeyRow input { font-family: var(--mono); font-size: 12px; }
+.settings .msg.error { margin-top: 12px; }
+.settings .wsVerify { margin-top: 0; }
+.settings .repoScope .row { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+.setKv { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-top: 1px solid var(--hair); font-size: 12.5px; }
+.setKv:first-of-type { border-top: none; }
+.setKv .k { color: var(--ash); flex: none; }
+.setKv .v { font-family: var(--mono); font-size: 11.5px; color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setKeys { width: 100%; border-collapse: collapse; }
+.setKeys td { padding: 7px 0; font-size: 13px; color: var(--body); vertical-align: top; border-top: 1px solid var(--hair-soft); }
+.setKeys tr:first-child td { border-top: none; }
+.setKeys td:first-child { width: 120px; }
+
+/* Radix switch — the one toggle idiom */
+.uiSwitch { position: relative; width: 34px; height: 20px; padding: 0; border-radius: var(--r-full); background: var(--elev); border: 1px solid var(--hair-strong); transition: background 0.12s, border-color 0.12s; cursor: pointer; }
+.uiSwitch[data-state="checked"] { background: var(--ink); border-color: var(--ink); }
+.uiSwitch:disabled { opacity: 0.45; cursor: default; }
+.uiSwitchThumb { display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--ash); transform: translateX(2px); transition: transform 0.14s ease, background 0.12s; }
+.uiSwitch[data-state="checked"] .uiSwitchThumb { transform: translateX(16px); background: #000; }
+
+/* the "fix" affordance under an auth-looking session error */
+.msg.error .fixRow { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255, 32, 71, 0.25); font-family: var(--sans); font-size: 12px; color: var(--body); flex-wrap: wrap; }
+.msg.error .fixRow .btn { margin-left: auto; }
+
+@media (max-width: 900px) {
+  .settingsTabs { grid-template-columns: 56px minmax(0, 1fr); }
+  .settingsNavHead .title, .settingsNavWs .name, .settingsNavGroup, .settingsNavFoot { display: none; }
+  .settingsTab { justify-content: center; padding: 0; font-size: 0; gap: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dot.live, .tool .glyph.busy, .probing .pip, .msg.assistant.live .md > :last-child::after, .topIcon .connDot.down { animation: none; }
   .uiMenu[data-state="open"] { animation: none; }
+  .settings, .settingsOverlay, .setActions .saved { animation: none; }
 }
 
 /* late additions */

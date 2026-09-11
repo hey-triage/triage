@@ -22,6 +22,7 @@ import { ItemPage } from './components/ItemPage.js'
 import { NewSessionComposer, type NewSession } from './components/NewSessionComposer.js'
 import { ProjectsPage } from './components/ProjectsPage.js'
 import { Rail, type RailSection } from './components/Rail.js'
+import { SettingsModal } from './components/SettingsModal.js'
 import { SystemModal, type SystemTab } from './components/SystemModal.js'
 import { TabBand, type OpenTab, type PageTab } from './components/TabBand.js'
 import { dispatchPrompt, dispatchTitle } from './dispatch.js'
@@ -45,6 +46,7 @@ import {
 import { inboxStore, useInbox } from './inboxStore.js'
 import { anyDialogOpen, isTypingTarget } from './keys.js'
 import { EFFORT_LABEL, findModel, useModels } from './models.js'
+import { openSettings } from './settings.js'
 import { store } from './store.js'
 import { usePanelWidth } from './panelWidth.js'
 import { projectColor, useOpenTabs } from './tabs.js'
@@ -113,6 +115,18 @@ export function App() {
   useEffect(() => {
     if (route.page === 'home') navigate('/inbox')
   }, [route.page, navigate])
+
+  // `#/settings/<tab>` is a door, not a page: open the modal on that tab and
+  // put the URL back on whatever was underneath (the inbox on a cold load).
+  const lastPageHash = useRef('/inbox')
+  useEffect(() => {
+    if (route.page === 'settings') {
+      openSettings(route.tab)
+      navigate(lastPageHash.current)
+    } else if (route.page !== 'home') {
+      lastPageHash.current = location.hash.slice(1) || '/inbox'
+    }
+  }, [route, navigate])
 
   // The open inbox feeds the rail badge and the Queue panel from the start.
   useEffect(() => {
@@ -290,7 +304,7 @@ export function App() {
           ? termKey(route.id)
           : route.page === 'draft'
             ? draftKey(route.id)
-            : route.page === 'home'
+            : route.page === 'home' || route.page === 'settings'
               ? 'home'
               : PAGE_TABS[route.page].key
   const tabRoute = (key: string) =>
@@ -317,6 +331,13 @@ export function App() {
         e.preventDefault()
         setHelpOpen(false)
         setPaletteOpen((v) => !v)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault()
+        setHelpOpen(false)
+        setPaletteOpen(false)
+        openSettings()
         return
       }
       if (isTypingTarget(e) || anyDialogOpen() || e.metaKey || e.ctrlKey || e.altKey) return
@@ -414,7 +435,9 @@ export function App() {
         ? 'sessions'
         : route.page === 'terminal'
           ? 'terminals'
-          : route.page
+          : route.page === 'settings'
+            ? null
+            : route.page
 
   const openTabs = useMemo<OpenTab[]>(
     () =>
@@ -493,8 +516,9 @@ export function App() {
         conn={conn}
         onSwitchWorkspace={(id) => store.switchWorkspace(id)}
         onNewWorkspace={() => setWsModal({ kind: 'create' })}
-        onWorkspaceSettings={() => activeWorkspace && setWsModal({ kind: 'settings', workspace: activeWorkspace })}
+        onWorkspaceSettings={() => openSettings('workspace')}
         onOpenSystem={(tab) => setSystem({ open: true, tab })}
+        onOpenSettings={() => openSettings()}
         onHelp={() => setHelpOpen(true)}
       />
 
@@ -586,7 +610,7 @@ export function App() {
               ) : (
                 <div id="empty">This draft was discarded.</div>
               )
-            ) : route.page === 'home' ? null : current ? (
+            ) : route.page === 'home' || route.page === 'settings' ? null : current ? (
               <>
                 <div id="chatHeader">
                   <span id="chatTitle" title={current.title}>
@@ -655,6 +679,7 @@ export function App() {
         onNewSessionIn={newSessionIn}
         onSyncInbox={syncInbox}
         onAddWatch={addWatch}
+        onOpenSettings={(tab) => openSettings(tab)}
         onHelp={() => setHelpOpen(true)}
       />
       <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
@@ -665,6 +690,11 @@ export function App() {
         onClose={() => setSystem((s) => ({ ...s, open: false }))}
       />
       <WorkspaceModal mode={wsModal} onClose={() => setWsModal(null)} />
+      <SettingsModal
+        workspace={activeWorkspace}
+        onNavigate={navigate}
+        onOpenSystem={(tab) => setSystem({ open: true, tab })}
+      />
     </div>
   )
 }

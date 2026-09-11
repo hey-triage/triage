@@ -1,4 +1,5 @@
-import { Activity, Check, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings2 } from 'lucide-react'
+import { Activity, Check, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings, Settings2 } from 'lucide-react'
+import { MOD_LABEL } from '../keys.js'
 import type { Workspace } from '../../../shared/protocol.js'
 import type { ConnState } from '../store.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
@@ -11,6 +12,7 @@ type Props = {
   onNewWorkspace: () => void
   onWorkspaceSettings: () => void
   onOpenSystem: (tab: 'status' | 'activity') => void
+  onOpenSettings: () => void
   onHelp: () => void
 }
 
@@ -20,7 +22,7 @@ const CONN_TITLE: Record<ConnState, string> = {
   disconnected: 'Daemon disconnected — retrying',
 }
 
-/** 44px top bar: serif wordmark, the workspace pill, then system / activity / help. */
+/** 44px top bar: serif wordmark, the workspace pill, then system / activity / settings / help. */
 export function TopBar({
   workspaces,
   workspaceId,
@@ -29,6 +31,7 @@ export function TopBar({
   onNewWorkspace,
   onWorkspaceSettings,
   onOpenSystem,
+  onOpenSettings,
   onHelp,
 }: Props) {
   return (
@@ -48,6 +51,9 @@ export function TopBar({
       </button>
       <button type="button" className="topIcon" title="Watch runs and activity" onClick={() => onOpenSystem('activity')}>
         <Activity size={15} aria-hidden="true" />
+      </button>
+      <button type="button" className="topIcon" title={`Settings (${MOD_LABEL},)`} onClick={onOpenSettings}>
+        <Settings size={15} aria-hidden="true" />
       </button>
       <button type="button" className="topIcon" title="Keyboard shortcuts (?)" onClick={onHelp}>
         <CircleHelp size={15} aria-hidden="true" />

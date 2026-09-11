@@ -1,27 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { MOD_LABEL } from '../keys.js'
-
-const SHORTCUTS: Array<[string, string]> = [
-  [`${MOD_LABEL}K`, 'Search — sessions, items, projects, commands'],
-  ['n', 'New session (in the inbox: new work item)'],
-  ['Shift+Tab', 'Composer: cycle how much the session asks before acting'],
-  ['g i', 'Go to Inbox'],
-  ['g s', 'Go to Sessions'],
-  ['g t', 'Go to Terminals (n opens a new one there)'],
-  ['g w', 'Go to Watches'],
-  ['g p', 'Go to Projects'],
-  ['g c', 'Go to Connectors'],
-  ['j / k', 'Inbox: move selection'],
-  ['Enter', 'Inbox: open the selected item'],
-  ['o', 'Inbox: open the selected item at its source'],
-  ['d', 'Inbox: dispatch selected item to a session'],
-  ['e', 'Inbox: mark selected item done'],
-  ['z', 'Inbox: snooze selected item until tomorrow'],
-  ['x', 'Inbox: archive selected item'],
-  ['r', 'Inbox: refresh'],
-  ['?', 'This help'],
-  ['Esc', 'Close dialogs'],
-]
+import { SHORTCUTS } from '../keys.js'
 
 export function HelpOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)

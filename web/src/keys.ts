@@ -12,8 +12,36 @@ export function isTypingTarget(e: KeyboardEvent): boolean {
  * stay quiet, or "n" typed at an open menu starts a new session behind it.
  */
 export function anyDialogOpen(): boolean {
-  return document.querySelector('dialog[open], [data-popover-open], [data-radix-popper-content-wrapper]') !== null
+  return (
+    document.querySelector(
+      'dialog[open], [data-popover-open], [data-radix-popper-content-wrapper], [role="dialog"][data-state="open"]',
+    ) !== null
+  )
 }
 
 export const isMac = navigator.platform.startsWith('Mac')
 export const MOD_LABEL = isMac ? '⌘' : 'Ctrl+'
+
+/** Every global key, for the `?` overlay and the Shortcuts settings tab. */
+export const SHORTCUTS: ReadonlyArray<[keys: string, what: string]> = [
+  [`${MOD_LABEL}K`, 'Search — sessions, items, projects, commands'],
+  [`${MOD_LABEL},`, 'Settings'],
+  ['n', 'New session (in the inbox: new work item)'],
+  ['Shift+Tab', 'Composer: cycle how much the session asks before acting'],
+  ['g i', 'Go to Inbox'],
+  ['g s', 'Go to Sessions'],
+  ['g t', 'Go to Terminals (n opens a new one there)'],
+  ['g w', 'Go to Watches'],
+  ['g p', 'Go to Projects'],
+  ['g c', 'Go to Connectors'],
+  ['j / k', 'Inbox: move selection'],
+  ['Enter', 'Inbox: open the selected item'],
+  ['o', 'Inbox: open the selected item at its source'],
+  ['d', 'Inbox: dispatch selected item to a session'],
+  ['e', 'Inbox: mark selected item done'],
+  ['z', 'Inbox: snooze selected item until tomorrow'],
+  ['x', 'Inbox: archive selected item'],
+  ['r', 'Inbox: refresh'],
+  ['?', 'Keyboard shortcuts'],
+  ['Esc', 'Close dialogs'],
+]
