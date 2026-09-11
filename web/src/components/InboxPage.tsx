@@ -296,11 +296,19 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
         <div className="pageHead">
           <h1 className="display">
             {isOpen ? weekday() : tabLabel}.{' '}
-            <span className="muted">
-              {loading && items.length === 0
-                ? 'syncing…'
-                : `${items.length} item${items.length === 1 ? '' : 's'}${blocking ? `, ${blocking} blocking` : ''}.`}
-            </span>
+            {loading && items.length === 0 ? (
+              <span className="muted">syncing…</span>
+            ) : (
+              <span className="muted">
+                {items.length} item{items.length === 1 ? '' : 's'}
+                {blocking > 0 && (
+                  <>
+                    , <span className="blk">{blocking} blocking</span>
+                  </>
+                )}
+                .
+              </span>
+            )}
           </h1>
           <span className="pageMeta" title={snap.syncedAt ? new Date(snap.syncedAt).toLocaleString() : undefined}>
             <RefreshCw size={12} aria-hidden="true" />
@@ -442,9 +450,13 @@ function ItemGroup({
   ...actions
 }: { group: Group; items: ScoredItem[]; selectedId: string | null } & RowActions) {
   if (items.length === 0) return null
+  const [tier, qual] = GROUP_TITLE[group].split(' · ')
   return (
     <>
-      <div className="secLabel">{GROUP_TITLE[group]}</div>
+      <div className={`secLabel ${group}`}>
+        <span className="tier">{tier}</span>
+        {qual && <span className="qual">{qual}</span>}
+      </div>
       {items.map((item) => (
         <WorkCard key={item.id} item={item} selected={item.id === selectedId} {...actions} />
       ))}

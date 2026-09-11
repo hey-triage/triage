@@ -3,8 +3,8 @@
    Final" canvas)
 
    True-black canvas, translucent-white hairlines instead of shadows, one
-   bright surface per viewport (the white primary button). Instrument Serif on
-   headings only, Geist for UI, Geist Mono for machine data (paths, scores,
+   bright surface per viewport (the white primary button). Editorial serif for
+   the wordmark and page headlines, Geist for UI, Geist Mono for machine data (paths, scores,
    diffs, code). Accent colours appear only as status dots, diff colouring
    and atmospheric glows — never as filled controls.
    ========================================================================= */
@@ -60,8 +60,11 @@
   --amber: var(--yellow);
   --accent: var(--ink);
 
+  /* The editorial-serif signature lane (design.md): the wordmark and the page
+     display headline. Everything else stays technical — Geist + Geist Mono. */
   --serif: "Instrument Serif", "Tiempos Headline", Georgia, serif;
-  --brand: "Instrument Sans", Geist, "Helvetica Neue", Arial, sans-serif;
+  --display: var(--serif);
+  --brand: var(--serif);
   --sans: Geist, Inter, -apple-system, system-ui, sans-serif;
   --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -199,6 +202,16 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
 }
 .secLabel .n { font-family: var(--mono); letter-spacing: 0; text-transform: none; }
 .secLabel.mute { color: var(--mute); }
+/* Two-part group heading: the tier name carries weight, the qualifier stays
+   quiet. Tiers step down in brightness so "Blocking" reads as the top of the
+   page and "FYI" recedes. */
+.secLabel .tier { color: var(--ash); font-weight: 500; }
+.secLabel .qual { color: var(--stone); }
+.secLabel .qual::before { content: "·"; margin-right: 8px; color: var(--stone); }
+.secLabel.blocking .tier { color: var(--ink); }
+.secLabel.blocked-stale .tier { color: var(--mute); }
+.secLabel.cycle .tier { color: var(--mute); }
+.secLabel.fyi .tier { color: var(--stone); font-weight: 400; }
 
 /* atmospheric glow — one per section, anchored at its top */
 .glow {
@@ -222,10 +235,10 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
 }
 /* Logo lockup: the mark box is ~1.03× the type size and the gap ~0.31em (the "F2"
    ratio from the brand canvas), so the word leads slightly and the mark sits
-   inside its height. Instrument Sans is loaded for this word only. */
+   inside its height. The wordmark is the editorial serif — the brand signature. */
 .logo { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); line-height: 1; }
 .logo .logoMark { width: 19px; height: 19px; flex: none; }
-.logo .logoWord { font-family: var(--brand); font-weight: 600; font-size: 18px; letter-spacing: -0.03em; }
+.logo .logoWord { font-family: var(--brand); font-weight: 400; font-size: 20px; letter-spacing: -0.01em; }
 .wsPill {
   display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
   border-radius: var(--r-full); border: 1px solid var(--hair-strong); background: var(--elev);
@@ -349,8 +362,11 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
 .page.wide .inner { max-width: 1100px; }
 .pageHead { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 18px; }
 .pageHead > div:first-child { min-width: 0; }
-.display { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 36px; line-height: 1; letter-spacing: -0.36px; color: var(--ink); }
+.display { margin: 0; font-family: var(--display); font-weight: 400; font-size: 36px; line-height: 1; letter-spacing: -0.36px; color: var(--ink); }
 .display .muted { color: var(--mute); }
+/* the count of what's blocking is the one alarming number in the headline —
+   lift it to ink so it reads alongside the day, not with the total. */
+.display .blk { color: var(--ink); }
 .display.md { font-size: 32px; line-height: 1.05; letter-spacing: -0.32px; }
 .display.sm { font-size: 28px; line-height: 1.1; letter-spacing: -0.28px; }
 .pageHead .sub, .page p.sub { margin: 8px 0 0; color: var(--mute); font-size: 13px; line-height: 1.5; max-width: 60ch; }
@@ -606,7 +622,7 @@ button.chip:hover:not(:disabled), .chip[data-state="open"] { color: var(--ink); 
 
 /* new-session home */
 #newSessionHome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 20px 40px; position: relative; }
-#newSessionHome h2 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 36px; letter-spacing: -0.36px; line-height: 1; color: var(--ink); }
+#newSessionHome h2 { margin: 0; font-family: var(--display); font-weight: 400; font-size: 36px; letter-spacing: -0.36px; line-height: 1; color: var(--ink); }
 #newSessionHome #composer { width: 100%; padding: 0; display: flex; justify-content: center; }
 #newSessionHome .frame { width: 100%; }
 /* The draft box opens tall — a first prompt is usually a paragraph. In a live
@@ -895,7 +911,7 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .composerHead .crumbSep { color: var(--stone); }
 .composerClose { flex: none; display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: none; border-radius: var(--r-sm); background: transparent; color: var(--ash); }
 .composerClose:hover { background: var(--elev); color: var(--ink); }
-.itemComposer .titleInput { width: 100%; border: none !important; background: transparent !important; outline: none; padding: 6px 18px 2px !important; margin: 0; color: var(--ink); font-family: var(--serif) !important; font-size: 24px !important; letter-spacing: -0.24px; line-height: 1.2 !important; border-radius: 0 !important; }
+.itemComposer .titleInput { width: 100%; border: none !important; background: transparent !important; outline: none; padding: 6px 18px 2px !important; margin: 0; color: var(--ink); font-family: var(--display) !important; font-weight: 400; font-size: 24px !important; letter-spacing: -0.24px; line-height: 1.2 !important; border-radius: 0 !important; }
 .itemComposer .titleInput::placeholder { color: var(--stone); }
 .itemComposer .descInput { width: 100%; border: none !important; background: transparent !important; outline: none; resize: none; padding: 4px 18px 8px !important; margin: 0; color: var(--body); font-size: 14px !important; line-height: 1.55 !important; min-height: 46px; max-height: 260px; border-radius: 0 !important; }
 .itemComposer .descInput::placeholder { color: var(--stone); }
@@ -978,7 +994,7 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 
 .settingsNav { display: flex; flex-direction: column; min-height: 0; padding: 18px 10px 14px; background: var(--deep); border-right: 1px solid var(--hair); }
 .settingsNavHead { padding: 0 10px 12px; }
-.settingsNavHead .title { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 24px; line-height: 1; letter-spacing: -0.24px; color: var(--ink); }
+.settingsNavHead .title { margin: 0; font-family: var(--display); font-weight: 400; font-size: 24px; line-height: 1; letter-spacing: -0.24px; color: var(--ink); }
 .settingsNavWs { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 12px; color: var(--mute); min-width: 0; }
 .settingsNavWs .wsDot { width: 7px; height: 7px; border-radius: var(--r-full); flex: none; }
 .settingsNavWs .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--body); }
@@ -1000,7 +1016,7 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .settingsPane { display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
 .settingsHead { display: flex; align-items: flex-start; gap: 16px; padding: 26px 32px 18px; border-bottom: 1px solid var(--hair); flex: none; }
 .settingsHead > div { min-width: 0; }
-.settingsHead h2 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 28px; line-height: 1.1; letter-spacing: -0.28px; color: var(--ink); }
+.settingsHead h2 { margin: 0; font-family: var(--display); font-weight: 400; font-size: 28px; line-height: 1.1; letter-spacing: -0.28px; color: var(--ink); }
 .settingsHead p { margin: 6px 0 0; color: var(--mute); font-size: 13px; line-height: 1.5; max-width: 64ch; }
 .settingsHeadRight { margin-left: auto; flex: none; display: flex; align-items: center; gap: 4px; }
 .settingsClose { flex: none; }
