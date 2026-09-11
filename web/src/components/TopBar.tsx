@@ -3,6 +3,7 @@ import { MOD_LABEL } from '../keys.js'
 import type { Workspace } from '../../../shared/protocol.js'
 import type { ConnState } from '../store.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
+import { TriageLogo } from './Logo.js'
 
 type Props = {
   workspaces: readonly Workspace[]
@@ -22,7 +23,7 @@ const CONN_TITLE: Record<ConnState, string> = {
   disconnected: 'Daemon disconnected — retrying',
 }
 
-/** 44px top bar: serif wordmark, the workspace pill, then system / activity / settings / help. */
+/** 44px top bar: the logo lockup, the workspace pill, then system / activity / settings / help. */
 export function TopBar({
   workspaces,
   workspaceId,
@@ -36,7 +37,7 @@ export function TopBar({
 }: Props) {
   return (
     <header className="topbar">
-      <span className="wordmark">triage</span>
+      <TriageLogo />
       <WorkspaceSwitcher
         workspaces={workspaces}
         workspaceId={workspaceId}

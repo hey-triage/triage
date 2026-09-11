@@ -61,6 +61,7 @@
   --accent: var(--ink);
 
   --serif: "Instrument Serif", "Tiempos Headline", Georgia, serif;
+  --brand: "Instrument Sans", Geist, "Helvetica Neue", Arial, sans-serif;
   --sans: Geist, Inter, -apple-system, system-ui, sans-serif;
   --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -219,7 +220,12 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
   display: flex; align-items: center; gap: 12px; height: var(--bar-h); flex: none;
   padding: 0 12px 0 14px; border-bottom: 1px solid var(--hair);
 }
-.wordmark { font-family: var(--serif); font-size: 22px; letter-spacing: -0.2px; color: var(--ink); line-height: 1; }
+/* Logo lockup: the mark box is ~1.03× the type size and the gap ~0.31em (the "F2"
+   ratio from the brand canvas), so the word leads slightly and the mark sits
+   inside its height. Instrument Sans is loaded for this word only. */
+.logo { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); line-height: 1; }
+.logo .logoMark { width: 19px; height: 19px; flex: none; }
+.logo .logoWord { font-family: var(--brand); font-weight: 600; font-size: 18px; letter-spacing: -0.03em; }
 .wsPill {
   display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
   border-radius: var(--r-full); border: 1px solid var(--hair-strong); background: var(--elev);
