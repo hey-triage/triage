@@ -1,15 +1,19 @@
 import { X } from 'lucide-react'
+import type { Mention } from '../../../shared/protocol.js'
 import type { PendingImage } from '../attachments.js'
+import { MentionChip } from './MentionPicker.js'
 
 type Props = {
   images: PendingImage[]
+  mentions?: readonly Mention[]
   error: string | null
   onRemove: (id: string) => void
+  onRemoveMention?: (m: Mention) => void
 }
 
-/** Thumbnails of what's attached to the message being written, above the box. */
-export function AttachmentStrip({ images, error, onRemove }: Props) {
-  if (images.length === 0 && !error) return null
+/** What's attached to the message being written, above the box: image thumbnails and `@` chips. */
+export function AttachmentStrip({ images, mentions = [], error, onRemove, onRemoveMention }: Props) {
+  if (images.length === 0 && mentions.length === 0 && !error) return null
   return (
     <div className="attachments">
       {images.length > 0 && (
@@ -26,6 +30,13 @@ export function AttachmentStrip({ images, error, onRemove }: Props) {
                 <X size={10} aria-hidden="true" />
               </button>
             </div>
+          ))}
+        </div>
+      )}
+      {mentions.length > 0 && (
+        <div className="mchips">
+          {mentions.map((m) => (
+            <MentionChip key={`${m.kind}:${m.ref}`} m={m} onRemove={onRemoveMention ? () => onRemoveMention(m) : undefined} />
           ))}
         </div>
       )}

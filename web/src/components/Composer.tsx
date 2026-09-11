@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type {
   EffortLevel,
   ImageAttachment,
+  Mention,
   FastModeDisabledReason,
   FastModeState,
   PermissionMode,
@@ -22,7 +23,7 @@ type Props = {
   fastModeState?: FastModeState
   fastModeDisabledReason?: FastModeDisabledReason
   permissionMode?: PermissionMode
-  onSend: (text: string, images?: ImageAttachment[]) => void
+  onSend: (text: string, images?: ImageAttachment[], mentions?: Mention[]) => void
   onInterrupt: () => void
   onModelChange: (model: string | undefined, effort: EffortLevel | undefined) => void
   onFastModeChange: (fastMode: boolean) => void
@@ -66,12 +67,13 @@ export function Composer({
   return (
     <PromptBox
       head={<PromptHead projects={projects} cwd={cwd} branch={branch} />}
+      cwd={cwd}
       text={text}
       onTextChange={setText}
       placeholder={running ? 'Steer the session… (queued until this turn ends)' : 'Steer the session…'}
       sendTitle="Send (Enter)"
-      onSubmit={(trimmed, images) => {
-        onSend(trimmed, images)
+      onSubmit={(trimmed, images, mentions) => {
+        onSend(trimmed, images, mentions)
         setText('')
       }}
       model={model}

@@ -62,10 +62,21 @@ import type {
   ToolEffect,
   Workspace,
 } from '../shared/protocol.js'
-import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES, USAGE_WINDOWS, isImageMediaType } from '../shared/protocol.js'
+import {
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_IMAGE_BYTES,
+  MAX_INLINE_TOTAL_BYTES,
+  MAX_MENTIONS_PER_MESSAGE,
+  USAGE_WINDOWS,
+  isImageMediaType,
+  isMentionKind,
+} from '../shared/protocol.js'
 import type {
   ActivityResponse,
   CoverageResponse,
+  FileSearchResponse,
+  Mention,
+  ResolvedMention,
   InboxResponse,
   InboxSnapshot,
   ItemEventsResponse,
@@ -130,6 +141,7 @@ import {
   type WorkspaceMeta,
 } from './workspaces.js'
 import { TerminalManager } from './terminals.js'
+import { FileIndexes, resolveFileMention } from './files.js'
 
 const PORT = Number(process.env.PORT || 5178)
 const VERSION = pkgVersion()
@@ -298,6 +310,8 @@ class WorkspaceRuntime {
   readonly triageMcp: ReturnType<typeof createSdkMcpServer>
   /** PTY shells opened from the web UI — run with this workspace's spawn env */
   readonly terminals: TerminalManager
+  /** per-folder file listings behind the composer's `@` picker */
+  readonly files = new FileIndexes()
 
   constructor(public meta: WorkspaceMeta) {
     this.store = openSqliteStore(dbFileFor(meta.id, registry.defaultId))
@@ -425,6 +439,8 @@ class LiveSession {
           this.setStatus('idle')
           void this.rt.store.sessions.touch(this.row.id)
           void refreshBranch(this.rt, this.row)
+          // The turn may have created files — the next `@` search relists.
+          this.rt.files.invalidate(this.row.cwd)
         }
       }
       this.setStatus('idle')
@@ -473,17 +489,22 @@ class LiveSession {
     if (changed) broadcastSessionList(this.rt)
   }
 
-  sendUserMessage(text: string, images?: ImageAttachment[]) {
-    this.emit({ kind: 'local_user', text, images }, true)
+  async sendUserMessage(text: string, images?: ImageAttachment[], mentions?: Mention[]) {
+    // Mentions are resolved now, against this session's folder, so the event
+    // log records what the model was actually given (and why a file wasn't).
+    const attached = mentions?.length ? await resolveMentions(this.rt, this.row.cwd, mentions) : null
+    this.emit({ kind: 'local_user', text, images, mentions: attached?.resolved }, true)
     this.setStatus('running')
     void this.rt.store.sessions.touch(this.row.id)
     // Images lead: the model reads them as context for the text that follows.
+    // Attachments trail it, each in its own block, so the ask stays readable.
     const content = [
       ...(images ?? []).map((img) => ({
         type: 'image' as const,
         source: { type: 'base64' as const, media_type: img.mediaType, data: img.data },
       })),
       ...(text ? [{ type: 'text' as const, text }] : []),
+      ...(attached?.blocks ?? []).map((t) => ({ type: 'text' as const, text: t })),
     ]
     const msg: SDKUserMessage = {
       type: 'user',
@@ -716,6 +737,162 @@ async function createSession(
 }
 
 /** The live subprocess for a session, starting one (with `resume`) if needed. */
+// ---------------------------------------------------------------------------
+// `@` mentions — resolved at send time into blocks the model reads
+// ---------------------------------------------------------------------------
+
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n… [truncated — ${s.length - n} more characters]` : s)
+
+/** What a session last said, for a `@session:` stub — its final reply, else the last assistant text. */
+async function lastReplyText(rt: WorkspaceRuntime, sessionId: string): Promise<string | null> {
+  const last = await rt.store.events.lastSeq(sessionId)
+  const events = await rt.store.events.read(sessionId, Math.max(0, last - 200))
+  let assistant: string | null = null
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i].event
+    if (ev.kind !== 'sdk') continue
+    const m = ev.message as SdkMessage & { result?: unknown }
+    if (m.type === 'result' && typeof m.result === 'string' && m.result) return m.result
+    if (!assistant && m.type === 'assistant') {
+      const text = (m.message?.content ?? [])
+        .filter((b) => b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text as string)
+        .join('\n')
+      if (text) assistant = text
+    }
+  }
+  return assistant
+}
+
+const attachmentTag = (kind: string, attrs: Record<string, string | number | undefined>, body?: string) => {
+  const a = Object.entries(attrs)
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => ` ${k}="${String(v).replace(/"/g, '&quot;')}"`)
+    .join('')
+  return body === undefined ? `<attachment kind="${kind}"${a} />` : `<attachment kind="${kind}"${a}>\n${body}\n</attachment>`
+}
+
+/**
+ * Turn the composer's mentions into what rides the message. Files are read
+ * inside `cwd` (small text inlined, everything else passed as a path with a
+ * note); items and sessions become short summaries. The returned `resolved`
+ * list is what the event log keeps, so the transcript can show what landed.
+ */
+async function resolveMentions(
+  rt: WorkspaceRuntime,
+  cwd: string,
+  mentions: Mention[],
+): Promise<{ resolved: ResolvedMention[]; blocks: string[] }> {
+  const resolved: ResolvedMention[] = []
+  const blocks: string[] = []
+  let budget = MAX_INLINE_TOTAL_BYTES
+  const seen = new Set<string>()
+  for (const m of mentions) {
+    const key = `${m.kind}:${m.ref}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    if (m.kind === 'file') {
+      const f = await resolveFileMention(cwd, m.ref)
+      switch (f.kind) {
+        case 'text': {
+          if (f.bytes > budget) {
+            const error = 'over the per-message inline budget'
+            resolved.push({ ...m, ref: f.rel, bytes: f.bytes, inlined: false, error })
+            blocks.push(attachmentTag('file', { path: f.rel, bytes: f.bytes, note: `not inlined: ${error} — read it from disk` }))
+            break
+          }
+          budget -= f.bytes
+          resolved.push({ ...m, ref: f.rel, bytes: f.bytes, inlined: true })
+          blocks.push(attachmentTag('file', { path: f.rel, bytes: f.bytes }, f.text))
+          break
+        }
+        case 'large': {
+          const error = `too large to inline (${Math.round(f.bytes / 1024)} KB)`
+          resolved.push({ ...m, ref: f.rel, bytes: f.bytes, inlined: false, error })
+          blocks.push(attachmentTag('file', { path: f.rel, bytes: f.bytes, note: `not inlined: ${error} — read the parts you need from disk` }))
+          break
+        }
+        case 'binary': {
+          resolved.push({ ...m, ref: f.rel, bytes: f.bytes, inlined: false, error: 'binary file' })
+          blocks.push(attachmentTag('file', { path: f.rel, bytes: f.bytes, note: 'binary file — not inlined' }))
+          break
+        }
+        case 'dir': {
+          const listing = f.entries.join('\n')
+          budget -= listing.length
+          resolved.push({ ...m, ref: f.rel, inlined: true })
+          blocks.push(attachmentTag('directory', { path: f.rel, entries: f.entries.length }, listing))
+          break
+        }
+        case 'error':
+          resolved.push({ ...m, inlined: false, error: f.error })
+          blocks.push(attachmentTag('file', { path: m.ref, note: `could not be attached: ${f.error}` }))
+          break
+      }
+    } else if (m.kind === 'item') {
+      const scored = rt.inboxCache?.items.find((i) => i.id === m.ref)
+      const item = scored ?? (await rt.store.items.get(m.ref).catch(() => null))
+      if (!item) {
+        resolved.push({ ...m, inlined: false, error: 'not found' })
+        blocks.push(attachmentTag('work_item', { id: m.ref, note: 'could not be attached: not found in this workspace' }))
+        continue
+      }
+      const lines = [
+        `title: ${item.title}`,
+        `kind: ${item.kind} (${item.source})`,
+        item.url && `url: ${item.url}`,
+        item.repo && `where: ${item.repo}`,
+        item.author && `author: ${item.author}`,
+        item.status && `status: ${item.status}`,
+        scored && `rank: ${scored.score} — ${scored.reason}`,
+        item.why && `why: ${item.why}`,
+        item.note && `note: ${item.note}`,
+        item.refs?.length ? `refs: ${item.refs.join(', ')}` : undefined,
+      ].filter((l): l is string => typeof l === 'string' && l.length > 0)
+      resolved.push({ ...m, label: item.title, inlined: true })
+      blocks.push(attachmentTag('work_item', { id: item.id }, lines.join('\n')))
+    } else if (m.kind === 'session') {
+      const row = rt.rows.get(m.ref)
+      if (!row) {
+        resolved.push({ ...m, inlined: false, error: 'not found' })
+        blocks.push(attachmentTag('session', { id: m.ref, note: 'could not be attached: no such session in this workspace' }))
+        continue
+      }
+      const sum = summarize(rt, row)
+      const last = await lastReplyText(rt, row.id).catch(() => null)
+      const lines = [
+        `title: ${row.title}`,
+        `folder: ${row.cwd}`,
+        `status: ${sum.status}`,
+        sum.branch && `branch: ${sum.branch}`,
+        `last activity: ${new Date(row.updatedAt).toISOString()}`,
+        row.sdkSessionId &&
+          `claude session id: ${row.sdkSessionId} — its full transcript is under ~/.claude/projects, or \`claude --resume ${row.sdkSessionId}\` from that folder`,
+      ].filter((l): l is string => typeof l === 'string' && l.length > 0)
+      const body = lines.join('\n') + (last ? `\n\nlast reply:\n${clip(last, 4000)}` : '')
+      resolved.push({ ...m, label: row.title, inlined: true })
+      blocks.push(attachmentTag('session', { id: row.id }, body))
+    }
+  }
+  if (blocks.length > 0) {
+    blocks.unshift('The user attached the following with @-mentions; the message above refers to them by these names.')
+  }
+  return { resolved, blocks }
+}
+
+/** A folder the `@` picker may list: a session's folder, a project, or anywhere under home. */
+async function isSearchableRoot(rt: WorkspaceRuntime, root: string): Promise<boolean> {
+  try {
+    if (!(await stat(root)).isDirectory()) return false
+  } catch {
+    return false
+  }
+  const under = (base: string) => root === base || root.startsWith(base.endsWith(path.sep) ? base : base + path.sep)
+  if ([...rt.rows.values()].some((r) => r.cwd === root)) return true
+  if ((await rt.store.projects.list()).some((p) => under(p.path))) return true
+  return under(os.homedir())
+}
+
 async function getOrRevive(rt: WorkspaceRuntime, sessionId: string): Promise<LiveSession | null> {
   const existing = rt.live.get(sessionId)
   if (existing) return existing
@@ -2106,6 +2283,24 @@ const server = http.createServer(async (req, res) => {
     json(200, summaries(rt))
     return
   }
+  // The composer's `@` picker: fuzzy file matches under one folder.
+  if (url.pathname === '/api/files/search' && req.method === 'GET') {
+    const root = expandHome(url.searchParams.get('root') ?? '')
+    const q = url.searchParams.get('q') ?? ''
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 40, 1), 200)
+    let body: FileSearchResponse
+    if (!(await isSearchableRoot(rt, root))) {
+      body = { ok: false, error: 'not a folder triage can list (a session folder, a project, or under your home)' }
+    } else {
+      try {
+        body = { ok: true, root, ...(await rt.files.get(root).search(q, limit)) }
+      } catch (err) {
+        body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
   if (url.pathname === '/api/inbox') {
     let body: InboxResponse
     try {
@@ -2708,6 +2903,26 @@ const imageAttachments = (v: unknown): ImageAttachment[] | undefined => {
   return out.length > 0 ? out : undefined
 }
 
+const mentionList = (v: unknown): Mention[] | undefined => {
+  if (!Array.isArray(v)) return undefined
+  const out: Mention[] = []
+  for (const raw of v.slice(0, MAX_MENTIONS_PER_MESSAGE)) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const m = raw as Record<string, unknown>
+    if (!isMentionKind(m.kind)) continue
+    if (typeof m.ref !== 'string' || !m.ref || m.ref.length > 1024) continue
+    // Paths are resolved against the session folder later; an absolute path
+    // or a `..` hop is refused here so the resolver only ever sees relatives.
+    if (m.kind === 'file' && (path.isAbsolute(m.ref) || m.ref.split('/').includes('..'))) continue
+    out.push({
+      kind: m.kind,
+      ref: m.ref,
+      label: typeof m.label === 'string' && m.label ? m.label.slice(0, 200) : m.ref.slice(0, 200),
+    })
+  }
+  return out.length > 0 ? out : undefined
+}
+
 /**
  * The socket is untrusted input (vision principle 6), so incoming frames are
  * validated into the ClientMessage union rather than cast into it.
@@ -2725,6 +2940,7 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         cwd: str(m.cwd),
         firstMessage: typeof m.firstMessage === 'string' ? m.firstMessage : undefined,
         images: imageAttachments(m.images),
+        mentions: mentionList(m.mentions),
         model: model(m.model),
         effort: effort(m.effort),
         fastMode: m.fastMode === true,
@@ -2765,6 +2981,7 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
             sessionId: m.sessionId,
             text: str(m.text),
             images: imageAttachments(m.images),
+            mentions: mentionList(m.mentions),
           }
         : null
     case 'permission_response':
@@ -2849,8 +3066,8 @@ wss.on('connection', (ws, req) => {
           )
           send(ws, { type: 'session_created', session: summarize(rt, row) })
           broadcastSessionList(rt)
-          if (msg.firstMessage?.trim() || msg.images?.length)
-            rt.live.get(row.id)?.sendUserMessage(msg.firstMessage?.trim() ?? '', msg.images)
+          if (msg.firstMessage?.trim() || msg.images?.length || msg.mentions?.length)
+            void rt.live.get(row.id)?.sendUserMessage(msg.firstMessage?.trim() ?? '', msg.images, msg.mentions)
           break
         }
         case 'set_model': {
@@ -2921,9 +3138,9 @@ wss.on('connection', (ws, req) => {
           break
         }
         case 'user_message': {
-          if (!msg.text.trim() && !msg.images?.length) break
+          if (!msg.text.trim() && !msg.images?.length && !msg.mentions?.length) break
           const session = await getOrRevive(rt, msg.sessionId)
-          session?.sendUserMessage(msg.text.trim(), msg.images)
+          void session?.sendUserMessage(msg.text.trim(), msg.images, msg.mentions)
           break
         }
         case 'permission_response': {

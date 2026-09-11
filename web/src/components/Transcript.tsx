@@ -1,12 +1,19 @@
 import { KeyRound } from 'lucide-react'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
-import type { PermissionBehavior, QuestionAnswers, SessionEvent } from '../../../shared/protocol.js'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
+import {
+  mentionToken,
+  type PermissionBehavior,
+  type QuestionAnswers,
+  type ResolvedMention,
+  type SessionEvent,
+} from '../../../shared/protocol.js'
 import { parseQuestions } from '../askQuestions.js'
 import { useLiveText } from '../hooks.js'
 import { openSettings } from '../settings.js'
 import { buildTranscript, type TranscriptItem } from '../transcript.js'
 import { AskCard } from './AskCard.js'
 import { InitCard } from './InitCard.js'
+import { MentionChip } from './MentionPicker.js'
 import { Markdown } from './Markdown.js'
 import { PermissionCard } from './PermissionCard.js'
 import { ToolCard } from './ToolCard.js'
@@ -37,6 +44,38 @@ export function Transcript({ sessionId, events, onRespond }: Props) {
   )
 }
 
+/**
+ * The user's text with each `@` token shown as its label — `@smoke test`
+ * rather than `@session:72dce3d1-…`. The stored text keeps the token; only the
+ * rendering changes, so a reload shows the same thing.
+ */
+function withMentionLabels(text: string, mentions?: readonly ResolvedMention[]): ReactNode {
+  if (!mentions?.length) return text
+  const tokens = mentions.map((m) => ({ token: mentionToken(m), label: m.label }))
+  const out: ReactNode[] = []
+  let rest = text
+  let k = 0
+  while (rest) {
+    let first: { i: number; token: string; label: string } | null = null
+    for (const t of tokens) {
+      const i = rest.indexOf(t.token)
+      if (i >= 0 && (first === null || i < first.i)) first = { i, ...t }
+    }
+    if (!first) {
+      out.push(rest)
+      break
+    }
+    if (first.i > 0) out.push(rest.slice(0, first.i))
+    out.push(
+      <span className="mtok" key={k++} title={first.token}>
+        @{first.label}
+      </span>,
+    )
+    rest = rest.slice(first.i + first.token.length)
+  }
+  return out
+}
+
 const Item = memo(function Item({
   item,
   onRespond,
@@ -60,7 +99,25 @@ const Item = memo(function Item({
               ))}
             </div>
           )}
-          {item.text}
+          {withMentionLabels(item.text, item.mentions)}
+          {item.mentions && item.mentions.length > 0 && (
+            <div className="msgMentions">
+              {item.mentions.map((m) => (
+                <MentionChip
+                  key={`${m.kind}:${m.ref}`}
+                  m={m}
+                  muted={!m.inlined}
+                  title={
+                    m.error
+                      ? `${m.kind === 'file' ? m.ref : m.label} — ${m.error}`
+                      : m.kind === 'file'
+                        ? `${m.ref}${m.bytes !== undefined ? ` · ${Math.max(1, Math.round(m.bytes / 1024))} KB` : ''}`
+                        : m.label
+                  }
+                />
+              ))}
+            </div>
+          )}
         </div>
       )
     case 'assistant':

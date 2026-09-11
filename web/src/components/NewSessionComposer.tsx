@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import type {
-  BranchResponse,
-  EffortLevel,
-  ImageAttachment,
-  PermissionMode,
-  Project,
-  ProjectsResponse,
+import {
+  mentionToken,
+  type BranchResponse,
+  type EffortLevel,
+  type ImageAttachment,
+  type Mention,
+  type PermissionMode,
+  type Project,
+  type ProjectsResponse,
 } from '../../../shared/protocol.js'
 import type { Draft } from '../drafts.js'
 import { readSessionDefaults, writeSessionDefaults } from '../sessionDefaults.js'
@@ -21,6 +23,7 @@ export type NewSession = {
   fastMode?: boolean
   permissionMode?: PermissionMode
   images?: ImageAttachment[]
+  mentions?: Mention[]
 }
 
 type Props = {
@@ -35,8 +38,11 @@ type Props = {
 // preference (see sessionDefaults.ts), which the Sessions settings tab edits too.
 const defaults = readSessionDefaults()
 
-function titleFrom(text: string): string {
-  return text.trim().split('\n')[0].slice(0, 80)
+/** The first line names the session; `@` tokens read as their labels, not their ids. */
+function titleFrom(text: string, mentions: readonly Mention[] = []): string {
+  let line = text.trim().split('\n')[0]
+  for (const m of mentions) line = line.split(mentionToken(m)).join(`@${m.label}`)
+  return line.slice(0, 80)
 }
 
 
@@ -88,14 +94,15 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
             onPick={(path) => onChange({ cwd: path })}
           />
         }
+        cwd={cwd}
         text={draft.text}
         onTextChange={(text) => onChange({ text })}
         placeholder="Describe what you want to work on — a bug, a feature, a question…"
         focusKey={draft.id}
         sendTitle="Start the session (Enter)"
-        onSubmit={(text, images) =>
+        onSubmit={(text, images, mentions) =>
           onCreate({
-            title: draft.label ?? titleFrom(text),
+            title: draft.label ?? titleFrom(text, mentions),
             cwd,
             firstMessage: text,
             model,
@@ -103,6 +110,7 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
             fastMode,
             permissionMode,
             images,
+            mentions,
           })
         }
         model={model}

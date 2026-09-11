@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import type {
   EffortLevel,
   ImageAttachment,
+  Mention,
   PermissionBehavior,
   PermissionMode,
   Project,
@@ -175,8 +176,8 @@ export function App() {
   )
 
   const sendMessage = useCallback(
-    (text: string, images?: ImageAttachment[]) => {
-      if (currentId) store.send({ type: 'user_message', sessionId: currentId, text, images })
+    (text: string, images?: ImageAttachment[], mentions?: Mention[]) => {
+      if (currentId) store.send({ type: 'user_message', sessionId: currentId, text, images, mentions })
     },
     [currentId],
   )
@@ -383,6 +384,7 @@ export function App() {
       fastMode: s.fastMode,
       permissionMode: s.permissionMode,
       images: s.images,
+      mentions: s.mentions,
     })
   }, [])
 
