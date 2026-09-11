@@ -621,6 +621,8 @@ export function App() {
                 <Composer
                   key={`composer-${current.id}`}
                   status={current.status}
+                  cwd={current.cwd}
+                  branch={current.branch}
                   model={current.model}
                   effort={current.effort}
                   fastMode={current.fastMode}

@@ -70,6 +70,10 @@
   --r-lg: 12px;
   --r-full: 9999px;
 
+  /* The reading column: the transcript and the prompt box share it, so a
+     conversation is one centred strip rather than two left-hugging ones. */
+  --measure: 760px;
+
   --panel-w: 280px;
   --rail-w: 64px;
   --bar-h: 44px;
@@ -460,18 +464,18 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
 #chatHeader .state.error { color: var(--red); }
 
 #transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 40px 0; }
-#transcript .inner { max-width: 920px; display: flex; flex-direction: column; gap: 14px; padding-bottom: 8px; }
+#transcript .inner { max-width: var(--measure); margin: 0 auto; display: flex; flex-direction: column; gap: 16px; padding-bottom: 8px; }
 
 .msg { overflow-wrap: break-word; }
 .msg.user {
-  align-self: flex-end; max-width: 620px; white-space: pre-wrap;
+  align-self: flex-end; max-width: 85%; white-space: pre-wrap;
   background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
-  padding: 10px 14px; font-size: 13px; color: var(--body); line-height: 1.5;
+  padding: 11px 15px; font-size: 14px; color: var(--body); line-height: 1.55;
 }
 .msg.user .msgImages { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .msg.user .msgImages img { max-width: 200px; max-height: 200px; border-radius: var(--r); border: 1px solid var(--hair-strong); display: block; }
 
-.msg.assistant { align-self: stretch; font-size: 14px; line-height: 1.6; color: var(--body); }
+.msg.assistant { align-self: stretch; font-size: 15px; line-height: 1.7; color: var(--body); }
 .msg.assistant.live .md > :last-child::after { content: "▍"; color: var(--ink); margin-left: 1px; animation: caret 1s steps(1) infinite; }
 .msg.thinking { color: var(--mute); font-style: italic; font-size: 13px; white-space: pre-wrap; padding-left: 12px; border-left: 1px solid var(--hair-strong); }
 .meta { display: flex; align-items: center; gap: 12px; color: var(--stone); font-size: 11px; font-family: var(--mono); white-space: nowrap; }
@@ -527,11 +531,11 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
 
 /* ---------- composer ---------- */
 #composer { padding: 12px 40px 20px; flex: none; }
-#composer .frame { max-width: 920px; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; transition: border-color 0.15s; }
+#composer .frame { max-width: var(--measure); margin: 0 auto; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; transition: border-color 0.15s; }
 #composer .frame:focus-within { border-color: var(--hair-bright); }
 #box {
   width: 100%; resize: none; background: transparent; color: var(--ink); border: 0; padding: 0;
-  font-size: 14px; line-height: 1.5; min-height: 21px; max-height: 200px; outline: none;
+  font-size: 15px; line-height: 1.5; min-height: 46px; max-height: 320px; outline: none;
 }
 #box::placeholder { color: var(--stone); opacity: 1; }
 #composer .frame.dragging { border-color: var(--blue); }
@@ -598,8 +602,10 @@ button.chip:hover:not(:disabled), .chip[data-state="open"] { color: var(--ink); 
 #newSessionHome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 20px 40px; position: relative; }
 #newSessionHome h2 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 36px; letter-spacing: -0.36px; line-height: 1; color: var(--ink); }
 #newSessionHome #composer { width: 100%; padding: 0; display: flex; justify-content: center; }
-#newSessionHome .frame { width: 100%; max-width: 680px; }
-#newSessionHome #box { min-height: 96px; max-height: 320px; font-size: 15px; }
+#newSessionHome .frame { width: 100%; }
+/* The draft box opens tall — a first prompt is usually a paragraph. In a live
+   session it starts at two lines and grows with what you type. */
+#newSessionHome #box { min-height: 96px; }
 #newSessionHome .actions { display: flex; align-items: center; gap: 12px; }
 #newSessionHome .actions .hint { flex: 1; }
 
@@ -744,16 +750,16 @@ dialog.sheet[open] { display: grid; }
 .logLine.error .logMsg { color: #ff7a92; }
 
 /* ---------- markdown ---------- */
-.md { font-size: 14px; line-height: 1.6; overflow-wrap: break-word; min-width: 0; color: var(--body); }
+.md { font-size: 15px; line-height: 1.7; overflow-wrap: break-word; min-width: 0; color: var(--body); }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
-.md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 0 0 10px; }
-.md h1, .md h2, .md h3, .md h4 { margin: 16px 0 6px; line-height: 1.3; font-weight: 500; color: var(--ink); letter-spacing: -0.01em; }
-.md h1 { font-size: 18px; } .md h2 { font-size: 16px; } .md h3 { font-size: 15px; } .md h4 { font-size: 14px; color: var(--body); }
+.md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 0 0 12px; }
+.md h1, .md h2, .md h3, .md h4 { margin: 20px 0 8px; line-height: 1.3; font-weight: 500; color: var(--ink); letter-spacing: -0.01em; }
+.md h1 { font-size: 19px; } .md h2 { font-size: 17px; } .md h3 { font-size: 15.5px; } .md h4 { font-size: 15px; color: var(--body); }
 .md ul, .md ol { padding-left: 22px; }
-.md li { margin: 3px 0; }
+.md li { margin: 5px 0; }
 .md li > p { margin: 0; }
-.md code { font-family: var(--mono); font-size: 12.5px; color: var(--ink); background: var(--card); border-radius: var(--r-xs); padding: 1px 5px; }
+.md code { font-family: var(--mono); font-size: 13px; color: var(--ink); background: var(--card); border-radius: var(--r-xs); padding: 1px 5px; }
 .md pre { background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); padding: 11px 13px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.6; color: var(--body); }
 .md a { color: var(--blue); }
@@ -1015,15 +1021,14 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 /* The header bleeds to the card's edges (the frame pads 12px 14px), so its
    rule runs edge to edge and its content shares the 14px gutter with the
    prompt and the chips below. */
-#composer .frame:has(.cardHead) { padding-top: 0; }
+#composer .frame { padding-top: 0; }
 #composer .frame .cardHead { display: flex; align-items: center; gap: 10px; margin: 0 -14px; padding: 9px 14px; border-bottom: 1px solid var(--hair); min-width: 0; }
 .cardHead .chip { max-width: 240px; }
 .cardHead .chip .name { overflow: hidden; text-overflow: ellipsis; }
 .cardHead .branch { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--ash); white-space: nowrap; }
 .cardHead .branch svg { color: var(--stone); }
 .cardHead .path { margin-left: auto; color: var(--stone); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-#composer .frame .cardHead + #box { padding: 6px 0 0; }
-#newSessionHome .frame #box { padding: 6px 0 0; }
+#composer .frame #box { padding: 6px 0 0; }
 .chip.pick { cursor: pointer; }
 .chip .pdot { width: 6px; height: 6px; border-radius: var(--r-full); flex: none; }
 
