@@ -19,6 +19,7 @@ import {
   KeyRound,
   MessagesSquare,
   Plug,
+  RefreshCw,
   ScrollText,
   Settings2,
   X,
@@ -43,13 +44,15 @@ import { store } from '../store.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 import { RepoScopeEditor } from './RepoScope.js'
-import type { SystemTab } from './SystemModal.js'
+import { ActivityTab, LogsTab, type SystemTab } from './SystemModal.js'
 import { AuthCards, authTitle, ColorPicker, VerifyPanel, verifyWorkspace, type VerifyState } from './workspaceAuth.js'
 
 const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   workspace: Settings2,
   auth: KeyRound,
   sources: Plug,
+  activity: Activity,
+  logs: ScrollText,
   sessions: MessagesSquare,
   shortcuts: Keyboard,
   about: Info,
@@ -66,6 +69,9 @@ type Props = {
 export function SettingsModal({ workspace, onNavigate, onOpenSystem }: Props) {
   const { open, tab } = useSettings()
   const meta = SETTINGS_TABS.find((t) => t.id === tab) ?? SETTINGS_TABS[0]
+  // Diagnostics are live read-outs: they fill the pane and get a refresh button.
+  const fill = meta.group === 'diagnostics'
+  const [nonce, setNonce] = useState(0)
 
   const go = useCallback(
     (hash: string) => {
@@ -108,6 +114,10 @@ export function SettingsModal({ workspace, onNavigate, onOpenSystem }: Props) {
                 {SETTINGS_TABS.filter((t) => t.group === 'workspace').map((t) => (
                   <NavTab key={t.id} id={t.id} label={t.label} />
                 ))}
+                <div className="settingsNavGroup">Diagnostics</div>
+                {SETTINGS_TABS.filter((t) => t.group === 'diagnostics').map((t) => (
+                  <NavTab key={t.id} id={t.id} label={t.label} />
+                ))}
                 <div className="settingsNavGroup">This browser</div>
                 {SETTINGS_TABS.filter((t) => t.group === 'app').map((t) => (
                   <NavTab key={t.id} id={t.id} label={t.label} />
@@ -124,13 +134,20 @@ export function SettingsModal({ workspace, onNavigate, onOpenSystem }: Props) {
                   <h2>{meta.label}</h2>
                   <p>{meta.sub}</p>
                 </div>
+                <span className="settingsHeadRight">
+                  {fill && (
+                    <button type="button" className="iconBtn" title="Refresh" aria-label="Refresh" onClick={() => setNonce((n) => n + 1)}>
+                      <RefreshCw size={13} aria-hidden="true" />
+                    </button>
+                  )}
                 <Dialog.Close asChild>
                   <button type="button" className="iconBtn settingsClose" title="Close (Esc)" aria-label="Close settings">
                     <X size={15} aria-hidden="true" />
                   </button>
                 </Dialog.Close>
+                </span>
               </header>
-              <div className="settingsBody">
+              <div className={`settingsBody${fill ? ' fill' : ''}`}>
                 <div className="inner">
                   <Tabs.Content value="workspace">
                     {workspace ? <WorkspaceTab key={workspace.id} workspace={workspace} /> : <Loading />}
@@ -140,6 +157,12 @@ export function SettingsModal({ workspace, onNavigate, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="sources">
                     <SourcesTab onNavigate={go} />
+                  </Tabs.Content>
+                  <Tabs.Content value="activity" className="settingsFill">
+                    <ActivityTab key={nonce} />
+                  </Tabs.Content>
+                  <Tabs.Content value="logs" className="settingsFill">
+                    <LogsTab key={nonce} />
                   </Tabs.Content>
                   <Tabs.Content value="sessions">
                     <SessionsTab />
@@ -677,15 +700,15 @@ function AboutTab({ onOpenSystem, onNavigate }: { onOpenSystem: (t: SystemTab) =
         )}
         {!status && !error && <Loading />}
       </Section>
-      <Section title="Under the hood" hint="Live views of the daemon, in the system sheet.">
+      <Section title="Under the hood" hint="The daemon’s status sheet, and the diagnostics tabs here.">
         <div className="setActions">
           <button type="button" className="btn" onClick={() => onOpenSystem('status')}>
             <Gauge size={13} aria-hidden="true" /> Status
           </button>
-          <button type="button" className="btn" onClick={() => onOpenSystem('activity')}>
+          <button type="button" className="btn" onClick={() => setSettingsTab('activity')}>
             <Activity size={13} aria-hidden="true" /> Activity
           </button>
-          <button type="button" className="btn" onClick={() => onOpenSystem('logs')}>
+          <button type="button" className="btn" onClick={() => setSettingsTab('logs')}>
             <ScrollText size={13} aria-hidden="true" /> Logs
           </button>
           <button type="button" className="btn ghost" onClick={() => onNavigate('/connectors')}>

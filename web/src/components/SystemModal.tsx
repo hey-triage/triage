@@ -176,7 +176,7 @@ function StatusTab({ conn }: { conn: ConnState }) {
   )
 }
 
-function ActivityTab() {
+export function ActivityTab() {
   const [runs, setRuns] = useState<ActivityRun[] | null>(null)
   useEffect(() => {
     void fetch('/api/activity')
@@ -208,7 +208,7 @@ function ActivityTab() {
 
 const LEVELS: (LogLevel | 'all')[] = ['all', 'info', 'warn', 'error']
 
-function LogsTab() {
+export function LogsTab() {
   const [entries, setEntries] = useState<LogEntry[] | null>(null)
   const [subsystems, setSubsystems] = useState<string[]>([])
   const [level, setLevel] = useState<LogLevel | 'all'>('all')

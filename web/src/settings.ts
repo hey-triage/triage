@@ -8,12 +8,14 @@
  */
 import { useSyncExternalStore } from 'react'
 
-export type SettingsTab = 'workspace' | 'auth' | 'sessions' | 'sources' | 'shortcuts' | 'about'
+export type SettingsTab = 'workspace' | 'auth' | 'sessions' | 'sources' | 'activity' | 'logs' | 'shortcuts' | 'about'
 
-export const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: string; sub: string; group: 'workspace' | 'app' }> = [
+export const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: string; sub: string; group: 'workspace' | 'diagnostics' | 'app' }> = [
   { id: 'workspace', label: 'Workspace', sub: 'Name, colour, and which workspace opens by default.', group: 'workspace' },
   { id: 'auth', label: 'Claude auth', sub: 'How this workspace signs in to Claude — and proof that it works.', group: 'workspace' },
   { id: 'sources', label: 'Sources', sub: 'What feeds this inbox: GitHub repos, Slack, and the connectors a session can reach.', group: 'workspace' },
+  { id: 'activity', label: 'Activity', sub: 'Recent watch runs in this workspace — what ran, when, and what it filed.', group: 'diagnostics' },
+  { id: 'logs', label: 'Logs', sub: 'The daemon’s log, filterable by level and subsystem.', group: 'diagnostics' },
   { id: 'sessions', label: 'Sessions', sub: 'Defaults for every new session started from this browser.', group: 'app' },
   { id: 'shortcuts', label: 'Shortcuts', sub: 'Every key the workbench answers to.', group: 'app' },
   { id: 'about', label: 'About', sub: 'The daemon behind this page: version, ports, and where its data lives.', group: 'app' },
