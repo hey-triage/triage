@@ -11,6 +11,21 @@ Everything runs on your machine. Sessions and inbox data live in a local SQLite 
 GitHub credentials — sources go through your local `gh` login and your claude.ai
 connectors.
 
+<p align="center">
+  <img src="docs/inbox.png" alt="Triage inbox: a ranked queue of review requests, mentions and tasks, each with a Dispatch action" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/session.png" alt="A dispatched item running as a Claude session, with the edit diff and test run in the transcript"></td>
+    <td width="50%"><img src="docs/terminal.png" alt="A terminal tab in the same workspace, verifying the change with npm test"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Dispatch opens a Claude session with the item's brief.</sub></td>
+    <td align="center"><sub>Verify in a real terminal — same workspace, same auth.</sub></td>
+  </tr>
+</table>
+
 > Early software: this is a young project moving fast. Expect rough edges and
 > breaking changes between minor versions.
 
