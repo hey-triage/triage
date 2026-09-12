@@ -66,6 +66,8 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
   const [watchTitles, setWatchTitles] = useState<Map<string, string>>(new Map())
   const [projects, setProjects] = useState<Project[]>([])
   const [links, setLinks] = useState<Link[]>([])
+  // A digest item's report: the artifact a watch run wrote, linked with role `report`.
+  const [report, setReport] = useState<{ id: string; title: string; body: string; updated: number } | null>(null)
   const [brief, setBrief] = useState<BriefView | null>(null)
   const [briefOpen, setBriefOpen] = useState(false)
   const [descDraft, setDescDraft] = useState<string | null>(null)
@@ -353,6 +355,27 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
           )}
         </div>
 
+        {report && (
+          <div className="card briefCard">
+            <div className="briefHead">
+              <FileText size={14} aria-hidden="true" />
+              <span className="title">Report</span>
+              <span className="pill mute">{report.title}</span>
+              <span className="right">
+                <span className="when">rewritten {ago(report.updated)}</span>
+                <button type="button" className="btn xs" onClick={() => onNavigate(`/artifact/${report.id}`)}>
+                  Open artifact
+                </button>
+              </span>
+            </div>
+            <div className="briefBody">
+              <Markdown text={report.body} />
+            </div>
+          </div>
+        )}
+
+        {item.kind !== 'digest' && (
+          <>
         {/* The brief: a document a playbook run wrote, rewritten in place on iteration. */}
         <div className="card briefCard">
           <div className="briefHead">
@@ -433,6 +456,8 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
             </div>
           )}
         </div>
+          </>
+        )}
 
         {notice && <div className="notice">{notice}</div>}
 

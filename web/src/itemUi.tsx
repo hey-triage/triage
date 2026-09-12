@@ -5,9 +5,11 @@
  * item looks like itself everywhere.
  */
 import {
+  BookOpen,
   CalendarDays,
   CircleAlert,
   GitPullRequest,
+  Globe,
   Hash,
   ListTodo,
   Radar,
@@ -29,6 +31,7 @@ export const KIND_LABEL: Record<string, string> = {
   'slack-mention': 'mentioned',
   'ticket-assigned': 'ticket',
   'watch-hit': 'watch match',
+  digest: 'digest',
   manual: 'to-do',
   fyi: 'fyi',
 }
@@ -57,10 +60,12 @@ export const GROUP_TITLE: Record<Group, string> = {
 export function kindIcon(item: Pick<ScoredItem, 'source' | 'kind' | 'ciFailing'>): ComponentType<LucideProps> {
   if (item.ciFailing) return CircleAlert
   if (item.kind === 'watch-hit') return Radar
+  if (item.kind === 'digest') return BookOpen
   if (item.kind === 'ticket-assigned') return Ticket
   if (item.source === 'manual') return item.kind === 'manual' ? ListTodo : CalendarDays
   if (item.source === 'slack') return Hash
   if (item.source === 'linear') return Ticket
+  if (item.source === 'web') return Globe
   return GitPullRequest
 }
 
