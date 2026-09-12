@@ -24,6 +24,8 @@ export type NewSession = {
   permissionMode?: PermissionMode
   images?: ImageAttachment[]
   mentions?: Mention[]
+  /** the work item this session is dispatched for (recorded as a link) */
+  itemId?: string
 }
 
 type Props = {
@@ -100,6 +102,7 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
         placeholder="Describe what you want to work on — a bug, a feature, a question…"
         focusKey={draft.id}
         sendTitle="Start the session (Enter)"
+        initialMentions={draft.mentions}
         onSubmit={(text, images, mentions) =>
           onCreate({
             title: draft.label ?? titleFrom(text, mentions),
@@ -111,6 +114,7 @@ export function NewSessionComposer({ draft, onChange, onCreate }: Props) {
             permissionMode,
             images,
             mentions,
+            ...(draft.itemId ? { itemId: draft.itemId } : {}),
           })
         }
         model={model}

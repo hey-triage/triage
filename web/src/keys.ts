@@ -38,6 +38,8 @@ export const SHORTCUTS: ReadonlyArray<[keys: string, what: string]> = [
   ['Enter', 'Inbox: open the selected item'],
   ['o', 'Inbox: open the selected item at its source'],
   ['d', 'Inbox: dispatch selected item to a session'],
+  ['b', 'Inbox: brief the selected item (or the checked ones)'],
+  ['Space', 'Inbox: check / uncheck the selected item'],
   ['e', 'Inbox: mark selected item done'],
   ['z', 'Inbox: snooze selected item until tomorrow'],
   ['x', 'Inbox: archive selected item'],

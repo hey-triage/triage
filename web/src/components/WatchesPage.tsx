@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
+  SettingsResponse,
   CoverageResponse,
   CoverageWatch,
   Watch,
@@ -40,6 +41,14 @@ export function WatchesPage() {
   const [state, setState] = useState<LoadState>({ phase: 'loading' })
   const [modal, setModal] = useState<{ editing: Watch | null; refineNote?: string } | null>(null)
   const [running, setRunning] = useState<Set<string>>(new Set())
+  // The global switch (Settings → Sources). Off = the scheduler never runs a watch.
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+  useEffect(() => {
+    void fetch('/api/settings')
+      .then((r) => r.json() as Promise<SettingsResponse>)
+      .then((b) => setEnabled(b.ok ? b.settings.watchesEnabled : null))
+      .catch(() => setEnabled(null))
+  }, [])
 
   const load = useCallback(async () => {
     try {
@@ -127,6 +136,14 @@ export function WatchesPage() {
             + Add watch
           </button>
         </div>
+
+        {enabled === false && (
+          <div className="notice watchesOff">
+            Scheduled runs are <b>off</b> for this workspace — watches stay editable and “Run now” still works, but
+            nothing runs on its own.{' '}
+            <a href="#/settings/sources">Turn watches on in Settings → Sources</a>.
+          </div>
+        )}
 
         <CoverageProbe />
 

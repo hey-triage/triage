@@ -104,6 +104,76 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  // Artifacts — markdown notes/briefs beside the inbox (.docs/next-version.md).
+  {
+    name: 'list_artifacts',
+    description:
+      "List the workspace's artifacts — markdown notes and briefs kept beside the work items — with id, title, author (human|model), refs, path and links.",
+    inputSchema: {
+      type: 'object',
+      properties: { all: { type: 'boolean', description: 'include briefs of finished items (hidden by default)' } },
+    },
+  },
+  {
+    name: 'read_artifact',
+    description: 'Read one artifact by id: title, author, refs, path on disk and the full markdown body.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  },
+  {
+    name: 'write_artifact',
+    description:
+      'Create a new model-authored artifact (markdown note), optionally linked to a work item or session as context. Returns its id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        body: { type: 'string', description: 'markdown' },
+        refs: { type: 'array', items: { type: 'string' }, description: 'PR/issue URLs or Linear keys it is about' },
+        links: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', enum: ['item', 'session'] },
+              id: { type: 'string' },
+              role: { type: 'string', enum: ['brief', 'context', 'dispatch'] },
+            },
+            required: ['kind', 'id', 'role'],
+          },
+        },
+      },
+      required: ['title', 'body'],
+    },
+  },
+  {
+    name: 'update_artifact',
+    description:
+      'Rewrite a model-authored artifact in place (title, body, refs). Human-authored artifacts are refused — propose the change to the user instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' },
+        body: { type: 'string' },
+        refs: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'link_artifact',
+    description: 'Link an existing artifact to a work item or session with a role (usually "context").',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        artifactId: { type: 'string' },
+        kind: { type: 'string', enum: ['item', 'session'] },
+        id: { type: 'string' },
+        role: { type: 'string', enum: ['brief', 'context', 'dispatch'] },
+      },
+      required: ['artifactId', 'kind', 'id', 'role'],
+    },
+  },
 ]
 
 async function api(path: string, body?: unknown, method?: string): Promise<unknown> {
@@ -148,6 +218,62 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<{ 
   if (name === 'resolve_work_item') {
     const body = (await api('/api/items/resolve', { id: args.id })) as { ok: boolean; error?: string }
     return body.ok ? { text: 'ok: done', isError: false } : { text: `rejected: ${body.error}`, isError: true }
+  }
+  if (name === 'list_artifacts') {
+    const body = (await api(`/api/artifacts${args.all === true ? '?all=1' : ''}`)) as {
+      ok: boolean
+      artifacts?: unknown[]
+      error?: string
+    }
+    return body.ok
+      ? { text: JSON.stringify(body.artifacts ?? [], null, 2), isError: false }
+      : { text: `failed: ${body.error}`, isError: true }
+  }
+  if (name === 'read_artifact') {
+    if (typeof args.id !== 'string' || !args.id) return { text: 'rejected: need an artifact id', isError: true }
+    const body = (await api(`/api/artifacts/content?id=${encodeURIComponent(args.id)}`)) as {
+      ok: boolean
+      artifact?: { title: string; id: string; author: string; refs: string[] }
+      body?: string
+      abs?: string
+      error?: string
+    }
+    if (!body.ok || !body.artifact) return { text: `failed: ${body.error ?? 'no such artifact'}`, isError: true }
+    const a = body.artifact
+    const head = [`title: ${a.title}`, `id: ${a.id}`, `author: ${a.author}`, `path: ${body.abs ?? ''}`]
+    if (a.refs.length) head.push(`refs: ${a.refs.join(', ')}`)
+    return { text: `${head.join('\n')}\n\n${body.body ?? ''}`, isError: false }
+  }
+  if (name === 'write_artifact') {
+    // An external agent writes as the model — never as the user.
+    const body = (await api('/api/artifacts', { ...args, author: 'model' })) as {
+      ok: boolean
+      artifact?: { id: string; path: string }
+      error?: string
+    }
+    return body.ok && body.artifact
+      ? { text: `ok: created ${body.artifact.id} at ${body.artifact.path}`, isError: false }
+      : { text: `rejected: ${body.error}`, isError: true }
+  }
+  if (name === 'update_artifact') {
+    const { id, ...patch } = args
+    if (typeof id !== 'string' || !id) return { text: 'rejected: need an artifact id', isError: true }
+    const body = (await api(`/api/artifacts?id=${encodeURIComponent(id)}&by=model`, patch, 'PUT')) as {
+      ok: boolean
+      artifact?: { path: string }
+      error?: string
+    }
+    return body.ok ? { text: `ok: updated ${body.artifact?.path ?? id}`, isError: false } : { text: `rejected: ${body.error}`, isError: true }
+  }
+  if (name === 'link_artifact') {
+    const body = (await api('/api/links', {
+      fromKind: 'artifact',
+      fromId: args.artifactId,
+      toKind: args.kind,
+      toId: args.id,
+      role: args.role,
+    })) as { ok: boolean; error?: string }
+    return body.ok ? { text: 'ok: linked', isError: false } : { text: `rejected: ${body.error}`, isError: true }
   }
   return { text: `unknown tool: ${name}`, isError: true }
 }

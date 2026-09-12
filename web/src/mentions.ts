@@ -17,7 +17,9 @@ import {
   type SessionSummary,
 } from '../../shared/protocol.js'
 import { useInbox } from './inboxStore.js'
+import { artifactStore, useArtifacts } from './artifactStore.js'
 import { useSessions } from './hooks.js'
+import type { ArtifactWithLinks } from '../../shared/protocol.js'
 
 // ---------------------------------------------------------------------------
 // The token under the caret
@@ -29,7 +31,7 @@ export type ActiveMention = {
   /** index just past the query (the caret) */
   end: number
   query: string
-  /** `item:` / `session:` narrows the picker to one kind; files need no prefix */
+  /** `file:` / `item:` / `session:` / `artifact:` narrows the picker to one kind; a bare query searches all */
   kind: MentionKind | null
 }
 
@@ -46,7 +48,7 @@ export function activeMention(text: string, caret: number): ActiveMention | null
       const raw = text.slice(i + 1, caret)
       // A closed token (`@item:x ` already committed) never reopens — the
       // trailing space ends it, which the loop above already guarantees.
-      const m = /^(item|session):(.*)$/.exec(raw)
+      const m = /^(file|item|session|artifact):(.*)$/.exec(raw)
       if (m) return { start: i, end: caret, query: m[2], kind: m[1] as MentionKind }
       return { start: i, end: caret, query: raw, kind: null }
     }
@@ -58,6 +60,18 @@ export function activeMention(text: string, caret: number): ActiveMention | null
 /** Replace the active token with the picked mention's token plus a space. */
 export function insertMention(text: string, active: ActiveMention, m: Mention): { text: string; caret: number } {
   const token = mentionToken(m) + ' '
+  const next = text.slice(0, active.start) + token + text.slice(active.end)
+  return { text: next, caret: active.start + token.length }
+}
+
+/**
+ * Retarget the active token at one kind (or all of them, with `null`). The
+ * picker's tabs go through here rather than holding their own state: the
+ * prefix in the text *is* the filter, so clicking "Artifacts" and typing
+ * `artifact:` land in exactly the same place.
+ */
+export function setMentionKind(text: string, active: ActiveMention, kind: MentionKind | null): { text: string; caret: number } {
+  const token = '@' + (kind ? `${kind}:` : '') + active.query
   const next = text.slice(0, active.start) + token + text.slice(active.end)
   return { text: next, caret: active.start + token.length }
 }
@@ -75,7 +89,13 @@ export type MentionHit = Mention & {
 
 type Group = { kind: MentionKind; title: string; hits: MentionHit[] }
 
-const GROUP_TITLE: Record<MentionKind, string> = { file: 'Files', item: 'Work items', session: 'Sessions' }
+export const GROUP_TITLE: Record<MentionKind, string> = { file: 'Files', item: 'Work items', session: 'Sessions', artifact: 'Artifacts' }
+
+/** How many hits each kind contributes on the All tab. */
+const ALL_TAB_PER_KIND = 6
+
+/** The picker's tabs, left to right; `null` is "All". */
+export const MENTION_TABS: readonly (MentionKind | null)[] = [null, 'file', 'artifact', 'item', 'session']
 
 const itemHit = (i: ScoredItem): MentionHit => ({
   kind: 'item',
@@ -89,6 +109,13 @@ const sessionHit = (s: SessionSummary): MentionHit => ({
   ref: s.id,
   label: s.title,
   hint: `${s.status} · ${s.cwd.split('/').pop() ?? ''}`,
+})
+
+const artifactHit = (a: ArtifactWithLinks): MentionHit => ({
+  kind: 'artifact',
+  ref: a.id,
+  label: a.title,
+  hint: `${a.author === 'model' ? 'model' : 'you'} · ${a.path}`,
 })
 
 const fileHit = (path: string, dir: boolean): MentionHit => {
@@ -105,6 +132,7 @@ const fileHit = (path: string, dir: boolean): MentionHit => {
 export function useMentionSearch(active: ActiveMention | null, root: string, exclude: readonly Mention[]) {
   const sessions = useSessions()
   const inbox = useInbox()
+  const artifacts = useArtifacts()
   const [files, setFiles] = useState<{ q: string; root: string; hits: MentionHit[]; error?: string }>({
     q: '',
     root: '',
@@ -115,13 +143,19 @@ export function useMentionSearch(active: ActiveMention | null, root: string, exc
   const query = active?.query ?? ''
   const kind = active?.kind ?? null
   const wantFiles = active !== null && (kind === null || kind === 'file')
+  const wantArtifacts = active !== null && (kind === null || kind === 'artifact')
+
+  // Artifacts load lazily, the first time a token could mean one.
+  useEffect(() => {
+    if (wantArtifacts) void artifactStore.refresh()
+  }, [wantArtifacts])
 
   useEffect(() => {
     if (!wantFiles) return
     if (timer.current) window.clearTimeout(timer.current)
     const ctl = new AbortController()
     timer.current = window.setTimeout(() => {
-      const url = `/api/files/search?root=${encodeURIComponent(root)}&q=${encodeURIComponent(query)}&limit=${kind === 'file' ? 30 : 12}`
+      const url = `/api/files/search?root=${encodeURIComponent(root)}&q=${encodeURIComponent(query)}&limit=${kind === 'file' ? 30 : ALL_TAB_PER_KIND}`
       void fetch(url, { signal: ctl.signal })
         .then((r) => r.json() as Promise<FileSearchResponse>)
         .then((b) => {
@@ -140,59 +174,74 @@ export function useMentionSearch(active: ActiveMention | null, root: string, exc
     const taken = new Set(exclude.map((m) => `${m.kind}:${m.ref}`))
     const keep = (h: MentionHit) => !taken.has(`${h.kind}:${h.ref}`)
     const groups: Group[] = []
-    const few = kind === null
+    // On the All tab every kind gets the same small slice, so no one kind
+    // (files, always the longest list) pushes the others below the fold.
+    const cap = kind === null ? ALL_TAB_PER_KIND : 30
+    const push = (k: MentionKind, hits: MentionHit[]) => {
+      if (hits.length || kind === k) groups.push({ kind: k, title: GROUP_TITLE[k], hits })
+    }
+    // Tab order, so the list and the tabs read the same way.
     if (kind === null || kind === 'file') {
       // Stale results (an older query, another folder) still show rather than
       // flashing empty; the next response replaces them.
-      const hits = files.root === root ? files.hits.filter(keep) : []
-      if (hits.length || kind === 'file') groups.push({ kind: 'file', title: GROUP_TITLE.file, hits })
+      push('file', files.root === root ? files.hits.filter(keep).slice(0, cap) : [])
+    }
+    if (kind === null || kind === 'artifact') {
+      const visible = artifacts.artifacts.filter((a) => !a.hidden)
+      push('artifact', fuzzyRank(query, visible, (a) => a.title, cap, 2.5).map(artifactHit).filter(keep))
     }
     if (kind === null || kind === 'item') {
-      const hits = fuzzyRank(query, inbox.items, (i) => i.title, few ? 4 : 30, 2.5).map(itemHit).filter(keep)
-      if (hits.length || kind === 'item') groups.push({ kind: 'item', title: GROUP_TITLE.item, hits })
+      push('item', fuzzyRank(query, inbox.items, (i) => i.title, cap, 2.5).map(itemHit).filter(keep))
     }
     if (kind === null || kind === 'session') {
-      const chat = sessions.filter((s) => s.kind !== 'watch-run')
-      const hits = fuzzyRank(query, chat, (s) => s.title, few ? 4 : 30, 2.5).map(sessionHit).filter(keep)
-      if (hits.length || kind === 'session') groups.push({ kind: 'session', title: GROUP_TITLE.session, hits })
+      const chat = sessions.filter((s) => s.kind !== 'watch-run' && s.kind !== 'brief')
+      push('session', fuzzyRank(query, chat, (s) => s.title, cap, 2.5).map(sessionHit).filter(keep))
     }
     return groups
-  }, [active, kind, query, root, files, inbox.items, sessions, exclude])
+  }, [active, kind, query, root, files, inbox.items, sessions, artifacts.artifacts, exclude])
 }
 
 // ---------------------------------------------------------------------------
 // The picked mentions, held until send
 // ---------------------------------------------------------------------------
 
-export function useMentions() {
-  const [mentions, setMentions] = useState<Mention[]>([])
+/**
+ * What the message has attached, for as long as the message says so.
+ *
+ * The text is the truth and the chips are a mirror — so the mirror is *derived*
+ * rather than kept in step: a mention counts as attached exactly while its
+ * token is in the draft. Delete `@src/foo.ts`, or clear the box, and the chip
+ * goes with it; nothing can be attached that the message doesn't mention.
+ *
+ * Picked mentions stay in the pool after their token leaves, because the text
+ * can come back — retyped, pasted back, restored from a draft — and the
+ * attachment should ride along with it rather than have to be picked again.
+ * The pool is emptied on send.
+ */
+export function useMentions(text: string, initial: readonly Mention[] = []) {
+  const [pool, setPool] = useState<Mention[]>(() => initial.slice(0, MAX_MENTIONS_PER_MESSAGE))
 
-  const add = useCallback((m: Mention) => {
-    setMentions((prev) => {
-      if (prev.some((p) => p.kind === m.kind && p.ref === m.ref)) return prev
-      if (prev.length >= MAX_MENTIONS_PER_MESSAGE) return prev
-      return [...prev, { kind: m.kind, ref: m.ref, label: m.label }]
-    })
-  }, [])
+  const mentions = useMemo(() => pool.filter((m) => text.includes(mentionToken(m))), [pool, text])
 
-  const remove = useCallback((m: Mention) => {
-    setMentions((prev) => prev.filter((p) => !(p.kind === m.kind && p.ref === m.ref)))
-  }, [])
+  // The cap counts what is attached, not what the pool remembers — attaching
+  // and detaching all afternoon must not use the budget up.
+  const full = mentions.length >= MAX_MENTIONS_PER_MESSAGE
 
-  const clear = useCallback(() => setMentions([]), [])
-
-  /**
-   * The wire shape: only mentions whose token is still in the text. Deleting
-   * `@src/foo.ts` from the message drops the attachment too — the text is the
-   * truth, the chips are a mirror.
-   */
-  const payload = useCallback(
-    (text: string): Mention[] | undefined => {
-      const kept = mentions.filter((m) => text.includes(mentionToken(m)))
-      return kept.length > 0 ? kept : undefined
+  const add = useCallback(
+    (m: Mention) => {
+      if (full) return
+      setPool((prev) => {
+        if (prev.some((p) => p.kind === m.kind && p.ref === m.ref)) return prev
+        return [...prev, { kind: m.kind, ref: m.ref, label: m.label }]
+      })
     },
-    [mentions],
+    [full],
   )
 
-  return { mentions, add, remove, clear, payload }
+  const clear = useCallback(() => setPool([]), [])
+
+  /** The wire shape: whatever the message still mentions. */
+  const payload = useCallback((): Mention[] | undefined => (mentions.length > 0 ? mentions : undefined), [mentions])
+
+  return { mentions, add, clear, payload }
 }

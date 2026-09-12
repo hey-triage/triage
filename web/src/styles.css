@@ -1286,11 +1286,22 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 
 /* ---------- @ mentions: picker, tray chips, transcript chips ---------- */
 .mnPop {
-  z-index: 60; width: 460px; max-width: calc(100vw - 24px); background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+  z-index: 60; width: 520px; max-width: calc(100vw - 24px); background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7); color: var(--body); font-size: 13px; overflow: hidden; outline: none;
   transform-origin: var(--radix-popover-content-transform-origin);
 }
 .mnPop[data-state="open"] { animation: menuIn 0.12s ease; }
+.mnTabs { display: flex; align-items: center; gap: 3px; padding: 6px; border-bottom: 1px solid var(--hair); overflow-x: auto; scrollbar-width: none; }
+.mnTabs::-webkit-scrollbar { display: none; }
+.mnTab {
+  display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; padding: 0 9px; border-radius: var(--r-full);
+  border: 1px solid transparent; background: transparent; color: var(--mute); font-size: 11.5px; white-space: nowrap; cursor: pointer;
+  transition: color 0.1s ease, background 0.1s ease, border-color 0.1s ease;
+}
+.mnTab svg { color: var(--stone); }
+.mnTab:hover { color: var(--ink); background: rgba(255, 255, 255, 0.04); }
+.mnTab.active { background: var(--elev); border-color: var(--hair-strong); color: var(--ink); }
+.mnTab.active svg { color: var(--ink); }
 .mnList { display: flex; flex-direction: column; gap: 2px; padding: 6px; max-height: 300px; overflow-y: auto; }
 .mnGroup { display: flex; flex-direction: column; gap: 1px; }
 .mnGroup + .mnGroup { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--hair); }
@@ -1304,7 +1315,6 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .mnEmpty { padding: 10px 8px; color: var(--ash); font-size: 12px; }
 .mnFoot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border-top: 1px solid var(--hair); color: var(--stone); font-size: 11px; }
 .mnFoot kbd { color: var(--ash); font-size: 10px; }
-.mnFoot .mnHint { font-family: var(--mono); font-size: 10.5px; color: var(--stone); }
 
 .attachments .mchips, .msg.user .msgMentions { display: flex; flex-wrap: wrap; gap: 6px; }
 .msg.user .msgMentions { margin-top: 8px; }
@@ -1319,3 +1329,110 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
 .mchip .x { border: 0; background: transparent; color: var(--stone); font-size: 13px; line-height: 1; padding: 0 0 0 2px; cursor: pointer; }
 .mchip .x:hover { color: var(--ink); }
 .msg.user .mtok { color: var(--ink); font-family: var(--mono); font-size: 12.5px; background: rgba(255, 255, 255, 0.06); border-radius: var(--r-xs); padding: 1px 5px; }
+
+/* ---------- artifacts (.docs/next-version.md, phase 1) ---------- */
+.artTools { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.artTools .root { font-family: var(--mono); font-size: 11px; color: var(--stone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artList .artRow { width: 100%; text-align: left; background: transparent; border: 0; border-radius: 0; color: var(--body); cursor: pointer; }
+.artList .artRow + .artRow { border-top: 1px solid var(--hair); }
+.artRow > svg { flex: none; color: var(--ash); }
+.artRow .artTitle { color: var(--ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.artRow .artPath { font-family: var(--mono); font-size: 11px; color: var(--stone); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artRow .artWhen { font-family: var(--mono); font-size: 11px; color: var(--ash); flex: none; width: 56px; text-align: right; }
+.artBack { display: inline-flex; align-items: center; gap: 4px; color: var(--ash); font-size: 12px; margin-bottom: 10px; background: none; border: 0; padding: 0; cursor: pointer; }
+.artBack:hover { color: var(--ink); }
+.artHead { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+.artHead > div:first-child { min-width: 0; flex: 1; }
+.artHead .actions { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.artBody { padding: 20px 24px; }
+.artEdit { display: flex; flex-direction: column; gap: 10px; }
+.artEdit input, .artEdit textarea { width: 100%; background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 8px 12px; font-size: 13px; outline: none; box-sizing: border-box; }
+.artEdit textarea { min-height: 380px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; resize: vertical; }
+.artEdit input:focus, .artEdit textarea:focus { border-color: var(--ink); }
+.artEdit .row { display: flex; gap: 8px; justify-content: flex-end; }
+.artLinks { display: flex; flex-direction: column; gap: 6px; }
+.artLink { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; }
+.artLink > svg { flex: none; color: var(--ash); }
+.artLink .link { color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artLink .link:hover { color: var(--blue); }
+.artAside { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.artGrid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 32px; }
+.artEmpty { color: var(--stone); font-size: 12px; }
+dialog.artDialog { width: 640px; max-height: 84vh; overflow-y: auto; }
+dialog.artDialog textarea { min-height: 240px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; resize: vertical; }
+
+/* ---------- briefs (.docs/next-version.md, phase 2) ---------- */
+.notice.watchesOff { margin-bottom: 16px; }
+.notice.watchesOff b { color: var(--yellow); font-weight: 500; }
+.briefCard { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+.briefCard .briefHead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.briefCard .briefHead .title { font-size: 14px; color: var(--ink); font-weight: 500; }
+.briefCard .briefHead .right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.briefCard .briefBody .md { font-size: 14px; }
+.briefCard .briefEmpty { color: var(--mute); font-size: 13px; line-height: 1.55; }
+.briefCard .briefEmpty b { color: var(--body); font-weight: 500; }
+.briefIterate { display: flex; gap: 8px; align-items: flex-end; border-top: 1px solid var(--hair); padding-top: 12px; }
+.briefIterate textarea { flex: 1; min-height: 38px; max-height: 160px; resize: vertical; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 8px 12px; font-size: 13px; outline: none; }
+.briefIterate textarea:focus { border-color: var(--ink); }
+.pill.brief-queued, .pill.brief-running { color: var(--blue); border-color: rgba(59, 158, 255, 0.35); }
+.pill.brief-running .dot { margin-right: 2px; }
+.pill.brief-ready { color: var(--green); border-color: rgba(17, 255, 153, 0.3); }
+.pill.brief-stale { color: var(--yellow); border-color: rgba(255, 197, 61, 0.35); }
+.pill.brief-failed { color: var(--red); border-color: rgba(255, 32, 71, 0.35); }
+.descBlock { display: flex; flex-direction: column; gap: 6px; }
+.descBlock .descText { font-size: 13.5px; line-height: 1.6; color: var(--body); white-space: pre-wrap; cursor: text; border-radius: var(--r-sm); padding: 4px 6px; margin: -4px -6px; }
+.descBlock .descText:hover { background: var(--elev); }
+.descBlock .descText.empty { color: var(--stone); font-style: italic; }
+.descBlock textarea { width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 8px 12px; font-size: 13.5px; line-height: 1.55; outline: none; }
+.descBlock textarea:focus { border-color: var(--ink); }
+.descBlock .row { display: flex; gap: 6px; justify-content: flex-end; }
+.wcard .check { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; background: transparent; color: var(--stone); border-radius: var(--r); padding: 0; flex: none; }
+.wcard .check:hover, .wcard.checked .check { color: var(--ink); background: var(--elev); }
+.wcard.checked { border-color: var(--hair-bright); }
+.selBar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 12px; background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); font-size: 13px; color: var(--body); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+.selBar .n { font-family: var(--mono); color: var(--ink); }
+.selBar .spacer { flex: 1; }
+dialog.briefDialog { width: 560px; max-height: 84vh; overflow-y: auto; }
+dialog.briefDialog .items { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 6px; max-height: 140px; overflow-y: auto; }
+dialog.briefDialog .items .it { font-size: 13px; color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+dialog.briefDialog .items .it .k { color: var(--ash); font-size: 11px; margin-right: 6px; }
+dialog.briefDialog textarea { min-height: 88px; resize: vertical; }
+dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+dialog.briefDialog .knobs select { width: auto; }
+.setPlaybook { display: flex; flex-direction: column; gap: 8px; }
+.setPlaybook .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.setPlaybook .head select { width: auto; background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 0 10px; height: 30px; font-size: 13px; }
+.setPlaybook textarea { width: 100%; box-sizing: border-box; min-height: 260px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 10px 12px; outline: none; }
+.setPlaybook textarea:focus { border-color: var(--ink); }
+.setPlaybook .path { font-family: var(--mono); font-size: 11px; color: var(--stone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setNum { width: 80px; background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 0 10px; height: 30px; font-size: 13px; outline: none; }
+.setNum:focus { border-color: var(--ink); }
+
+/* ---------- artifact editor (full content area) ---------- */
+.page.artEditPage { display: flex; flex-direction: column; overflow: hidden; padding: 20px 28px 16px; }
+.artEditor { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+.artEditBar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.artEditBar .crumb { font-family: var(--mono); font-size: 11px; color: var(--ash); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+.artEditBar .meta { font-size: 11px; color: var(--stone); }
+.artEditBar .segBtn { display: inline-flex; align-items: center; gap: 5px; }
+.artEditTitle {
+  width: 100%; box-sizing: border-box; background: transparent; border: 0; border-bottom: 1px solid var(--hair);
+  color: var(--ink); font-family: var(--display); font-size: 26px; line-height: 1.25; letter-spacing: -0.01em; padding: 6px 2px 10px; outline: none;
+}
+.artEditTitle::placeholder { color: var(--stone); }
+.artEditTitle:focus { border-bottom-color: var(--hair-bright); }
+.artEditPanes { flex: 1; min-height: 0; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.artEditPanes.split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.artEditBody {
+  width: 100%; height: 100%; min-height: 320px; box-sizing: border-box; resize: none;
+  background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); color: var(--body);
+  font-family: var(--mono); font-size: 13px; line-height: 1.7; padding: 18px 20px; outline: none; tab-size: 2;
+}
+.artEditBody:focus { border-color: var(--hair-bright); }
+.artEditBody::placeholder { color: var(--stone); }
+.artEditPreview { min-height: 0; overflow-y: auto; background: var(--card); border: 1px solid var(--hair); border-radius: var(--r-lg); padding: 18px 22px; }
+.artEditPanes.preview .artEditPreview { max-width: var(--measure); }
+.artRestored .link { background: none; border: 0; padding: 0; color: var(--blue); cursor: pointer; font: inherit; }
+.artRestored .link:hover { text-decoration: underline; }
+.artEditor .keysHint { font-size: 11px; color: var(--stone); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+@media (max-width: 900px) { .artEditPanes.split { grid-template-columns: minmax(0, 1fr); } }

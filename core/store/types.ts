@@ -14,8 +14,14 @@
  * - JSON is (de)serialized inside the adapter; domain types carry objects.
  */
 import type {
+  Artifact,
+  BriefJob,
+  BriefStatus,
   EffortLevel,
   InboxSnapshot,
+  Link,
+  LinkKind,
+  LinkRole,
   PermissionMode,
   Project,
   SessionEvent,
@@ -156,7 +162,7 @@ export type NewManualItem = {
   id: string
   title: string
   projectId?: string
-  note?: string
+  description?: string
   url?: string
   priority?: number
 }
@@ -196,6 +202,74 @@ export interface WorkItemStore {
   wakeSnoozed(now: number): Promise<string[]>
   /** The append-only transition log for one item, in order. */
   events(id: string): Promise<ItemEvent[]>
+  /** Set (or clear, with null) the human's description on any item. Never touched by ingestion. */
+  setDescription(id: string, description: string | null): Promise<void>
+}
+
+export type NewBriefJob = {
+  id: string
+  itemId: string
+  playbook: string
+  model?: string | null
+  note?: string | null
+}
+
+/**
+ * Brief jobs (.docs/next-version.md, phase 2): the queue and the state machine
+ * in one table, so it survives a restart and stays FIFO. The current brief of
+ * an item is its newest job.
+ */
+export interface BriefJobStore {
+  create(j: NewBriefJob): Promise<BriefJob>
+  get(id: string): Promise<BriefJob | null>
+  /** The newest job for an item, whatever its status. */
+  latestForItem(itemId: string): Promise<BriefJob | null>
+  /** The newest job that ran (or runs) in a session — how a revived brief session finds its tool. */
+  forSession(sessionId: string): Promise<BriefJob | null>
+  /** The newest job per item — the inbox's status pills in one query. */
+  latestPerItem(): Promise<BriefJob[]>
+  /** Jobs in one status, oldest first (the queue order for 'queued'). */
+  list(status?: BriefStatus): Promise<BriefJob[]>
+  /** How many jobs started at or after `sinceMs` — the daily cap's counter. */
+  countStartedSince(sinceMs: number): Promise<number>
+  update(id: string, patch: Partial<Omit<BriefJob, 'id' | 'itemId' | 'playbook'>>): Promise<void>
+  /** Boot: every 'running' job's subprocess died with the old daemon. Returns the ids. */
+  failAllRunning(error: string): Promise<string[]>
+  /** Drop a job (cancelling a queued one). */
+  remove(id: string): Promise<void>
+}
+
+/**
+ * The artifacts index (.docs/next-version.md, phase 1): one row per markdown
+ * file under the workspace's artifacts folder. The file is the truth — rows are
+ * rebuilt from disk by the server's indexer, never edited on their own.
+ */
+export interface ArtifactStore {
+  /** Insert or replace the row for this id; a stale row at the same path (a replaced file) is dropped. */
+  upsert(a: Artifact): Promise<void>
+  get(id: string): Promise<Artifact | null>
+  getByPath(path: string): Promise<Artifact | null>
+  /** Every indexed artifact, most recently updated first. */
+  list(): Promise<Artifact[]>
+  remove(id: string): Promise<void>
+}
+
+export type NewLink = { fromKind: LinkKind; fromId: string; toKind: LinkKind; toId: string; role: LinkRole }
+
+/**
+ * Relations between artifacts, work items and sessions, polymorphic on purpose
+ * so "which sessions worked this item" and "which document is its brief" are
+ * one table and one query shape.
+ */
+export interface LinkStore {
+  /** Idempotent on (from, to, role): an existing identical link is returned, not duplicated. */
+  add(l: NewLink): Promise<Link>
+  remove(id: string): Promise<void>
+  /** Drop every link touching an entity, either side — when the entity goes away. */
+  removeFor(kind: LinkKind, id: string): Promise<void>
+  forTarget(kind: LinkKind, id: string): Promise<Link[]>
+  forSource(kind: LinkKind, id: string): Promise<Link[]>
+  list(): Promise<Link[]>
 }
 
 export interface Store {
@@ -206,5 +280,8 @@ export interface Store {
   projects: ProjectStore
   watches: WatchStore
   items: WorkItemStore
+  artifacts: ArtifactStore
+  links: LinkStore
+  briefs: BriefJobStore
   close(): Promise<void>
 }

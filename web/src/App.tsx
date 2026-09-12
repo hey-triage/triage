@@ -1,6 +1,6 @@
-import { Eye, Folder, Terminal as TerminalIcon } from 'lucide-react'
+import { FileText, Eye, Folder, Terminal as TerminalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type {
+import type { DispatchPreviewResponse,
   EffortLevel,
   ImageAttachment,
   Mention,
@@ -15,7 +15,7 @@ import type {
 } from '../../shared/protocol.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import { Composer } from './components/Composer.js'
-import { NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
+import { ArtifactsPanel, NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { InboxPage } from './components/InboxPage.js'
 import { ItemPage } from './components/ItemPage.js'
@@ -31,6 +31,8 @@ import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
 import { Transcript } from './components/Transcript.js'
 import { ADD_WATCH_KEY, REFINE_WATCH_KEY, WatchesPage } from './components/WatchesPage.js'
+import { ArtifactsPage } from './components/ArtifactsPage.js'
+import { ArtifactPage } from './components/ArtifactPage.js'
 import { WorkspaceModal, type WorkspaceModalMode } from './components/WorkspaceModal.js'
 import {
   itemHash,
@@ -44,6 +46,7 @@ import {
   useWorkspaces,
 } from './hooks.js'
 import { inboxStore, useInbox } from './inboxStore.js'
+import { artifactStore, useArtifacts } from './artifactStore.js'
 import { anyDialogOpen, isTypingTarget } from './keys.js'
 import { EFFORT_LABEL, findModel, useModels } from './models.js'
 import { openSettings } from './settings.js'
@@ -61,8 +64,9 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'error',
 }
 
-const PAGE_TABS: Record<'watches' | 'projects' | 'terminals', PageTab> = {
+const PAGE_TABS: Record<'watches' | 'projects' | 'terminals' | 'artifacts', PageTab> = {
   terminals: { key: 'page:terminals', label: 'Terminals', icon: TerminalIcon },
+  artifacts: { key: 'page:artifacts', label: 'Artifacts', icon: FileText },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
   projects: { key: 'page:projects', label: 'Projects', icon: Folder },
 }
@@ -74,6 +78,7 @@ export function App() {
   const drafts = useDrafts()
   const models = useModels()
   const inbox = useInbox()
+  const artifacts = useArtifacts()
   const [route, navigate] = useHashRoute()
   const currentId = route.page === 'session' ? route.id : null
   const currentTerminalId = route.page === 'terminal' ? route.id : null
@@ -131,6 +136,10 @@ export function App() {
   useEffect(() => {
     if (conn === 'connected') void inboxStore.refresh()
   }, [conn])
+  // The Artifacts panel lists from the index; load it when that world is in front.
+  useEffect(() => {
+    if (conn === 'connected' && (route.page === 'artifacts' || route.page === 'artifact')) void artifactStore.refresh()
+  }, [conn, route.page])
 
   // A session created from this tab becomes the selected one — and when it
   // came from a draft tab, it takes that tab's slot.
@@ -305,7 +314,9 @@ export function App() {
             ? draftKey(route.id)
             : route.page === 'home' || route.page === 'settings'
               ? 'home'
-              : PAGE_TABS[route.page].key
+              : route.page === 'artifact'
+                ? PAGE_TABS.artifacts.key
+                : PAGE_TABS[route.page].key
   const tabRoute = (key: string) =>
     key.startsWith('term:') ? `/terminal/${key.slice(5)}` : key.startsWith('draft:') ? draftRoute(key.slice(6)) : key
   const closeOpenTab = useCallback(
@@ -362,6 +373,7 @@ export function App() {
         // everywhere else, a new session.
         if (route.page === 'inbox') setComposeSignal((n) => n + 1)
         else if (route.page === 'terminal' || route.page === 'terminals') newTerminal(terminalCwd)
+        else if (route.page === 'artifacts' || route.page === 'artifact') navigate('/artifact/new')
         else newSession()
       } else if (e.key === '?') {
         e.preventDefault()
@@ -385,6 +397,7 @@ export function App() {
       permissionMode: s.permissionMode,
       images: s.images,
       mentions: s.mentions,
+      itemId: s.itemId,
     })
   }, [])
 
@@ -404,24 +417,34 @@ export function App() {
     [navigate],
   )
 
+  // Dispatch = a draft tab prefilled by the server (.docs/next-version.md):
+  // the kind's template, the item's description, and the brief as an
+  // `@artifact:` mention when one exists. The old client-side prompt stays
+  // as the fallback when the preview cannot be fetched.
   const dispatch = useCallback(
     (item: ScoredItem) => {
-      const openWith = (cwd?: string) => {
-        const d = draftStore.create({ label: dispatchTitle(item), cwd, text: dispatchPrompt(item) })
+      const openWith = (init: { cwd?: string; text: string; mentions?: Mention[] }) => {
+        const d = draftStore.create({ label: dispatchTitle(item), itemId: item.id, ...init })
         navigate(draftRoute(d.id))
       }
-      // An explicit project (manual items) decides the folder; otherwise a project
-      // tied to the item's repo does.
-      void fetch('/api/projects')
-        .then((r) => r.json() as Promise<ProjectsResponse>)
+      void fetch(`/api/dispatch/preview?itemId=${encodeURIComponent(item.id)}`)
+        .then((r) => r.json() as Promise<DispatchPreviewResponse>)
         .then((b) => {
-          if (!b.ok) return openWith()
-          const match =
-            (item.projectId && b.projects.find((p) => p.id === item.projectId)) ||
-            (item.repo && b.projects.find((p) => p.repo && p.repo === item.repo))
-          openWith(match ? match.path : undefined)
+          if (!b.ok) throw new Error(b.error)
+          openWith({ cwd: b.preview.cwd ?? undefined, text: b.preview.text, mentions: b.preview.mentions })
         })
-        .catch(() => openWith())
+        .catch(() =>
+          fetch('/api/projects')
+            .then((r) => r.json() as Promise<ProjectsResponse>)
+            .then((p) => {
+              const match =
+                p.ok &&
+                ((item.projectId && p.projects.find((x) => x.id === item.projectId)) ||
+                  (item.repo && p.projects.find((x) => x.repo && x.repo === item.repo)))
+              openWith({ cwd: match ? match.path : undefined, text: dispatchPrompt(item) })
+            })
+            .catch(() => openWith({ text: dispatchPrompt(item) })),
+        )
     },
     [navigate],
   )
@@ -437,7 +460,9 @@ export function App() {
           ? 'terminals'
           : route.page === 'settings'
             ? null
-            : route.page
+            : route.page === 'artifact'
+              ? 'artifacts'
+              : route.page
 
   const openTabs = useMemo<OpenTab[]>(
     () =>
@@ -459,11 +484,16 @@ export function App() {
   )
 
   const pageTab =
-    route.page === 'watches' || route.page === 'projects' || route.page === 'terminals'
+    route.page === 'watches' || route.page === 'projects' || route.page === 'terminals' || route.page === 'artifacts'
       ? PAGE_TABS[route.page]
-      : null
+      : route.page === 'artifact'
+        ? PAGE_TABS.artifacts
+        : null
 
-  const runningCount = sessions.filter((s) => s.status === 'running' || s.status === 'starting').length
+  // Brief runs are sessions too, but they belong to their item: the Sessions
+  // panel and the palette list only chats.
+  const chatSessions = useMemo(() => sessions.filter((s) => s.kind !== 'brief'), [sessions])
+  const runningCount = chatSessions.filter((s) => s.status === 'running' || s.status === 'starting').length
   const modelName = current ? findModel(models, current.model)?.name ?? current.model : undefined
 
   const panel =
@@ -476,6 +506,16 @@ export function App() {
         onNew={newTerminal}
         onRename={renameTerminal}
         onClose={closeTerminal}
+        onSearch={() => setPaletteOpen(true)}
+      />
+    ) : railActive === 'artifacts' ? (
+      <ArtifactsPanel
+        artifacts={artifacts.artifacts}
+        loaded={artifacts.loaded}
+        currentId={route.page === 'artifact' ? route.id : null}
+        onOpen={(id) => navigate(`/artifact/${id}`)}
+        onNew={() => navigate('/artifact/new')}
+        onRefresh={() => void fetch('/api/artifacts/reindex', { method: 'POST' }).then(() => artifactStore.refresh())}
         onSearch={() => setPaletteOpen(true)}
       />
     ) : railActive === 'inbox' ? (
@@ -493,7 +533,7 @@ export function App() {
       />
     ) : (
       <SessionsPanel
-        sessions={sessions}
+        sessions={chatSessions}
         currentId={currentId}
         drafts={drafts}
         currentDraftId={currentDraftId}
@@ -593,6 +633,10 @@ export function App() {
                   <NewTerminalMenu defaultCwd={terminalCwd} onNew={newTerminal} className="btn primary" />
                 </div>
               </div>
+            ) : route.page === 'artifacts' ? (
+              <ArtifactsPage onOpen={(id) => navigate(`/artifact/${id}`)} />
+            ) : route.page === 'artifact' ? (
+              <ArtifactPage key={route.id} id={route.id} onNavigate={navigate} />
             ) : route.page === 'watches' ? (
               <WatchesPage />
             ) : route.page === 'projects' ? (
@@ -667,7 +711,7 @@ export function App() {
 
       <CommandPalette
         open={paletteOpen}
-        sessions={sessions}
+        sessions={chatSessions}
         terminals={terminals}
         onClose={() => setPaletteOpen(false)}
         onNavigate={navigate}

@@ -12,6 +12,7 @@ export type SettingsTab =
   | 'workspace'
   | 'auth'
   | 'sources'
+  | 'briefs'
   | 'connectors'
   | 'activity'
   | 'usage'
@@ -33,6 +34,7 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTabMeta> = [
   { id: 'workspace', label: 'Workspace', sub: 'Name, colour, and which workspace opens by default.', group: 'workspace' },
   { id: 'auth', label: 'Claude auth', sub: 'How this workspace signs in to Claude — and proof that it works.', group: 'workspace' },
   { id: 'sources', label: 'Sources', sub: 'What feeds this inbox: GitHub repos, Slack, and the connectors a session can reach.', group: 'workspace' },
+  { id: 'briefs', label: 'Briefs', sub: 'How briefs run: the daily cap, the model, and the playbook for each kind of work item.', group: 'workspace' },
   { id: 'connectors', label: 'Connectors', sub: 'What a dispatched session can reach — claude.ai connectors and local MCP servers.', group: 'workspace', fill: true },
   { id: 'activity', label: 'Activity', sub: 'Recent watch runs in this workspace — what ran, when, and what it filed.', group: 'diagnostics', fill: true },
   { id: 'usage', label: 'Usage', sub: 'What Claude Code has cost on this machine — tokens, spend, and where they went.', group: 'diagnostics', fill: true },

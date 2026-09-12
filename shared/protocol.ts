@@ -81,7 +81,7 @@ export type WorkspaceVerifyResponse =
  * transcript is the run's observability (.docs/watches-v2.md); the sidebar
  * filters these out of the chat list.
  */
-export type SessionKind = 'chat' | 'watch-run'
+export type SessionKind = 'chat' | 'watch-run' | 'brief'
 
 /**
  * What the user did with one prompt. `allow_always` is `allow` plus the SDK's
@@ -173,10 +173,12 @@ export type SessionSummary = {
   pinned?: boolean
   /** Current git branch of `cwd`, when it is a repo. Derived, not stored. */
   branch?: string
-  /** chat (default, absent) or watch-run. */
+  /** chat (default, absent), watch-run, or brief (a headless run that writes an item's brief). */
   kind?: SessionKind
   /** the watch a watch-run session belongs to. */
   watchId?: string
+  /** the work item this session was dispatched for, or briefs (from the links table). */
+  itemId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +358,8 @@ export type SystemStatus = {
   githubReconcileAt: number | null
   githubNotice: string | null
   watches: { total: number; enabled: number; overdue: number; failing: number }
+  /** the workspace's global watches switch — off = the scheduler never runs a watch */
+  watchesEnabled: boolean
   /** where JSONL log files are written, or null if file logging is off */
   logDir: string | null
 }
@@ -535,6 +539,8 @@ export type ItemStateResponse = { ok: true } | { ok: false; error: string }
 export type ManualItemInput = {
   title: string
   projectId?: string
+  /** the human's short intent, in their words (`note` is the pre-0.7 name, still accepted) */
+  description?: string
   note?: string
   url?: string
   priority?: number
@@ -608,6 +614,163 @@ export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGES_PER_MESSAGE = 8
 
 // ---------------------------------------------------------------------------
+// Artifacts (GET/POST/PUT/DELETE /api/artifacts, GET/POST/DELETE /api/links) —
+// markdown files with frontmatter under the workspace's artifacts folder
+// (.docs/next-version.md, phase 1). The file is the truth; this is its index
+// row. There is ONE kind of artifact: what a document *is to* an item or a
+// session ("the brief for", "context for") is a link role, not a type.
+// ---------------------------------------------------------------------------
+
+export type ArtifactAuthor = 'human' | 'model'
+export const isArtifactAuthor = (v: unknown): v is ArtifactAuthor => v === 'human' || v === 'model'
+
+export type Artifact = {
+  id: string
+  /** `/`-joined path relative to the workspace's artifacts folder */
+  path: string
+  title: string
+  /** who wrote it: the model rewrites its own files in place; yours it may only propose to */
+  author: ArtifactAuthor
+  /** canonical refs (github:owner/repo#1, linear:KEY-1) the frontmatter declares */
+  refs: string[]
+  created: number
+  updated: number
+  /** file mtime and size at index time — the cheap "has it changed" check */
+  mtime: number
+  size: number
+  /** set when the frontmatter did not parse and defaults were used */
+  warning?: string
+}
+
+export type LinkKind = 'artifact' | 'item' | 'session'
+export const LINK_KINDS: readonly LinkKind[] = ['artifact', 'item', 'session']
+export const isLinkKind = (v: unknown): v is LinkKind => LINK_KINDS.includes(v as LinkKind)
+
+/**
+ * artifact→item: `brief` (the document about it — inherits the item's
+ * lifecycle) or `context` (human notes it should be read with);
+ * artifact→session: `context`; session→item: `dispatch` (the session works
+ * the item) or `brief` (the session wrote its brief).
+ */
+export type LinkRole = 'brief' | 'context' | 'dispatch'
+export const LINK_ROLES: readonly LinkRole[] = ['brief', 'context', 'dispatch']
+export const isLinkRole = (v: unknown): v is LinkRole => LINK_ROLES.includes(v as LinkRole)
+
+export type Link = {
+  id: string
+  fromKind: LinkKind
+  fromId: string
+  toKind: LinkKind
+  toId: string
+  role: LinkRole
+  createdAt: number
+}
+
+/** POST /api/artifacts body (create) and PUT /api/artifacts?id= body (patch). */
+export type ArtifactInput = {
+  title?: string
+  body?: string
+  refs?: string[]
+  /** create only; defaults to human. The stdio shim and sessions write as model. */
+  author?: ArtifactAuthor
+  /** create only: links to add right away */
+  links?: { kind: LinkKind; id: string; role: LinkRole }[]
+}
+
+/** An index row with its outgoing links, and whether the list hides it by default. */
+export type ArtifactWithLinks = Artifact & {
+  links: Link[]
+  /** linked as the brief of an item that is done or archived */
+  hidden: boolean
+}
+
+export type ArtifactsResponse =
+  | { ok: true; root: string; artifacts: ArtifactWithLinks[] }
+  | { ok: false; error: string }
+
+export type ArtifactContentResponse =
+  | { ok: true; artifact: Artifact; body: string; links: Link[]; abs: string }
+  | { ok: false; error: string }
+
+export type ArtifactResponse = { ok: true; artifact: Artifact } | { ok: false; error: string }
+
+export type LinksResponse = { ok: true; links: Link[] } | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
+// Briefs (.docs/next-version.md, phase 2) — a playbook run against one work
+// item that writes a markdown brief (an artifact linked with role `brief`).
+// The job row IS the queue: FIFO per workspace, one at a time, daily cap.
+// `stale` is not stored — it is derived when the source moved after the brief.
+// ---------------------------------------------------------------------------
+
+export type BriefStatus = 'queued' | 'running' | 'ready' | 'failed'
+export const BRIEF_STATUSES: readonly BriefStatus[] = ['queued', 'running', 'ready', 'failed']
+
+export type BriefJob = {
+  id: string
+  itemId: string
+  status: BriefStatus
+  /** the playbook used — an ItemKind name, resolved to a file under the workspace's playbooks/ */
+  playbook: string
+  model: string | null
+  /** the user's context note from the Create-brief modal */
+  note: string | null
+  /** the brief session (kind 'brief'); null while queued */
+  sessionId: string | null
+  /** the artifact the run wrote; null until the first successful write */
+  artifactId: string | null
+  error: string | null
+  createdAt: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+/** GET /api/briefs?itemId= — the item's latest job with what it produced. */
+export type BriefView = {
+  job: BriefJob | null
+  /** the source moved after the brief was written — offer a re-brief */
+  stale: boolean
+  artifact: Artifact | null
+  body: string | null
+  /** 0-based place in the queue while queued, else null */
+  queuePosition: number | null
+}
+
+export type BriefResponse = { ok: true; brief: BriefView } | { ok: false; error: string }
+export type BriefJobsResponse = { ok: true; jobs: BriefJob[] } | { ok: false; error: string }
+
+/** POST /api/briefs body. */
+export type BriefRequest = {
+  itemIds: string[]
+  note?: string
+  model?: string
+  /** override the playbook (an ItemKind name); default = the item's kind */
+  playbook?: string
+}
+
+// Playbooks (GET/PUT /api/playbooks?kind=) — one markdown file per ItemKind,
+// seeded with defaults, edited like a skill.
+export type PlaybookInfo = { kind: string; custom: boolean; path: string }
+export type PlaybooksResponse = { ok: true; playbooks: PlaybookInfo[] } | { ok: false; error: string }
+export type PlaybookResponse = { ok: true; kind: string; body: string; custom: boolean; path: string } | { ok: false; error: string }
+
+// Workspace settings (GET/PUT /api/settings) — the few server-side knobs.
+export type WorkspaceSettings = {
+  /** the global watches switch; off = the scheduler never runs a watch */
+  watchesEnabled: boolean
+  /** how many brief runs may start per local day */
+  briefsDailyCap: number
+  /** the model briefs run on when the modal doesn't pick one; null = Claude Code's default */
+  briefsDefaultModel: string | null
+}
+export type SettingsResponse = { ok: true; settings: WorkspaceSettings } | { ok: false; error: string }
+
+// Dispatch preview (GET /api/dispatch/preview?itemId=) — what a dispatched
+// session starts with, composed server-side so the brief rides as a mention.
+export type DispatchPreview = { title: string; cwd: string | null; text: string; mentions: Mention[] }
+export type DispatchPreviewResponse = { ok: true; preview: DispatchPreview } | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
 // Mentions — `@` references typed into a composer. Claude Code's own `@file`
 // is a feature of its terminal UI, not of the agent: the SDK passes text
 // through verbatim. So the composer picks, the server resolves at send time,
@@ -616,7 +779,7 @@ export const MAX_IMAGES_PER_MESSAGE = 8
 // adding a kind (an artifact, say) is a new `MentionKind` plus a resolver.
 // ---------------------------------------------------------------------------
 
-export const MENTION_KINDS = ['file', 'item', 'session'] as const
+export const MENTION_KINDS = ['file', 'item', 'session', 'artifact'] as const
 export type MentionKind = (typeof MENTION_KINDS)[number]
 
 export const isMentionKind = (v: unknown): v is MentionKind =>
@@ -626,7 +789,8 @@ export type Mention = {
   kind: MentionKind
   /**
    * file: a path relative to the session's folder (a trailing `/` means a
-   * directory); item: a work item id; session: a session id.
+   * directory); item: a work item id; session: a session id; artifact: an
+   * artifact id (the markdown body rides the message, like a small file).
    */
   ref: string
   /** what the chip shows — the basename, the item title, the session title */
@@ -738,6 +902,8 @@ export type ClientMessage =
       effort?: EffortLevel
       permissionMode?: PermissionMode
       fastMode?: boolean
+      /** The work item this session is dispatched for — recorded as a `dispatch` link. */
+      itemId?: string
     }
   /** Switch a session's model/effort — mid-session, and for every turn after. */
   | { type: 'set_model'; sessionId: string; model?: string; effort?: EffortLevel }
@@ -797,4 +963,8 @@ export type ServerMessage =
   | { type: 'terminal_output'; terminalId: string; data: string }
   | { type: 'terminal_exit'; terminalId: string; exitCode: number }
   | { type: 'terminal_closed'; terminalId: string }
+  /** The artifacts index changed (a write, a delete, or a re-index found edits) — refetch. */
+  | { type: 'artifacts_changed' }
+  /** A brief job moved (queued → running → ready | failed); the item page and inbox row follow. */
+  | { type: 'brief_status'; job: BriefJob }
   | { type: 'error'; message: string }

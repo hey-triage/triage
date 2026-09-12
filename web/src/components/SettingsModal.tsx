@@ -21,6 +21,7 @@ import {
   RefreshCw,
   ScrollText,
   Settings2,
+  Sparkles,
   Wallet,
   X,
   type LucideProps,
@@ -28,7 +29,11 @@ import {
 import { useCallback, useEffect, useState, type ComponentType, type ReactNode } from 'react'
 import type {
   ConnectorsResponse,
+  PlaybookResponse,
+  PlaybooksResponse,
+  SettingsResponse,
   SystemResponse,
+  WorkspaceSettings,
   SystemStatus,
   Workspace,
   WorkspaceAuthBackend,
@@ -37,7 +42,8 @@ import type {
 } from '../../../shared/protocol.js'
 import { FAST_MODE_BLURB, modelSupportsFastMode } from '../fastMode.js'
 import { SHORTCUTS } from '../keys.js'
-import { useModels } from '../models.js'
+import { findModel, useModels } from '../models.js'
+import { KIND_LABEL } from '../itemUi.js'
 import { readSessionDefaults, writeSessionDefaults, type SessionDefaults } from '../sessionDefaults.js'
 import { closeSettings, SETTINGS_TABS, setSettingsTab, useSettings, type SettingsTab } from '../settings.js'
 import { store } from '../store.js'
@@ -53,6 +59,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   workspace: Settings2,
   auth: KeyRound,
   sources: Plug,
+  briefs: Sparkles,
   connectors: Plug,
   activity: Activity,
   usage: Wallet,
@@ -154,6 +161,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="sources">
                     <SourcesTab />
+                  </Tabs.Content>
+                  <Tabs.Content value="briefs">
+                    <BriefsTab />
                   </Tabs.Content>
                   <Tabs.Content value="connectors" className="settingsFill">
                     <ConnectorsPanel refreshNonce={nonce} />
@@ -553,6 +563,8 @@ function SourcesTab() {
         <RepoScopeEditor onSaved={() => {}} />
       </Section>
 
+      <WatchesSwitchSection />
+
       <Section
         title="Slack and connectors"
         hint="Slack watches run through the claude.ai Slack connector on this workspace’s Claude login. Connectors are managed at claude.ai and in ~/.claude; this is the read-out."
@@ -573,6 +585,219 @@ function SourcesTab() {
         </Row>
       </Section>
     </>
+  )
+}
+
+/** The workspace's server-side knobs (GET/PUT /api/settings), shared by two tabs. */
+function useWorkspaceSettings() {
+  const [settings, setSettings] = useState<WorkspaceSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    void fetch('/api/settings')
+      .then((r) => r.json() as Promise<SettingsResponse>)
+      .then((b) => (b.ok ? setSettings(b.settings) : setError(b.error)))
+      .catch((e) => setError(String(e)))
+  }, [])
+  const save = useCallback(async (patch: Partial<WorkspaceSettings>) => {
+    setError(null)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      const b = (await res.json()) as SettingsResponse
+      if (b.ok) setSettings(b.settings)
+      else setError(b.error)
+    } catch (e) {
+      setError(String(e))
+    }
+  }, [])
+  return { settings, error, save }
+}
+
+/** The global watches switch — off by default in 0.7 (.docs/next-version.md). */
+function WatchesSwitchSection() {
+  const { settings, error, save } = useWorkspaceSettings()
+  return (
+    <Section
+      title="Watches"
+      hint="Scheduled scans that file work items on their own. Off by default: add items by hand or by pasting a link, and switch this on once the briefs you queue by hand have earned it."
+    >
+      <Row label="Run watches on a schedule" hint={settings?.watchesEnabled ? 'Due watches run every minute tick.' : 'The scheduler skips every watch. “Run now” on a watch still works.'}>
+        <Switch.Root
+          className="uiSwitch"
+          checked={settings?.watchesEnabled ?? false}
+          disabled={!settings}
+          onCheckedChange={(on) => void save({ watchesEnabled: on })}
+          aria-label="Run watches on a schedule"
+        >
+          <Switch.Thumb className="uiSwitchThumb" />
+        </Switch.Root>
+      </Row>
+      {error && <div className="msg error">{error}</div>}
+    </Section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Briefs — the daily cap, the default model, and the two prose files per kind.
+// ---------------------------------------------------------------------------
+
+function BriefsTab() {
+  const { settings, error, save } = useWorkspaceSettings()
+  const models = useModels()
+  const [cap, setCap] = useState<string>('')
+  useEffect(() => {
+    if (settings) setCap(String(settings.briefsDailyCap))
+  }, [settings])
+
+  return (
+    <>
+      <Section
+        title="Running briefs"
+        hint="A brief is a playbook run against one work item that writes a markdown document beside it. Runs queue in order, one at a time, and stop at the cap — nothing runs until you queue it."
+      >
+        <Row label="Daily cap" hint="How many brief runs may start per day in this workspace. The tail of a batch fails with a clear reason rather than running past it.">
+          <input
+            className="setNum"
+            type="number"
+            min={1}
+            max={500}
+            value={cap}
+            disabled={!settings}
+            onChange={(e) => setCap(e.target.value)}
+            onBlur={() => {
+              const n = Number(cap)
+              if (settings && Number.isInteger(n) && n >= 1 && n <= 500 && n !== settings.briefsDailyCap) void save({ briefsDailyCap: n })
+              else if (settings) setCap(String(settings.briefsDailyCap))
+            }}
+          />
+        </Row>
+        <Row label="Default model" hint="What a brief runs on when the Create-brief dialog doesn’t pick one. Cheaper models are usually enough for reading.">
+          <select
+            className="setNum"
+            style={{ width: 'auto' }}
+            value={settings?.briefsDefaultModel ?? ''}
+            disabled={!settings}
+            onChange={(e) => void save({ briefsDefaultModel: e.target.value || null })}
+          >
+            <option value="">Claude Code default</option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </Row>
+        {settings?.briefsDefaultModel && !findModel(models, settings.briefsDefaultModel) && (
+          <p className="hint">Default model “{settings.briefsDefaultModel}” is not in the probed list; it is passed through as-is.</p>
+        )}
+        {error && <div className="msg error">{error}</div>}
+      </Section>
+      <ProseFileSection
+        title="Playbooks"
+        hint="One markdown file per kind of work item — what to read, what to look for, the headings the brief should have. Edited here or in the file; a brief run pastes it into its first message."
+        listUrl="/api/playbooks"
+        fileUrl={(kind) => `/api/playbooks?kind=${encodeURIComponent(kind)}`}
+      />
+      <ProseFileSection
+        title="Dispatch templates"
+        hint="How a dispatched session opens, per kind. A tiny template: {{title}}, {{url}}, {{description}}, {{reason}}, {{note}}, and {{#brief}}…{{/brief}} when a brief exists."
+        listUrl="/api/playbooks"
+        fileUrl={(kind) => `/api/dispatch/template?kind=${encodeURIComponent(kind)}`}
+      />
+    </>
+  )
+}
+
+/** A per-kind markdown file with a kind picker, a textarea and Save — playbooks and dispatch templates share it. */
+function ProseFileSection({
+  title,
+  hint,
+  listUrl,
+  fileUrl,
+}: {
+  title: string
+  hint: string
+  listUrl: string
+  fileUrl: (kind: string) => string
+}) {
+  const [kinds, setKinds] = useState<{ kind: string; custom: boolean }[]>([])
+  const [kind, setKind] = useState('manual')
+  const [body, setBody] = useState('')
+  const [loaded, setLoaded] = useState('')
+  const [path, setPath] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void fetch(listUrl)
+      .then((r) => r.json() as Promise<PlaybooksResponse>)
+      .then((b) => {
+        if (b.ok) setKinds(b.playbooks.map((p) => ({ kind: p.kind, custom: p.custom })))
+      })
+      .catch(() => {})
+  }, [listUrl])
+
+  useEffect(() => {
+    setError(null)
+    void fetch(fileUrl(kind))
+      .then((r) => r.json() as Promise<PlaybookResponse>)
+      .then((b) => {
+        if (b.ok) {
+          setBody(b.body)
+          setLoaded(b.body)
+          setPath(b.path ?? '')
+        } else setError(b.error)
+      })
+      .catch((e) => setError(String(e)))
+  }, [kind, fileUrl])
+
+  async function saveFile() {
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await fetch(fileUrl(kind), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ body }),
+      })
+      const b = (await res.json()) as PlaybookResponse
+      if (b.ok) {
+        setLoaded(b.body)
+        setKinds((prev) => prev.map((k) => (k.kind === kind ? { ...k, custom: b.custom ?? k.custom } : k)))
+      } else setError(b.error)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const dirty = body !== loaded
+  return (
+    <Section title={title} hint={hint}>
+      <div className="setPlaybook">
+        <div className="head">
+          <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind">
+            {(kinds.length ? kinds : [{ kind: 'manual', custom: false }]).map((k) => (
+              <option key={k.kind} value={k.kind}>
+                {KIND_LABEL[k.kind as keyof typeof KIND_LABEL] ?? k.kind}
+                {k.custom ? ' · edited' : ''}
+              </option>
+            ))}
+          </select>
+          <span className="spacer" />
+          <button type="button" className="btn sm" disabled={!dirty || saving} onClick={() => void saveFile()}>
+            {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </button>
+        </div>
+        <textarea value={body} onChange={(e) => setBody(e.target.value)} spellCheck={false} aria-label={`${title} for ${kind}`} />
+        {path && <div className="path" title={path}>{path}</div>}
+        {error && <div className="msg error">{error}</div>}
+      </div>
+    </Section>
   )
 }
 

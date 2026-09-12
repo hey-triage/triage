@@ -6,6 +6,7 @@
  * draft is discarded — so they live in localStorage, not the daemon.
  */
 import { useSyncExternalStore } from 'react'
+import type { Mention } from '../../shared/protocol.js'
 
 export type Draft = {
   id: string
@@ -13,6 +14,10 @@ export type Draft = {
   label?: string
   text: string
   cwd?: string
+  /** `@` mentions the draft opens with (a dispatched item, its brief) — the tokens are in `text` */
+  mentions?: Mention[]
+  /** the work item this draft dispatches; recorded as a link when the session starts */
+  itemId?: string
   createdAt: number
 }
 

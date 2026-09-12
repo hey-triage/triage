@@ -2,7 +2,10 @@ import {
   AlarmClock,
   Archive,
   Check,
+  CheckSquare,
   ExternalLink,
+  Sparkles,
+  Square,
   Flag,
   Folder,
   Pencil,
@@ -14,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RepoScopeEditor } from './RepoScope.js'
 import type {
+  BriefJob,
   Group,
   ItemListResponse,
   ItemStatus,
@@ -25,6 +29,8 @@ import type {
   WatchesResponse,
 } from '../../../shared/protocol.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
+import { briefPill, briefStore, useBriefs } from '../briefStore.js'
+import { CreateBriefDialog } from './CreateBriefDialog.js'
 import {
   GROUP_ORDER,
   GROUP_TITLE,
@@ -77,6 +83,21 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
   })
   const [scanning, setScanning] = useState(false)
   const [sel, setSel] = useState(0)
+  // Multi-select (.docs/next-version.md, phase 2): checked rows brief together.
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [briefing, setBriefing] = useState<ScoredItem[] | null>(null)
+  const briefs = useBriefs()
+  useEffect(() => {
+    if (!briefs.loaded) void briefStore.refresh()
+  }, [briefs.loaded])
+  const toggleChecked = useCallback((id: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
 
   const isOpen = tab === 'open'
 
@@ -207,6 +228,13 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
       } else if (e.key === 'd' && cur) {
         e.preventDefault()
         onDispatch(cur)
+      } else if (e.key === 'b' && isOpen) {
+        e.preventDefault()
+        const picked = checked.size ? ordered.filter((i) => checked.has(i.id)) : cur ? [cur] : []
+        if (picked.length) setBriefing(picked)
+      } else if (e.key === ' ' && cur && isOpen) {
+        e.preventDefault()
+        toggleChecked(cur.id)
       } else if (e.key === 'e' && cur) {
         e.preventDefault()
         void setItemState(cur, isOpen ? 'done' : 'open')
@@ -223,7 +251,7 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [ordered, sel, isOpen, onDispatch, onOpenItem, reload, setItemState, snooze1d])
+  }, [ordered, sel, isOpen, onDispatch, onOpenItem, reload, setItemState, snooze1d, checked, toggleChecked])
 
   const loadProjects = useCallback(() => {
     void fetch('/api/projects')
@@ -287,6 +315,10 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
     onSetPriority: setPriority,
     onEdit: (i) => setComposer({ open: true, editing: i }),
     onDelete: deleteManual,
+    checked,
+    onToggle: toggleChecked,
+    onBrief: (i) => setBriefing([i]),
+    briefOf: (id) => briefs.byItem.get(id),
   }
 
   return (
@@ -359,6 +391,20 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
 
         {!loading && !error && (
           <>
+            {isOpen && checked.size > 0 && (
+              <div className="selBar">
+                <span>
+                  <span className="n">{checked.size}</span> checked
+                </span>
+                <span className="spacer" />
+                <button type="button" className="btn sm primary" onClick={() => setBriefing(ordered.filter((i) => checked.has(i.id)))}>
+                  <Sparkles size={13} aria-hidden="true" /> Brief checked (b)
+                </button>
+                <button type="button" className="btn sm ghost" onClick={() => setChecked(new Set())}>
+                  Clear
+                </button>
+              </div>
+            )}
             {isOpen &&
               snap.notices.map((n) => (
                 <div key={n} className="notice">
@@ -418,6 +464,13 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
         }}
         onSavedMore={() => reload(false)} // "Add more" — refresh, stay open
       />
+
+      <CreateBriefDialog
+        open={briefing !== null}
+        items={briefing ?? []}
+        onClose={() => setBriefing(null)}
+        onQueued={() => setChecked(new Set())}
+      />
     </div>
   )
 }
@@ -441,6 +494,10 @@ type RowActions = {
   onSetPriority: (item: ScoredItem, priority: number) => void
   onEdit: (item: ScoredItem) => void
   onDelete: (item: ScoredItem) => void
+  checked: Set<string>
+  onToggle: (id: string) => void
+  onBrief: (item: ScoredItem) => void
+  briefOf: (id: string) => BriefJob | undefined
 }
 
 function ItemGroup({
@@ -481,9 +538,15 @@ function WorkCard({
   onSetPriority,
   onEdit,
   onDelete,
+  checked,
+  onToggle,
+  onBrief,
+  briefOf,
 }: { item: ScoredItem; selected: boolean } & RowActions) {
   const isManual = item.source === 'manual'
   const isOpen = tab === 'open'
+  const isChecked = checked.has(item.id)
+  const brief = briefPill(briefOf(item.id))
   const proj = projectName(item.projectId)
   const pri = item.priority ?? 0
   // watchId now rides in the provenance list; fall back to the item field.
@@ -494,10 +557,21 @@ function WorkCard({
 
   return (
     <div
-      className={`card wcard${selected ? ' sel' : ''}${quiet ? ' quiet' : ''}`}
+      className={`card wcard${selected ? ' sel' : ''}${quiet ? ' quiet' : ''}${isChecked ? ' checked' : ''}`}
       ref={selected ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
       onMouseMove={() => !selected && onSelect(item.id)}
     >
+      {isOpen && (
+        <button
+          type="button"
+          className="check"
+          title={isChecked ? 'Uncheck (Space)' : 'Check to brief with others (Space)'}
+          aria-pressed={isChecked}
+          onClick={() => onToggle(item.id)}
+        >
+          {isChecked ? <CheckSquare size={14} aria-hidden="true" /> : <Square size={14} aria-hidden="true" />}
+        </button>
+      )}
       <div className="main">
         <div className="cmeta">
           <Icon size={13} aria-hidden="true" />
@@ -530,6 +604,11 @@ function WorkCard({
           <span className={`dot ${tone ?? (item.group === 'blocking' ? 'green' : 'stone')}`} aria-hidden="true" />
           <span>{item.reason}</span>
           {item.why && <span className="why">“{item.why}”</span>}
+          {brief && (
+            <span className={`pill ${brief.tone}`} title="Brief">
+              {brief.label}
+            </span>
+          )}
           {proj && (
             <span className="pill" title="Project">
               <Folder size={10} aria-hidden="true" />
@@ -577,6 +656,9 @@ function WorkCard({
           )}
           {isOpen && (
             <>
+              <button type="button" className="iconBtn sm" title="Create a brief (b)" onClick={() => onBrief(item)}>
+                <Sparkles size={13} aria-hidden="true" />
+              </button>
               <button type="button" className="iconBtn sm green" title="Mark done (e)" onClick={() => onDone(item)}>
                 <Check size={14} aria-hidden="true" />
               </button>

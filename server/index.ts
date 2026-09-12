@@ -61,15 +61,42 @@ import type {
   ImageAttachment,
   ToolEffect,
   Workspace,
+  Artifact,
+  ArtifactAuthor,
+  ArtifactContentResponse,
+  ArtifactInput,
+  ArtifactResponse,
+  ArtifactWithLinks,
+  ArtifactsResponse,
+  Link,
+  LinkKind,
+  LinkRole,
+  LinksResponse,
+  BriefJob,
+  BriefJobsResponse,
+  BriefResponse,
+  BriefView,
+  DispatchPreview,
+  DispatchPreviewResponse,
+  PlaybookResponse,
+  PlaybooksResponse,
+  SessionKind,
+  SettingsResponse,
+  WorkspaceSettings,
 } from '../shared/protocol.js'
 import {
   MAX_IMAGES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
+  MAX_INLINE_FILE_BYTES,
   MAX_INLINE_TOTAL_BYTES,
   MAX_MENTIONS_PER_MESSAGE,
   USAGE_WINDOWS,
+  isArtifactAuthor,
   isImageMediaType,
+  isLinkKind,
+  isLinkRole,
   isMentionKind,
+  mentionToken,
 } from '../shared/protocol.js'
 import type {
   ActivityResponse,
@@ -137,11 +164,27 @@ import {
   spawnEnvFor,
   toAuthBackend,
   workspaceClaudeDir,
+  workspaceDir,
   writeApiKey,
   type WorkspaceMeta,
 } from './workspaces.js'
 import { TerminalManager } from './terminals.js'
 import { FileIndexes, resolveFileMention } from './files.js'
+import { ArtifactIndex } from './artifacts.js'
+import {
+  BRIEF_SYSTEM_APPEND,
+  briefRelPath,
+  composeBriefPrompt,
+  isPlaybookName,
+  listPlaybooks,
+  readDispatchTemplate,
+  readPlaybook,
+  renderTemplate,
+  seedDispatchTemplates,
+  seedPlaybooks,
+  writeDispatchTemplate,
+  writePlaybook,
+} from './briefs.js'
 
 const PORT = Number(process.env.PORT || 5178)
 const VERSION = pkgVersion()
@@ -214,6 +257,8 @@ const sessionScoped = (u: PermissionUpdate): PermissionUpdate => ({ ...u, destin
 
 /** Built-in tools whose only effect is reading. */
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch'])
+/** Our own MCP tools that only read (the inbox, the artifacts index) — never prompt for these. */
+const TRIAGE_READ_TOOLS = new Set(['mcp__triage__list_work_items', 'mcp__triage__list_artifacts', 'mcp__triage__read_artifact'])
 
 // Verb tokens that mark a connector call's intent. Written as word sets and
 // matched against the tokens of a tool's leaf name, so both `slack_read_channel`
@@ -233,7 +278,7 @@ const wordsOf = (leaf: string): string[] => (leaf.match(/[A-Za-z][a-z]*/g) ?? []
 function classifyEffect(toolName: string): ToolEffect {
   // Our own inbox: reading it is harmless; every other triage tool writes local
   // SQLite (create/edit/upsert/resolve).
-  if (toolName === 'mcp__triage__list_work_items') return 'read'
+  if (TRIAGE_READ_TOOLS.has(toolName)) return 'read'
   if (toolName.startsWith('mcp__triage__')) return 'local-write'
 
   if (READ_TOOLS.has(toolName)) return 'read'
@@ -312,10 +357,31 @@ class WorkspaceRuntime {
   readonly terminals: TerminalManager
   /** per-folder file listings behind the composer's `@` picker */
   readonly files = new FileIndexes()
+  /** the workspace's markdown artifacts, indexed from its artifacts folder (.docs/next-version.md) */
+  readonly artifacts: ArtifactIndex
+  /** playbooks and dispatch templates — the two prose-customisable stages, as files */
+  readonly playbookDir: string
+  readonly dispatchDir: string
+
+  // brief runs (.docs/next-version.md, phase 2): one at a time per workspace
+  briefActive: string | null = null
+  briefPumping = false
+  readonly briefTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  readonly briefExtras = new Map<string, SessionExtras>()
+  /** jobs whose run has called write_brief at least once */
+  readonly briefWrote = new Set<string>()
+  /** session id → the work item it was dispatched for or briefs (mirrors `links`) */
+  readonly sessionItem = new Map<string, string>()
 
   constructor(public meta: WorkspaceMeta) {
     this.store = openSqliteStore(dbFileFor(meta.id, registry.defaultId))
     this.env = spawnEnvFor(meta)
+    this.artifacts = new ArtifactIndex(path.join(workspaceDir(meta.id), 'artifacts'), this.store, () =>
+      broadcast(this, { type: 'artifacts_changed' }),
+    )
+    void this.artifacts.ensure()
+    this.playbookDir = path.join(workspaceDir(meta.id), 'playbooks')
+    this.dispatchDir = path.join(workspaceDir(meta.id), 'dispatch')
     this.triageMcp = makeTriageMcp(this)
     this.terminals = new TerminalManager(
       (msg) => broadcast(this, msg),
@@ -335,6 +401,23 @@ const defaultRuntime = (): WorkspaceRuntime => runtimes.get(registry.defaultId)!
 
 // Daemon-wide logs (one process, one log stream); workspace ids ride in fields.
 initLogFile(path.join(TRIAGE_DIR, 'logs'))
+
+/**
+ * Spawn-time extras for special-purpose sessions (briefs): text appended to
+ * Claude Code's own system prompt (it survives `resume`), and MCP servers
+ * beyond the workspace's triage server.
+ */
+type SessionExtras = { systemAppend?: string; mcp?: Record<string, ReturnType<typeof createSdkMcpServer>> }
+
+/** Tools a headless brief session never gets, whatever it asks (belt to the gate's braces). */
+const BRIEF_DISALLOWED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'AskUserQuestion']
+/** The only shell a brief may run: `gh`/`git` read verbs, no chaining or redirection. */
+const BRIEF_BASH_RE = /^\s*(gh\s+(pr|issue|api|search|run|repo)\s+(view|diff|checks|list|status|comments)\b|git\s+(log|show|diff|blame|status|branch|ls-files)\b)/
+const SHELL_META_RE = /[;&|<>`$\\]|\$\(/
+function briefBashAllowed(input: Record<string, unknown>): boolean {
+  const cmd = typeof input.command === 'string' ? input.command : ''
+  return BRIEF_BASH_RE.test(cmd) && !SHELL_META_RE.test(cmd)
+}
 
 // ---------------------------------------------------------------------------
 // Live session: one running Claude subprocess bound to a stored session row.
@@ -365,6 +448,7 @@ class LiveSession {
     readonly row: StoredSession,
     lastSeq: number,
     resumeSdkSessionId: string | null,
+    readonly extras: SessionExtras = {},
   ) {
     this.seq = lastSeq
     this.bypassArmed = row.permissionMode === 'bypassPermissions'
@@ -374,13 +458,21 @@ class LiveSession {
         cwd: row.cwd,
         // Full Claude Code behavior: its system prompt + tools, and the
         // user's own settings/plugins/MCP connectors from ~/.claude.
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        systemPrompt: {
+          type: 'preset',
+          preset: 'claude_code',
+          // Brief sessions: the headless contract rides in the system prompt so
+          // it survives `resume` (.docs/next-version.md).
+          ...(extras.systemAppend ? { append: extras.systemAppend } : {}),
+        },
         settingSources: ['user', 'project', 'local'],
         includePartialMessages: true,
         // The triage inbox as in-process tools, so a chat can list/create/edit
         // work items directly — same tool surface as the stdio shim external
         // Claude Code sessions get (server/mcp.ts). Scoped to this workspace.
-        mcpServers: { triage: rt.triageMcp },
+        // Brief sessions add their own `write_brief` server on top.
+        mcpServers: { triage: rt.triageMcp, ...(extras.mcp ?? {}) },
+        ...(row.kind === 'brief' ? { disallowedTools: BRIEF_DISALLOWED_TOOLS } : {}),
         // Workspace auth backend: api-key / config-dir spawn with overrides;
         // inherit passes nothing, exactly the pre-workspaces behavior.
         ...(rt.env ? { env: rt.env } : {}),
@@ -441,6 +533,8 @@ class LiveSession {
           void refreshBranch(this.rt, this.row)
           // The turn may have created files — the next `@` search relists.
           this.rt.files.invalidate(this.row.cwd)
+          // A brief run is one turn: its result is the run's end.
+          if (this.row.kind === 'brief') void onBriefTurnDone(this.rt, this.row.id)
         }
       }
       this.setStatus('idle')
@@ -452,6 +546,7 @@ class LiveSession {
       this.expirePendingPermissions()
       this.rt.live.delete(this.row.id)
       broadcastSessionList(this.rt)
+      if (this.row.kind === 'brief') void onBriefSessionEnded(this.rt, this.row.id)
     }
   }
 
@@ -522,8 +617,24 @@ class LiveSession {
     const effect = classifyEffect(toolName)
     // Reading our own inbox is harmless in any mode — never prompt for it. Every
     // triage write (create/edit/upsert/resolve) still goes through the prompt.
-    if (toolName === 'mcp__triage__list_work_items') {
+    if (TRIAGE_READ_TOOLS.has(toolName)) {
       return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+    }
+    // Brief sessions are headless (.docs/next-version.md): nobody is there to
+    // answer a prompt, so the policy is fixed — reads and the brief's own write
+    // tool run, narrow read-only gh/git commands run, everything else is denied.
+    if (this.row.kind === 'brief') {
+      const allowed =
+        toolName === 'mcp__brief__write_brief' || effect === 'read' || (toolName === 'Bash' && briefBashAllowed(toolInput))
+      return Promise.resolve(
+        allowed
+          ? { behavior: 'allow', updatedInput: toolInput }
+          : {
+              behavior: 'deny',
+              message:
+                'This is a headless brief session: only reads, read-only gh/git commands, and write_brief are allowed. Finish the brief with write_brief.',
+            },
+      )
     }
     // 'gated': reads and lookups run unattended; anything that writes — a file,
     // the shell, or an outward connector call — still surfaces a prompt. The
@@ -667,8 +778,9 @@ function summarize(rt: WorkspaceRuntime, row: StoredSession): SessionSummary {
     permissionMode: row.permissionMode ?? undefined,
     pinned: row.pinned || undefined,
     branch: rt.branches.get(row.id),
-    ...(row.kind === 'watch-run' ? { kind: 'watch-run' as const } : {}),
+    ...(row.kind !== 'chat' ? { kind: row.kind } : {}),
     ...(row.watchId ? { watchId: row.watchId } : {}),
+    ...(rt.sessionItem.has(row.id) ? { itemId: rt.sessionItem.get(row.id) } : {}),
   }
 }
 
@@ -720,6 +832,7 @@ async function createSession(
   effort: EffortLevel | null,
   fastMode: boolean,
   permissionMode: PermissionMode | null,
+  opts: { kind?: SessionKind } = {},
 ): Promise<StoredSession> {
   const row = await rt.store.sessions.create({
     id: randomUUID(),
@@ -729,9 +842,10 @@ async function createSession(
     effort,
     fastMode,
     permissionMode,
+    ...(opts.kind ? { kind: opts.kind } : {}),
   })
   rt.rows.set(row.id, row)
-  rt.live.set(row.id, new LiveSession(rt, row, 0, null))
+  rt.live.set(row.id, new LiveSession(rt, row, 0, null, extrasFor(rt, row)))
   void refreshBranch(rt, row)
   return row
 }
@@ -846,7 +960,7 @@ async function resolveMentions(
         item.status && `status: ${item.status}`,
         scored && `rank: ${scored.score} — ${scored.reason}`,
         item.why && `why: ${item.why}`,
-        item.note && `note: ${item.note}`,
+        item.description && `description: ${item.description}`,
         item.refs?.length ? `refs: ${item.refs.join(', ')}` : undefined,
       ].filter((l): l is string => typeof l === 'string' && l.length > 0)
       resolved.push({ ...m, label: item.title, inlined: true })
@@ -872,6 +986,24 @@ async function resolveMentions(
       const body = lines.join('\n') + (last ? `\n\nlast reply:\n${clip(last, 4000)}` : '')
       resolved.push({ ...m, label: row.title, inlined: true })
       blocks.push(attachmentTag('session', { id: row.id }, body))
+    } else if (m.kind === 'artifact') {
+      const a = await rt.artifacts.read(m.ref).catch(() => null)
+      if (!a) {
+        resolved.push({ ...m, inlined: false, error: 'not found' })
+        blocks.push(attachmentTag('artifact', { id: m.ref, note: 'could not be attached: no such artifact in this workspace' }))
+        continue
+      }
+      const bytes = Buffer.byteLength(a.body, 'utf8')
+      const attrs = { id: a.artifact.id, title: a.artifact.title, author: a.artifact.author, path: a.abs }
+      if (bytes > MAX_INLINE_FILE_BYTES || bytes > budget) {
+        const error = bytes > MAX_INLINE_FILE_BYTES ? `too large to inline (${Math.round(bytes / 1024)} KB)` : 'over the per-message inline budget'
+        resolved.push({ ...m, label: a.artifact.title, bytes, inlined: false, error })
+        blocks.push(attachmentTag('artifact', { ...attrs, bytes, note: `not inlined: ${error} — read it from disk` }))
+        continue
+      }
+      budget -= bytes
+      resolved.push({ ...m, label: a.artifact.title, bytes, inlined: true })
+      blocks.push(attachmentTag('artifact', { ...attrs, bytes }, a.body))
     }
   }
   if (blocks.length > 0) {
@@ -899,7 +1031,7 @@ async function getOrRevive(rt: WorkspaceRuntime, sessionId: string): Promise<Liv
   const row = rt.rows.get(sessionId)
   if (!row) return null
   const lastSeq = await rt.store.events.lastSeq(row.id)
-  const revived = new LiveSession(rt, row, lastSeq, row.sdkSessionId)
+  const revived = new LiveSession(rt, row, lastSeq, row.sdkSessionId, extrasFor(rt, row))
   rt.live.set(row.id, revived)
   broadcastSessionList(rt)
   return revived
@@ -1049,7 +1181,7 @@ function syncInbox(rt: WorkspaceRuntime): Promise<InboxSnapshot> {
       }
       if (slackConnected(rt) === false) {
         notices.push('slack: the claude.ai Slack connector is disconnected — reconnect it for Slack items to appear')
-      } else if (slackConnected(rt) === true) {
+      } else if (slackConnected(rt) === true && (await watchesEnabled(rt))) {
         // Honest empty state: surface any watch that failed or has gone overdue,
         // so "nothing here" is never confused with "the scan never looked".
         for (const w of await rt.store.watches.list()) {
@@ -1149,6 +1281,7 @@ async function systemStatus(rt: WorkspaceRuntime): Promise<SystemStatus> {
     connectorCount: rt.connectorCache?.connectors.length ?? null,
     schedulerLastTickAt: lastSchedulerTickAt,
     runningWatches: rt.runningWatches.size,
+    watchesEnabled: await watchesEnabled(rt),
     inboxSyncedAt: rt.inboxCache?.syncedAt ?? null,
     githubReconcileAt: rt.githubReconcileAt || null,
     githubNotice: rt.githubNotice,
@@ -1163,6 +1296,8 @@ async function systemStatus(rt: WorkspaceRuntime): Promise<SystemStatus> {
 }
 
 async function runDueWatches(rt: WorkspaceRuntime, opts: { force?: boolean } = {}): Promise<void> {
+  // The global switch (Settings → Sources) — off means the scheduler never runs a watch.
+  if (!(await watchesEnabled(rt))) return
   if (slackConnected(rt) !== true) return
   const now = new Date()
   for (const w of await rt.store.watches.list()) {
@@ -1659,7 +1794,9 @@ const wireWorkspaces = (): Workspace[] => registry.workspaces.map(wireWorkspace)
 /** Bring a runtime up: sessions, seeds, cached snapshot, background probes. */
 async function initRuntime(rt: WorkspaceRuntime): Promise<void> {
   await loadSessions(rt)
-  await seedWatchTemplates(rt)
+  // Watches are off by default in 0.7 (.docs/next-version.md); seeding follows the switch.
+  if (await watchesEnabled(rt)) await seedWatchTemplates(rt)
+  await bootBriefs(rt)
   rt.inboxCache = await rt.store.inbox.load()
   probeConnectors(rt).catch((err) => log('error', 'connectors', `probe failed: ${err}`, { workspace: rt.meta.id }))
   probeModels(rt).catch((err) => log('error', 'models', `probe failed: ${err}`, { workspace: rt.meta.id }))
@@ -1889,7 +2026,9 @@ async function manualItemFrom(rt: WorkspaceRuntime, raw: unknown, opts: { partia
     if (!projects.some((p) => p.id === r.projectId)) throw new Error('unknown project')
     input.projectId = r.projectId
   }
-  if (typeof r.note === 'string' && r.note.trim()) input.note = r.note.trim()
+  // `description` is the 0.7 name; `note` is accepted as the old one for one release.
+  const desc = typeof r.description === 'string' ? r.description : typeof r.note === 'string' ? r.note : undefined
+  if (desc !== undefined && desc.trim()) input.description = desc.trim()
   if (typeof r.url === 'string' && r.url.trim()) {
     if (!/^https?:\/\//.test(r.url.trim())) throw new Error('link must be an http(s) URL')
     input.url = r.url.trim()
@@ -1962,6 +2101,503 @@ async function editManualOp(rt: WorkspaceRuntime, id: string, raw: unknown): Pro
 // Claude Code session drive the inbox identically. Handlers call the ops above
 // directly — no HTTP round-trip — against THIS workspace's store. Reads are
 // auto-allowed in requestPermission; writes surface a permission prompt.
+// --- artifacts + links (.docs/next-version.md, phase 1) ----------------------
+//
+// Same shape as the item ops: validation once, three callers (HTTP, the
+// in-process MCP server, the stdio shim over HTTP). The index does the file
+// work; these decide what may be written and by whom.
+
+const HIDDEN_ITEM_STATUSES = new Set<ItemStatus>(['done', 'archived'])
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+type OkBody = { ok: true } | { ok: false; error: string }
+
+/** Every artifact with its outgoing links; `hidden` marks the brief of a finished item. */
+async function listArtifactsOp(rt: WorkspaceRuntime, all: boolean): Promise<ArtifactWithLinks[]> {
+  await rt.artifacts.refresh()
+  const [rows, links] = await Promise.all([rt.store.artifacts.list(), rt.store.links.list()])
+  const bySource = new Map<string, Link[]>()
+  for (const l of links) {
+    if (l.fromKind !== 'artifact') continue
+    const list = bySource.get(l.fromId) ?? []
+    list.push(l)
+    bySource.set(l.fromId, list)
+  }
+  const out: ArtifactWithLinks[] = []
+  for (const a of rows) {
+    const mine = bySource.get(a.id) ?? []
+    let hidden = false
+    for (const l of mine) {
+      if (l.role !== 'brief' || l.toKind !== 'item') continue
+      const item = await rt.store.items.get(l.toId).catch(() => null)
+      if (item?.status && HIDDEN_ITEM_STATUSES.has(item.status)) hidden = true
+    }
+    if (hidden && !all) continue
+    out.push({ ...a, links: mine, hidden })
+  }
+  return out
+}
+
+function linkTargetFrom(raw: unknown): { kind: LinkKind; id: string; role: LinkRole } {
+  const l = (raw ?? {}) as Record<string, unknown>
+  if (!isLinkKind(l.kind) || l.kind === 'artifact') throw new Error('link kind must be item or session')
+  if (typeof l.id !== 'string' || !l.id) throw new Error('a link needs an id')
+  if (!isLinkRole(l.role)) throw new Error('link role must be brief, context or dispatch')
+  return { kind: l.kind, id: l.id, role: l.role }
+}
+
+/** Rejects, never repairs — like workItemFrom. */
+function artifactInputFrom(raw: unknown, opts: { partial: boolean }): ArtifactInput {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const title = typeof r.title === 'string' ? r.title.trim() : undefined
+  const body = typeof r.body === 'string' ? r.body : undefined
+  if (!opts.partial && !title) throw new Error('title is required')
+  if (title !== undefined && !title) throw new Error('title cannot be empty')
+  if (title && title.length > 200) throw new Error('title is too long (200 characters max)')
+  if (body !== undefined && body.length > 2_000_000) throw new Error('body is too large (2 MB max)')
+  if (r.refs !== undefined && !Array.isArray(r.refs)) throw new Error('refs must be an array of strings')
+  const refs = Array.isArray(r.refs) ? r.refs.filter((x): x is string => typeof x === 'string') : undefined
+  if (r.author !== undefined && !isArtifactAuthor(r.author)) throw new Error('author must be human or model')
+  if (r.links !== undefined && !Array.isArray(r.links)) throw new Error('links must be an array')
+  const links = Array.isArray(r.links) ? r.links.map(linkTargetFrom) : undefined
+  return {
+    ...(title !== undefined ? { title } : {}),
+    ...(body !== undefined ? { body } : {}),
+    ...(refs ? { refs } : {}),
+    ...(isArtifactAuthor(r.author) ? { author: r.author } : {}),
+    ...(links ? { links } : {}),
+  }
+}
+
+/** A link's endpoints must exist in this workspace — a dangling link is a bug, not data. */
+async function assertLinkable(rt: WorkspaceRuntime, kind: LinkKind, id: string): Promise<void> {
+  if (kind === 'item') {
+    if (!(await rt.store.items.get(id))) throw new Error(`no work item ${id}`)
+  } else if (kind === 'session') {
+    if (!rt.rows.has(id)) throw new Error(`no session ${id}`)
+  } else if (!(await rt.store.artifacts.get(id))) throw new Error(`no artifact ${id}`)
+}
+
+async function createArtifactOp(rt: WorkspaceRuntime, raw: unknown, defaultAuthor: ArtifactAuthor): Promise<Artifact> {
+  const input = artifactInputFrom(raw, { partial: false })
+  for (const l of input.links ?? []) await assertLinkable(rt, l.kind, l.id)
+  const artifact = await rt.artifacts.create({
+    title: input.title ?? 'Untitled',
+    body: input.body ?? '',
+    author: input.author ?? defaultAuthor,
+    ...(input.refs ? { refs: input.refs } : {}),
+  })
+  for (const l of input.links ?? []) {
+    await rt.store.links.add({ fromKind: 'artifact', fromId: artifact.id, toKind: l.kind, toId: l.id, role: l.role })
+  }
+  log('info', 'artifacts', `created ${artifact.path}`, { id: artifact.id, author: artifact.author, workspace: rt.meta.id })
+  return artifact
+}
+
+/**
+ * Edit in place. `by` is who is asking: a human may edit anything; the model
+ * may only rewrite what the model wrote — a human's note it can propose to,
+ * never overwrite (.docs/next-version.md).
+ */
+async function updateArtifactOp(rt: WorkspaceRuntime, id: string, raw: unknown, by: ArtifactAuthor): Promise<Artifact> {
+  const input = artifactInputFrom(raw, { partial: true })
+  if (input.title === undefined && input.body === undefined && input.refs === undefined) throw new Error('nothing to change')
+  const cur = await rt.store.artifacts.get(id)
+  if (!cur) throw new Error('no such artifact')
+  if (by === 'model' && cur.author !== 'model') {
+    throw new Error('this artifact is human-authored — propose the change to the user instead of rewriting it')
+  }
+  const artifact = await rt.artifacts.update(id, {
+    ...(input.title !== undefined ? { title: input.title } : {}),
+    ...(input.body !== undefined ? { body: input.body } : {}),
+    ...(input.refs !== undefined ? { refs: input.refs } : {}),
+  })
+  log('info', 'artifacts', `updated ${artifact.path}`, { id, by, workspace: rt.meta.id })
+  return artifact
+}
+
+async function addLinkOp(rt: WorkspaceRuntime, raw: unknown): Promise<Link> {
+  const l = (raw ?? {}) as Record<string, unknown>
+  if (!isLinkKind(l.fromKind) || !isLinkKind(l.toKind)) throw new Error('fromKind and toKind must be artifact, item or session')
+  if (typeof l.fromId !== 'string' || !l.fromId || typeof l.toId !== 'string' || !l.toId) throw new Error('need fromId and toId')
+  if (!isLinkRole(l.role)) throw new Error('role must be brief, context or dispatch')
+  await assertLinkable(rt, l.fromKind, l.fromId)
+  await assertLinkable(rt, l.toKind, l.toId)
+  return rt.store.links.add({ fromKind: l.fromKind, fromId: l.fromId, toKind: l.toKind, toId: l.toId, role: l.role })
+}
+
+/** Both directions, de-duplicated: everything that points at or from one entity. */
+async function linksFor(rt: WorkspaceRuntime, kind: LinkKind, id: string): Promise<Link[]> {
+  const [to, from] = await Promise.all([rt.store.links.forTarget(kind, id), rt.store.links.forSource(kind, id)])
+  const seen = new Set<string>()
+  return [...to, ...from].filter((l) => (seen.has(l.id) ? false : (seen.add(l.id), true)))
+}
+
+/** Open a file in whatever the OS opens .md with — the server runs on the user's own machine. */
+async function openInEditor(abs: string): Promise<void> {
+  if (process.platform === 'darwin') await pExecFile('open', [abs])
+  else if (process.platform === 'win32') await pExecFile('cmd', ['/c', 'start', '', abs])
+  else await pExecFile('xdg-open', [abs])
+}
+
+// --- settings, briefs and dispatch (.docs/next-version.md, phase 2) ----------
+
+const WATCHES_ENABLED_KEY = 'watches.enabled'
+const BRIEFS_CAP_KEY = 'briefs.dailyCap'
+const BRIEFS_MODEL_KEY = 'briefs.defaultModel'
+const DEFAULT_BRIEF_CAP = 20
+const BRIEF_TIMEOUT_MS = 300_000
+
+/** The global watches switch. Off by default: 0.7 is pull-before-push. */
+async function watchesEnabled(rt: WorkspaceRuntime): Promise<boolean> {
+  return (await rt.store.config.get<boolean>(WATCHES_ENABLED_KEY)) === true
+}
+
+async function readSettings(rt: WorkspaceRuntime): Promise<WorkspaceSettings> {
+  const cap = await rt.store.config.get<number>(BRIEFS_CAP_KEY)
+  const model = await rt.store.config.get<string>(BRIEFS_MODEL_KEY)
+  return {
+    watchesEnabled: await watchesEnabled(rt),
+    briefsDailyCap: typeof cap === 'number' && cap > 0 ? cap : DEFAULT_BRIEF_CAP,
+    briefsDefaultModel: typeof model === 'string' && model ? model : null,
+  }
+}
+
+async function writeSettings(rt: WorkspaceRuntime, raw: unknown): Promise<WorkspaceSettings> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  if (r.watchesEnabled !== undefined) {
+    if (typeof r.watchesEnabled !== 'boolean') throw new Error('watchesEnabled must be a boolean')
+    await rt.store.config.set(WATCHES_ENABLED_KEY, r.watchesEnabled)
+    if (r.watchesEnabled) await seedWatchTemplates(rt)
+    log('info', 'watch', `watches ${r.watchesEnabled ? 'enabled' : 'disabled'}`, { workspace: rt.meta.id })
+  }
+  if (r.briefsDailyCap !== undefined) {
+    const n = r.briefsDailyCap
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 500) throw new Error('briefsDailyCap must be a whole number from 1 to 500')
+    await rt.store.config.set(BRIEFS_CAP_KEY, n)
+  }
+  if (r.briefsDefaultModel !== undefined) {
+    if (r.briefsDefaultModel !== null && typeof r.briefsDefaultModel !== 'string') throw new Error('briefsDefaultModel must be a string or null')
+    await rt.store.config.set(BRIEFS_MODEL_KEY, r.briefsDefaultModel || null)
+  }
+  rt.inboxCache = null
+  return readSettings(rt)
+}
+
+/** The folder an item's work lands in: its project, else the project whose repo it belongs to. */
+async function projectFor(rt: WorkspaceRuntime, item: WorkItem): Promise<Project | null> {
+  const projects = await rt.store.projects.list()
+  return (
+    (item.projectId ? projects.find((p) => p.id === item.projectId) : undefined) ??
+    projects.find((p) => p.repo && p.repo === item.repo) ??
+    null
+  )
+}
+
+/** Record that a session works (dispatch) or documents (brief) an item; mirrored in memory for summaries. */
+async function linkSessionToItem(rt: WorkspaceRuntime, sessionId: string, itemId: string, role: 'dispatch' | 'brief'): Promise<void> {
+  if (!(await rt.store.items.get(itemId))) return
+  await rt.store.links.add({ fromKind: 'session', fromId: sessionId, toKind: 'item', toId: itemId, role })
+  rt.sessionItem.set(sessionId, itemId)
+  broadcastSessionList(rt)
+}
+
+/** The artifact linked to an item as its brief, with the body on disk. */
+async function currentBrief(rt: WorkspaceRuntime, itemId: string): Promise<{ artifact: Artifact; body: string } | null> {
+  const links = await rt.store.links.forTarget('item', itemId)
+  const l = links.find((x) => x.fromKind === 'artifact' && x.role === 'brief')
+  if (!l) return null
+  const a = await rt.artifacts.read(l.fromId)
+  return a ? { artifact: a.artifact, body: a.body } : null
+}
+
+async function briefViewFor(rt: WorkspaceRuntime, itemId: string): Promise<BriefView> {
+  const [job, item, cur, queued] = await Promise.all([
+    rt.store.briefs.latestForItem(itemId),
+    rt.store.items.get(itemId),
+    currentBrief(rt, itemId),
+    rt.store.briefs.list('queued'),
+  ])
+  const sourceMs = item ? Date.parse(item.updatedAt) : NaN
+  // Stale is arithmetic, never a judgment: the source moved after the brief was written.
+  const settled = !job || job.status === 'ready' || job.status === 'failed'
+  const stale = !!cur && settled && Number.isFinite(sourceMs) && sourceMs > cur.artifact.updated
+  const pos = job?.status === 'queued' ? queued.findIndex((q) => q.id === job.id) : -1
+  return { job, stale, artifact: cur?.artifact ?? null, body: cur?.body ?? null, queuePosition: pos >= 0 ? pos : null }
+}
+
+const broadcastBrief = (rt: WorkspaceRuntime, job: BriefJob) => broadcast(rt, { type: 'brief_status', job })
+
+/** Spawn-time extras by session kind; brief sessions get the headless contract and their write tool. */
+function extrasFor(rt: WorkspaceRuntime, row: StoredSession): SessionExtras {
+  if (row.kind !== 'brief') return {}
+  let e = rt.briefExtras.get(row.id)
+  if (!e) {
+    e = { systemAppend: BRIEF_SYSTEM_APPEND, mcp: { brief: makeBriefMcp(rt, row.id) } }
+    rt.briefExtras.set(row.id, e)
+  }
+  return e
+}
+
+/**
+ * The brief session's one write: the server picks the file (one per item),
+ * writes the frontmatter, commits, links it as the item's brief. Looks the
+ * job up by session at call time, so the same server serves every run and
+ * iteration in that session.
+ */
+function makeBriefMcp(rt: WorkspaceRuntime, sessionId: string) {
+  return createSdkMcpServer({
+    name: 'brief',
+    version: VERSION,
+    tools: [
+      tool(
+        'write_brief',
+        'Save the brief for this work item. Call exactly once, with the WHOLE document (it replaces any previous brief). The server chooses the file and links it to the item.',
+        {
+          title: z.string().describe('a short title — the verdict or the one-line summary'),
+          body: z.string().describe('the full markdown body'),
+          refs: z.array(z.string()).optional().describe('PR/issue URLs or Linear keys the brief cites'),
+        },
+        async (args) => {
+          try {
+            const job = await rt.store.briefs.forSession(sessionId)
+            if (!job || job.status !== 'running') return errResult('no brief run is active in this session')
+            const item = await rt.store.items.get(job.itemId)
+            if (!item) return errResult('the work item no longer exists')
+            const refs = [...(item.refs ?? []), ...(args.refs ?? [])]
+            const artifact = await rt.artifacts.writeAt(briefRelPath(item.id), {
+              title: args.title.trim() || item.title,
+              body: args.body,
+              author: 'model',
+              ...(refs.length ? { refs } : {}),
+            })
+            await rt.store.links.add({ fromKind: 'artifact', fromId: artifact.id, toKind: 'item', toId: item.id, role: 'brief' })
+            await rt.store.briefs.update(job.id, { artifactId: artifact.id })
+            rt.briefWrote.add(job.id)
+            log('info', 'briefs', `brief written: ${item.title}`, { jobId: job.id, itemId: item.id, artifactId: artifact.id, workspace: rt.meta.id })
+            return okResult(`ok: brief saved to ${artifact.path}`)
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+    ],
+  })
+}
+
+/** Queue briefs for items. An item already queued or running keeps its job; a ready one continues its session. */
+async function enqueueBriefsOp(rt: WorkspaceRuntime, raw: unknown): Promise<BriefJob[]> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const ids = Array.isArray(r.itemIds) ? r.itemIds.filter((x): x is string => typeof x === 'string' && ANY_ITEM_ID_RE.test(x)) : []
+  if (!ids.length) throw new Error('need itemIds')
+  if (ids.length > 50) throw new Error('at most 50 items at once')
+  const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : null
+  const model = typeof r.model === 'string' && r.model ? r.model : null
+  if (r.playbook !== undefined && !isPlaybookName(r.playbook)) throw new Error('playbook must be a kind name')
+  const jobs: BriefJob[] = []
+  for (const id of ids) {
+    const item = await rt.store.items.get(id)
+    if (!item) throw new Error(`no work item ${id}`)
+    const latest = await rt.store.briefs.latestForItem(id)
+    if (latest && (latest.status === 'queued' || latest.status === 'running')) {
+      jobs.push(latest)
+      continue
+    }
+    const job = await rt.store.briefs.create({ id: randomUUID(), itemId: id, playbook: (r.playbook as string | undefined) ?? item.kind, model, note })
+    // A re-brief of a finished brief continues the session that wrote it — it already knows the item.
+    if (latest?.status === 'ready' && latest.sessionId && rt.rows.has(latest.sessionId)) {
+      await rt.store.briefs.update(job.id, { sessionId: latest.sessionId })
+      job.sessionId = latest.sessionId
+    }
+    jobs.push(job)
+    broadcastBrief(rt, job)
+    log('info', 'briefs', `queued: ${item.title}`, { jobId: job.id, itemId: id, workspace: rt.meta.id })
+  }
+  pumpBriefQueue(rt)
+  return jobs
+}
+
+/** "You missed X": a new job in the same session, carrying the feedback as its note. */
+async function iterateBriefOp(rt: WorkspaceRuntime, raw: unknown): Promise<BriefJob> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const itemId = typeof r.itemId === 'string' ? r.itemId : ''
+  const text = typeof r.text === 'string' ? r.text.trim() : ''
+  if (!ANY_ITEM_ID_RE.test(itemId)) throw new Error('need an itemId')
+  if (!text) throw new Error('say what to change')
+  const latest = await rt.store.briefs.latestForItem(itemId)
+  if (!latest || (latest.status !== 'ready' && latest.status !== 'failed')) throw new Error('no finished brief to iterate on yet')
+  const job = await rt.store.briefs.create({ id: randomUUID(), itemId, playbook: latest.playbook, model: latest.model, note: text })
+  if (latest.sessionId && rt.rows.has(latest.sessionId)) {
+    await rt.store.briefs.update(job.id, { sessionId: latest.sessionId })
+    job.sessionId = latest.sessionId
+  }
+  broadcastBrief(rt, job)
+  pumpBriefQueue(rt)
+  return job
+}
+
+function pumpBriefQueue(rt: WorkspaceRuntime): void {
+  if (rt.briefActive || rt.briefPumping) return
+  rt.briefPumping = true
+  void (async () => {
+    const [next] = await rt.store.briefs.list('queued')
+    if (!next) return
+    rt.briefActive = next.id
+    try {
+      await startBriefRun(rt, next)
+    } catch (err) {
+      await finishBrief(rt, next.id, 'failed', errText(err))
+    }
+  })()
+    .catch((err) => log('error', 'briefs', `pump failed: ${err}`, { workspace: rt.meta.id }))
+    .finally(() => {
+      rt.briefPumping = false
+    })
+}
+
+async function startBriefRun(rt: WorkspaceRuntime, job: BriefJob): Promise<void> {
+  const settings = await readSettings(rt)
+  const dayStart = new Date()
+  dayStart.setHours(0, 0, 0, 0)
+  if ((await rt.store.briefs.countStartedSince(dayStart.getTime())) >= settings.briefsDailyCap) {
+    throw new Error(`the daily cap of ${settings.briefsDailyCap} brief runs is reached — raise it in Settings → Briefs, or try tomorrow`)
+  }
+  const item = await rt.store.items.get(job.itemId)
+  if (!item) throw new Error('the work item no longer exists')
+  const playbook = await readPlaybook(rt.playbookDir, job.playbook)
+  const existing = await currentBrief(rt, item.id)
+  const reuse = job.sessionId ? rt.rows.get(job.sessionId) ?? null : null
+  let row: StoredSession
+  if (reuse) row = reuse
+  else {
+    const project = await projectFor(rt, item)
+    row = await createSession(
+      rt,
+      `Brief · ${item.title.slice(0, 70)}`,
+      project?.path ?? os.homedir(),
+      job.model ?? settings.briefsDefaultModel,
+      null,
+      false,
+      'gated',
+      { kind: 'brief' },
+    )
+    await linkSessionToItem(rt, row.id, item.id, 'brief')
+  }
+  const startedAt = Date.now()
+  await rt.store.briefs.update(job.id, { status: 'running', sessionId: row.id, startedAt, error: null })
+  rt.briefWrote.delete(job.id)
+  broadcastBrief(rt, { ...job, status: 'running', sessionId: row.id, startedAt, error: null })
+  const live = await getOrRevive(rt, row.id)
+  if (!live) throw new Error('could not start the brief session')
+  rt.briefTimers.set(
+    job.id,
+    setTimeout(() => {
+      void finishBrief(rt, job.id, 'failed', 'timed out after 5 minutes').then(() => {
+        void live.interrupt()
+        live.stop()
+      })
+    }, BRIEF_TIMEOUT_MS),
+  )
+  const scored = rt.inboxCache?.items.find((i) => i.id === item.id)
+  const iteration = !!reuse && !!job.note && !!existing
+  await live.sendUserMessage(
+    composeBriefPrompt({
+      item,
+      reason: scored?.reason,
+      playbookName: job.playbook,
+      playbook: playbook.body,
+      note: job.note,
+      existing: existing?.body ?? null,
+      iteration,
+    }),
+  )
+  log('info', 'briefs', `run started: ${item.title}${iteration ? ' (iteration)' : ''}`, {
+    jobId: job.id,
+    itemId: item.id,
+    sessionId: row.id,
+    playbook: job.playbook,
+    workspace: rt.meta.id,
+  })
+}
+
+async function finishBrief(rt: WorkspaceRuntime, jobId: string, status: 'ready' | 'failed', error?: string): Promise<void> {
+  const job = await rt.store.briefs.get(jobId)
+  const timer = rt.briefTimers.get(jobId)
+  if (timer) clearTimeout(timer)
+  rt.briefTimers.delete(jobId)
+  rt.briefWrote.delete(jobId)
+  if (job && (job.status === 'running' || job.status === 'queued')) {
+    const finishedAt = Date.now()
+    await rt.store.briefs.update(jobId, { status, error: error ?? null, finishedAt })
+    broadcastBrief(rt, { ...job, status, error: error ?? null, finishedAt })
+    // Nothing more to do in the subprocess; iteration revives it with `resume`.
+    if (job.sessionId) rt.live.get(job.sessionId)?.stop()
+    log(status === 'ready' ? 'info' : 'error', 'briefs', `run ${status}: ${job.itemId}${error ? ` — ${error}` : ''}`, {
+      jobId,
+      itemId: job.itemId,
+      status,
+      workspace: rt.meta.id,
+      ...(error ? { error } : {}),
+    })
+  }
+  if (rt.briefActive === jobId) rt.briefActive = null
+  pumpBriefQueue(rt)
+}
+
+/** The run's turn ended: ready if write_brief landed, else the model finished without writing. */
+async function onBriefTurnDone(rt: WorkspaceRuntime, sessionId: string): Promise<void> {
+  const job = await rt.store.briefs.forSession(sessionId)
+  if (!job || job.status !== 'running') return
+  const wrote = rt.briefWrote.has(job.id)
+  await finishBrief(rt, job.id, wrote ? 'ready' : 'failed', wrote ? undefined : 'the run finished without calling write_brief')
+}
+
+/** The subprocess died mid-run (crash, interrupt, auth): the job cannot complete. */
+async function onBriefSessionEnded(rt: WorkspaceRuntime, sessionId: string): Promise<void> {
+  const job = await rt.store.briefs.forSession(sessionId)
+  if (!job || job.status !== 'running') return
+  await finishBrief(rt, job.id, 'failed', 'the brief session ended before it finished')
+}
+
+/** Boot: seed the prose files, mirror session→item links, fail runs the old daemon took down, pump. */
+async function bootBriefs(rt: WorkspaceRuntime): Promise<void> {
+  await seedPlaybooks(rt.playbookDir).catch((err) => log('error', 'briefs', `could not seed playbooks: ${err}`, { workspace: rt.meta.id }))
+  await seedDispatchTemplates(rt.dispatchDir).catch((err) => log('error', 'briefs', `could not seed dispatch templates: ${err}`, { workspace: rt.meta.id }))
+  for (const l of await rt.store.links.list()) {
+    if (l.fromKind === 'session' && l.toKind === 'item') rt.sessionItem.set(l.fromId, l.toId)
+  }
+  const failed = await rt.store.briefs.failAllRunning('the daemon restarted while this brief was running — re-brief to try again')
+  if (failed.length) log('warn', 'briefs', `failed ${failed.length} run(s) interrupted by the restart`, { jobIds: failed, workspace: rt.meta.id })
+  pumpBriefQueue(rt)
+}
+
+/** What a dispatched session opens with: the kind's template, the item, and the brief as a mention. */
+async function dispatchPreviewOp(rt: WorkspaceRuntime, itemId: string): Promise<DispatchPreview> {
+  const scored = rt.inboxCache?.items.find((i) => i.id === itemId)
+  const item = scored ?? (await rt.store.items.get(itemId))
+  if (!item) throw new Error('no such work item')
+  const [project, brief, latest, tpl] = await Promise.all([
+    projectFor(rt, item),
+    currentBrief(rt, item.id),
+    rt.store.briefs.latestForItem(item.id),
+    readDispatchTemplate(rt.dispatchDir, item.kind),
+  ])
+  const mentions: Mention[] = [{ kind: 'item', ref: item.id, label: item.title }]
+  if (brief) mentions.push({ kind: 'artifact', ref: brief.artifact.id, label: brief.artifact.title })
+  const body = renderTemplate(tpl, {
+    kind: item.kind,
+    title: item.title,
+    url: item.url || undefined,
+    description: item.description,
+    reason: scored?.reason,
+    note: latest?.note ?? undefined,
+    brief: !!brief,
+    source: item.source !== 'manual',
+  })
+  // The mention tokens must appear in the text — the composer attaches only what the text names.
+  const text = `${body}\n\n${mentions.map(mentionToken).join(' ')}`
+  return { title: item.title.slice(0, 80), cwd: project?.path ?? null, text, mentions }
+}
+
 const okResult = (text: string) => ({ content: [{ type: 'text' as const, text }] })
 const errResult = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true })
 
@@ -1988,10 +2624,11 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
       ),
       tool(
         'create_work_item',
-        'Add a manual to-do to the inbox (a user-authored item). Title is required; note, url, priority (1–4), and projectId are optional.',
+        'Add a manual to-do to the inbox (a user-authored item). Title is required; description, url, priority (1–4), and projectId are optional.',
         {
           title: z.string().describe('what the to-do is'),
-          note: z.string().optional(),
+          description: z.string().optional().describe("the user's intent in a few sentences"),
+          note: z.string().optional().describe('alias of description'),
           url: z.string().optional().describe('an http(s) link'),
           priority: z.number().int().min(1).max(4).optional(),
           projectId: z.string().optional().describe('an existing project id'),
@@ -2011,7 +2648,8 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
         {
           id: z.string().describe('the manual item id, e.g. "manual:<uuid>"'),
           title: z.string().optional(),
-          note: z.string().optional(),
+          description: z.string().optional(),
+          note: z.string().optional().describe('alias of description'),
           url: z.string().optional(),
           priority: z.number().int().min(0).max(4).nullable().optional(),
           projectId: z.string().optional(),
@@ -2062,6 +2700,107 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
             return okResult('ok: done')
           } catch (err) {
             return errResult(err instanceof Error ? err.message : String(err))
+          }
+        },
+      ),
+      // Artifacts: the user's markdown notes and briefs beside the inbox
+      // (.docs/next-version.md). Reads are auto-allowed; writes prompt like
+      // every other triage write, and the model may only rewrite its own.
+      tool(
+        'list_artifacts',
+        "List this workspace's artifacts — markdown notes and briefs kept beside the work items — with id, title, author (human|model), refs, path and links. Read one with read_artifact.",
+        { all: z.boolean().optional().describe('include briefs of finished (done/archived) items, hidden by default') },
+        async (args) => {
+          try {
+            const rows = await listArtifactsOp(rt, args.all === true)
+            return okResult(JSON.stringify(rows.map(({ mtime, size, ...a }) => (void mtime, void size, a)), null, 2))
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+      tool(
+        'read_artifact',
+        'Read one artifact by id: title, author, refs, its path on disk, and the full markdown body.',
+        { id: z.string().describe('the artifact id from list_artifacts') },
+        async (args) => {
+          try {
+            const a = await rt.artifacts.read(args.id)
+            if (!a) return errResult('no such artifact')
+            const head = [
+              `title: ${a.artifact.title}`,
+              `id: ${a.artifact.id}`,
+              `author: ${a.artifact.author}`,
+              `path: ${a.abs}`,
+              a.artifact.refs.length ? `refs: ${a.artifact.refs.join(', ')}` : undefined,
+            ].filter((l): l is string => typeof l === 'string')
+            return okResult(`${head.join('\n')}\n\n${a.body}`)
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+      tool(
+        'write_artifact',
+        'Create a new artifact (a markdown note authored by you, the model) in the workspace, optionally linked to a work item or session as context. Returns its id. Use update_artifact to change it later.',
+        {
+          title: z.string().describe('a short title'),
+          body: z.string().describe('the markdown body'),
+          refs: z.array(z.string()).optional().describe('GitHub PR/issue URLs or Linear keys this note is about'),
+          links: z
+            .array(
+              z.object({
+                kind: z.enum(['item', 'session']),
+                id: z.string(),
+                role: z.enum(['brief', 'context', 'dispatch']),
+              }),
+            )
+            .optional()
+            .describe('attach to a work item or session; role is usually "context"'),
+        },
+        async (args) => {
+          try {
+            const a = await createArtifactOp(rt, args, 'model')
+            return okResult(`ok: created ${a.id} at ${a.path}`)
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+      tool(
+        'update_artifact',
+        'Rewrite an artifact you (the model) authored, in place: any of title, body, refs. Human-authored artifacts are refused — propose the change to the user instead.',
+        {
+          id: z.string(),
+          title: z.string().optional(),
+          body: z.string().optional(),
+          refs: z.array(z.string()).optional(),
+        },
+        async (args) => {
+          try {
+            const { id, ...patch } = args
+            const a = await updateArtifactOp(rt, id, patch, 'model')
+            return okResult(`ok: updated ${a.path}`)
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+      tool(
+        'link_artifact',
+        'Link an existing artifact to a work item or session with a role ("context" for notes to read alongside; "brief" only for the document about an item).',
+        {
+          artifactId: z.string(),
+          kind: z.enum(['item', 'session']),
+          id: z.string(),
+          role: z.enum(['brief', 'context', 'dispatch']),
+        },
+        async (args) => {
+          try {
+            const l = await addLinkOp(rt, { fromKind: 'artifact', fromId: args.artifactId, toKind: args.kind, toId: args.id, role: args.role })
+            return okResult(`ok: linked ${l.id}`)
+          } catch (err) {
+            return errResult(errText(err))
           }
         },
       ),
@@ -2768,6 +3507,246 @@ const server = http.createServer(async (req, res) => {
     json(body.ok ? 200 : 502, body)
     return
   }
+  // --- settings, briefs, playbooks, dispatch (.docs/next-version.md, phase 2) ---
+  if (url.pathname === '/api/settings') {
+    let body: SettingsResponse
+    try {
+      if (req.method === 'GET') body = { ok: true, settings: await readSettings(rt) }
+      else if (req.method === 'PUT') body = { ok: true, settings: await writeSettings(rt, await readJsonBody(req)) }
+      else throw new Error('method not allowed')
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/playbooks') {
+    const kind = url.searchParams.get('kind')
+    try {
+      if (req.method === 'GET' && !kind) {
+        const body: PlaybooksResponse = { ok: true, playbooks: await listPlaybooks(rt.playbookDir) }
+        json(200, body)
+      } else if (req.method === 'GET' && kind) {
+        const p = await readPlaybook(rt.playbookDir, kind)
+        const body: PlaybookResponse = { ok: true, kind, body: p.body, custom: p.custom, path: p.path }
+        json(200, body)
+      } else if (req.method === 'PUT' && kind) {
+        const parsed = (await readJsonBody(req)) as { body?: unknown } | null
+        if (typeof parsed?.body !== 'string') throw new Error('need a markdown body')
+        await writePlaybook(rt.playbookDir, kind, parsed.body)
+        const p = await readPlaybook(rt.playbookDir, kind)
+        const body: PlaybookResponse = { ok: true, kind, body: p.body, custom: p.custom, path: p.path }
+        json(200, body)
+      } else throw new Error('need ?kind= (GET or PUT)')
+    } catch (err) {
+      json(400, { ok: false, error: errText(err) })
+    }
+    return
+  }
+  if (url.pathname === '/api/dispatch/template') {
+    const kind = url.searchParams.get('kind') ?? ''
+    try {
+      if (!isPlaybookName(kind)) throw new Error('need ?kind=')
+      if (req.method === 'PUT') {
+        const parsed = (await readJsonBody(req)) as { body?: unknown } | null
+        if (typeof parsed?.body !== 'string') throw new Error('need a template body')
+        await writeDispatchTemplate(rt.dispatchDir, kind, parsed.body)
+      }
+      json(200, { ok: true, kind, body: await readDispatchTemplate(rt.dispatchDir, kind) })
+    } catch (err) {
+      json(400, { ok: false, error: errText(err) })
+    }
+    return
+  }
+  if (url.pathname === '/api/dispatch/preview' && req.method === 'GET') {
+    let body: DispatchPreviewResponse
+    try {
+      body = { ok: true, preview: await dispatchPreviewOp(rt, url.searchParams.get('itemId') ?? '') }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/briefs' && req.method === 'GET') {
+    const itemId = url.searchParams.get('itemId')
+    try {
+      if (itemId) {
+        const body: BriefResponse = { ok: true, brief: await briefViewFor(rt, itemId) }
+        json(200, body)
+      } else {
+        const body: BriefJobsResponse = { ok: true, jobs: await rt.store.briefs.latestPerItem() }
+        json(200, body)
+      }
+    } catch (err) {
+      json(400, { ok: false, error: errText(err) })
+    }
+    return
+  }
+  if (url.pathname === '/api/briefs' && req.method === 'POST') {
+    let body: BriefJobsResponse
+    try {
+      body = { ok: true, jobs: await enqueueBriefsOp(rt, await readJsonBody(req)) }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/briefs/iterate' && req.method === 'POST') {
+    let body: BriefJobsResponse
+    try {
+      body = { ok: true, jobs: [await iterateBriefOp(rt, await readJsonBody(req))] }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if ((url.pathname === '/api/briefs/cancel' || url.pathname === '/api/briefs/promote') && req.method === 'POST') {
+    let body: BriefJobsResponse
+    try {
+      const parsed = (await readJsonBody(req)) as { jobId?: unknown } | null
+      const jobId = typeof parsed?.jobId === 'string' ? parsed.jobId : ''
+      const job = jobId ? await rt.store.briefs.get(jobId) : null
+      if (!job || job.status !== 'queued') throw new Error('only a queued brief can be cancelled or moved')
+      if (url.pathname.endsWith('/cancel')) {
+        await finishBrief(rt, job.id, 'failed', 'cancelled before it ran')
+      } else {
+        // To the head of the line: older than the oldest queued job.
+        const [first] = await rt.store.briefs.list('queued')
+        await rt.store.briefs.update(job.id, { createdAt: (first?.createdAt ?? job.createdAt) - 1 })
+      }
+      body = { ok: true, jobs: [(await rt.store.briefs.get(job.id)) ?? job] }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/items/description' && req.method === 'POST') {
+    let body: ItemStateResponse
+    try {
+      const parsed = (await readJsonBody(req)) as { id?: unknown; description?: unknown } | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need an item id')
+      const d = parsed?.description
+      if (d !== null && d !== undefined && typeof d !== 'string') throw new Error('description must be a string')
+      if (typeof d === 'string' && d.length > 5000) throw new Error('description is too long (5000 chars max)')
+      await rt.store.items.setDescription(id, typeof d === 'string' && d.trim() ? d.trim() : null)
+      rt.inboxCache = null
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  // --- artifacts + links (.docs/next-version.md, phase 1) ---------------------
+  if (url.pathname === '/api/artifacts' && req.method === 'GET') {
+    let body: ArtifactsResponse
+    try {
+      body = { ok: true, root: rt.artifacts.root, artifacts: await listArtifactsOp(rt, url.searchParams.get('all') === '1') }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 500, body)
+    return
+  }
+  if (url.pathname === '/api/artifacts/content' && req.method === 'GET') {
+    let body: ArtifactContentResponse
+    try {
+      const id = url.searchParams.get('id') ?? ''
+      const a = id ? await rt.artifacts.read(id) : null
+      if (!a) throw new Error('no such artifact')
+      body = { ok: true, artifact: a.artifact, body: a.body, links: await linksFor(rt, 'artifact', id), abs: a.abs }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 404, body)
+    return
+  }
+  if (url.pathname === '/api/artifacts' && (req.method === 'POST' || req.method === 'PUT')) {
+    let body: ArtifactResponse
+    try {
+      const parsed = await readJsonBody(req)
+      if (req.method === 'POST') body = { ok: true, artifact: await createArtifactOp(rt, parsed, 'human') }
+      else {
+        const id = url.searchParams.get('id') ?? ''
+        if (!id) throw new Error('need an artifact id')
+        // The stdio shim edits as the model (`?by=model`) and is held to the model's rule.
+        const by: ArtifactAuthor = url.searchParams.get('by') === 'model' ? 'model' : 'human'
+        body = { ok: true, artifact: await updateArtifactOp(rt, id, parsed, by) }
+      }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/artifacts' && req.method === 'DELETE') {
+    let body: OkBody
+    try {
+      const id = url.searchParams.get('id') ?? ''
+      if (!id) throw new Error('need an artifact id')
+      await rt.artifacts.remove(id)
+      log('info', 'artifacts', `removed ${id}`, { id, workspace: rt.meta.id })
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/artifacts/reindex' && req.method === 'POST') {
+    let body: ArtifactsResponse
+    try {
+      await rt.artifacts.refresh(true)
+      body = { ok: true, root: rt.artifacts.root, artifacts: await listArtifactsOp(rt, url.searchParams.get('all') === '1') }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 500, body)
+    return
+  }
+  // Open the file in the user's own editor — the server runs on their machine.
+  if (url.pathname === '/api/artifacts/open' && req.method === 'POST') {
+    let body: OkBody
+    try {
+      const parsed = (await readJsonBody(req)) as { id?: unknown } | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      const a = id ? await rt.artifacts.read(id) : null
+      if (!a) throw new Error('no such artifact')
+      await openInEditor(a.abs)
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/links') {
+    let body: LinksResponse
+    try {
+      if (req.method === 'GET') {
+        const kind = url.searchParams.get('kind')
+        const id = url.searchParams.get('id') ?? ''
+        if (!isLinkKind(kind) || !id) throw new Error('need kind (artifact|item|session) and id')
+        body = { ok: true, links: await linksFor(rt, kind, id) }
+      } else if (req.method === 'POST') {
+        body = { ok: true, links: [await addLinkOp(rt, await readJsonBody(req))] }
+      } else if (req.method === 'DELETE') {
+        const id = url.searchParams.get('id') ?? ''
+        if (!id) throw new Error('need a link id')
+        await rt.store.links.remove(id)
+        body = { ok: true, links: [] }
+      } else throw new Error('method not allowed')
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
   await serveWeb(url.pathname, res)
 })
 
@@ -2945,6 +3924,7 @@ function parseClientMessage(raw: unknown): ClientMessage | null {
         effort: effort(m.effort),
         fastMode: m.fastMode === true,
         permissionMode: permissionMode(m.permissionMode),
+        itemId: typeof m.itemId === 'string' && m.itemId ? m.itemId : undefined,
       }
     case 'set_model':
       return typeof m.sessionId === 'string'
@@ -3064,6 +4044,8 @@ wss.on('connection', (ws, req) => {
             msg.fastMode === true,
             msg.permissionMode ?? null,
           )
+          // Dispatched from an item: the link is what the item page shows as "sessions".
+          if (msg.itemId) await linkSessionToItem(rt, row.id, msg.itemId, 'dispatch').catch(() => {})
           send(ws, { type: 'session_created', session: summarize(rt, row) })
           broadcastSessionList(rt)
           if (msg.firstMessage?.trim() || msg.images?.length || msg.mentions?.length)

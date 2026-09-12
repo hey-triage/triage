@@ -7,10 +7,19 @@ import {
   type FastModeState,
   type ImageAttachment,
   type Mention,
+  type MentionKind,
   type PermissionMode,
 } from '../../../shared/protocol.js'
 import { useAttachments } from '../attachments.js'
-import { activeMention, insertMention, useMentionSearch, useMentions, type MentionHit } from '../mentions.js'
+import {
+  MENTION_TABS,
+  activeMention,
+  insertMention,
+  setMentionKind,
+  useMentionSearch,
+  useMentions,
+  type MentionHit,
+} from '../mentions.js'
 import { nextMode } from '../permissionModes.js'
 import { AttachmentStrip } from './AttachmentStrip.js'
 import { FastModeToggle } from './FastModeToggle.js'
@@ -43,6 +52,8 @@ type Props = {
   /** A turn is in flight — offer the interrupt button. */
   running?: boolean
   onInterrupt?: () => void
+  /** Mentions the box opens with (a dispatched draft): their tokens are already in `text`. */
+  initialMentions?: Mention[]
 }
 
 /**
@@ -52,8 +63,9 @@ type Props = {
  * pills underneath with the one bright control on the page — send.
  *
  * Typing `@` opens the mention picker over the box: files under the folder,
- * work items, sessions. The picker never takes focus; the box's key handler
- * moves the selection while the keystrokes keep narrowing the query.
+ * artifacts, work items, sessions — one query across all of them, narrowed by
+ * the picker's tabs. The picker never takes focus; the box's key handler moves
+ * the selection and the tabs while the keystrokes keep narrowing the query.
  */
 export function PromptBox({
   head,
@@ -75,12 +87,13 @@ export function PromptBox({
   onPermissionModeChange,
   running,
   onInterrupt,
+  initialMentions,
 }: Props) {
   const box = useRef<HTMLTextAreaElement>(null)
   const filePicker = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const attach = useAttachments()
-  const mentions = useMentions()
+  const mentions = useMentions(text, initialMentions)
 
   // --- the `@` picker ------------------------------------------------------
   const [caret, setCaret] = useState(0)
@@ -102,13 +115,10 @@ export function PromptBox({
     if (el) setCaret(el.selectionStart ?? el.value.length)
   }, [])
 
-  const pick = useCallback(
-    (h: MentionHit) => {
-      if (!active) return
-      const next = insertMention(text, active, h)
-      mentions.add(h)
+  /** Rewrite the text and land the caret once React has painted the new value. */
+  const rewrite = useCallback(
+    (next: { text: string; caret: number }) => {
       onTextChange(next.text)
-      // Land the caret after the token once React has painted the new value.
       requestAnimationFrame(() => {
         const el = box.current
         if (!el) return
@@ -117,18 +127,51 @@ export function PromptBox({
         setCaret(next.caret)
       })
     },
-    [active, text, mentions, onTextChange],
+    [onTextChange],
   )
 
+  const pick = useCallback(
+    (h: MentionHit) => {
+      if (!active) return
+      mentions.add(h)
+      rewrite(insertMention(text, active, h))
+    },
+    [active, text, mentions, rewrite],
+  )
+
+  /** A tab in the picker: retarget the token at one kind, keeping the query. */
+  const pickKind = useCallback(
+    (kind: MentionKind | null) => {
+      if (!active) return
+      rewrite(setMentionKind(text, active, kind))
+    },
+    [active, text, rewrite],
+  )
+
+  /** Tab / shift-tab walk the picker's tabs, wrapping at both ends. */
+  const cycleKind = useCallback(
+    (step: number) => {
+      if (!active) return
+      const i = MENTION_TABS.indexOf(active.kind)
+      pickKind(MENTION_TABS[(i + step + MENTION_TABS.length) % MENTION_TABS.length])
+    },
+    [active, pickKind],
+  )
+
+  /**
+   * The chip and the token are one thing, so dropping the chip is a text edit
+   * and nothing else — every copy of the token goes, and the tray follows.
+   */
   const removeMention = useCallback(
     (m: Mention) => {
-      mentions.remove(m)
-      // The chip and the token are one thing: dropping the chip drops the text.
       const token = mentionToken(m)
-      const i = text.indexOf(token)
-      if (i >= 0) onTextChange(text.slice(0, i) + text.slice(i + token.length).replace(/^ /, ''))
+      let next = text
+      for (let i = next.indexOf(token); i >= 0; i = next.indexOf(token)) {
+        next = next.slice(0, i) + next.slice(i + token.length).replace(/^ /, '')
+      }
+      onTextChange(next)
     },
-    [mentions, text, onTextChange],
+    [text, onTextChange],
   )
 
   // --- the box -------------------------------------------------------------
@@ -153,7 +196,7 @@ export function PromptBox({
   function submit() {
     const trimmed = text.trim()
     const images = attach.payload()
-    const picked = mentions.payload(trimmed)
+    const picked = mentions.payload()
     if (!trimmed && !images) return
     onSubmit(trimmed, images, picked)
     attach.clear()
@@ -190,7 +233,15 @@ export function PromptBox({
           onRemoveMention={removeMention}
         />
 
-        <MentionPicker open={pickerOpen} groups={groups} selected={sel} onHover={setSel} onPick={pick}>
+        <MentionPicker
+          open={pickerOpen}
+          groups={groups}
+          kind={active?.kind ?? null}
+          onKind={pickKind}
+          selected={sel}
+          onHover={setSel}
+          onPick={pick}
+        >
           <textarea
             id="box"
             ref={box}
@@ -220,9 +271,16 @@ export function PromptBox({
                   setSel((s) => (s - 1 + hits.length) % hits.length)
                   return
                 }
-                if ((e.key === 'Enter' || e.key === 'Tab') && hits.length) {
+                if (e.key === 'Enter' && hits.length) {
                   e.preventDefault()
                   pick(hits[Math.min(sel, hits.length - 1)])
+                  return
+                }
+                // Tab walks the kind tabs rather than attaching — Enter already
+                // attaches, and the tabs are otherwise mouse-only.
+                if (e.key === 'Tab') {
+                  e.preventDefault()
+                  cycleKind(e.shiftKey ? -1 : 1)
                   return
                 }
                 if (e.key === 'Escape') {

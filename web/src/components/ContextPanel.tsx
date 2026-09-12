@@ -5,6 +5,7 @@
  */
 import {
   ExternalLink,
+  FileText,
   Folder,
   Home,
   MoreHorizontal,
@@ -20,7 +21,7 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { Project, ProjectsResponse, ScoredItem, SessionSummary, TerminalSummary } from '../../../shared/protocol.js'
+import type { ArtifactWithLinks, Project, ProjectsResponse, ScoredItem, SessionSummary, TerminalSummary } from '../../../shared/protocol.js'
 import { draftTitle, type Draft } from '../drafts.js'
 import { GROUP_ORDER, GROUP_SHORT, itemTone, kindIcon } from '../itemUi.js'
 import { MOD_LABEL } from '../keys.js'
@@ -105,6 +106,84 @@ export function QueuePanel({ items, loaded, selectedId, onOpenItem, onAdd, onRef
         <span className="kbd">j</span>
         <span className="kbd">k</span> move <span className="kbd">Enter</span> open <span className="kbd">e</span> done{' '}
         <span className="kbd">z</span> snooze
+      </div>
+    </aside>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts — the workspace's notes and briefs, newest first
+// ---------------------------------------------------------------------------
+
+type ArtifactsProps = {
+  artifacts: readonly ArtifactWithLinks[]
+  loaded: boolean
+  currentId: string | null
+  onOpen: (id: string) => void
+  onNew: () => void
+  onRefresh: () => void
+  onSearch: () => void
+}
+
+function ago(ms: number): string {
+  const m = Math.round((Date.now() - ms) / 60_000)
+  if (m < 1) return 'now'
+  if (m < 60) return `${m}m`
+  if (m < 48 * 60) return `${Math.round(m / 60)}h`
+  return `${Math.round(m / 1440)}d`
+}
+
+/** Notes you wrote, then briefs the model wrote — two groups, each newest first. */
+export function ArtifactsPanel({ artifacts, loaded, currentId, onOpen, onNew, onRefresh, onSearch }: ArtifactsProps) {
+  const visible = artifacts.filter((a) => !a.hidden)
+  const groups: Array<[string, ArtifactWithLinks[]]> = [
+    ['Notes', visible.filter((a) => a.author === 'human')],
+    ['Briefs', visible.filter((a) => a.author === 'model')],
+  ]
+  return (
+    <aside className="panel" aria-label="Artifacts">
+      <PanelSearch onSearch={onSearch} placeholder="Search artifacts, items…" />
+      <div className="panelBody">
+        <div className="panelHead">
+          <span>Artifacts</span>
+          <span className="n">{visible.length}</span>
+          <span className="acts">
+            <button type="button" className="iconBtn sm" title="New note (n)" onClick={onNew}>
+              <Plus size={13} aria-hidden="true" />
+            </button>
+            <button type="button" className="iconBtn sm" title="Re-index the folder" onClick={onRefresh}>
+              <RefreshCw size={12} aria-hidden="true" />
+            </button>
+          </span>
+        </div>
+        {loaded && visible.length === 0 && <div className="panelEmpty">No notes yet — write one, or drop a .md file in the folder.</div>}
+        {groups.map(([label, rows]) =>
+          rows.length === 0 ? null : (
+            <div key={label}>
+              <div className="panelGroup">
+                {label}
+                <span className="n">{rows.length}</span>
+              </div>
+              {rows.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={`prow${a.id === currentId ? ' sel' : ''}`}
+                  title={`${a.title} — ${a.path}`}
+                  onClick={() => onOpen(a.id)}
+                >
+                  <FileText size={13} aria-hidden="true" />
+                  <span className="t">{a.title}</span>
+                  {a.links.length > 0 && <span className="dot sm blue" aria-hidden="true" title="linked" />}
+                  <span className="m">{ago(a.updated)}</span>
+                </button>
+              ))}
+            </div>
+          ),
+        )}
+      </div>
+      <div className="panelFoot">
+        <span className="kbd">n</span> new note <span className="kbd">Enter</span> open · type <span className="kbd">@artifact:</span> in any composer
       </div>
     </aside>
   )
