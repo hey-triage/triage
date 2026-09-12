@@ -80,7 +80,12 @@ export interface WorkItem {
   ingestedAt?: number
   /** current lifecycle state; set by the store on projection */
   status?: import('./state.js').ItemStatus
-  /** a free-form note (manual items) */
+  /**
+   * the human's short intent, in their words — on any item, not just manual
+   * ones; never overwritten by ingestion or by a brief (.docs/next-version.md)
+   */
+  description?: string
+  /** pre-0.7 name for `description` on manual items; read as a fallback, never written */
   note?: string
 }
 

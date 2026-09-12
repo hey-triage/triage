@@ -8,8 +8,10 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import type { InboxSnapshot, Project, SessionEvent } from '../../shared/protocol.js'
+import type { Artifact, BriefJob, BriefStatus, InboxSnapshot, Link, LinkKind, LinkRole, Project, SessionEvent } from '../../shared/protocol.js'
+import { isArtifactAuthor, isLinkKind, isLinkRole } from '../../shared/protocol.js'
 import type { Provenance, WorkItem } from '../work/types.js'
 import type { ItemEvent, ItemEventKind, ItemStatus, StatusChange } from '../work/state.js'
 import { eventForStatus, shouldReopen } from '../work/state.js'
@@ -17,7 +19,12 @@ import type { EffortLevel, PermissionMode } from '../../shared/protocol.js'
 import type { NewWatch, Watch, WatchCadence, WatchRunResult, WatchRunStatus } from '../watch/types.js'
 import { cronFromCadence } from '../watch/cron.js'
 import type {
+  ArtifactStore,
+  BriefJobStore,
   ConfigStore,
+  LinkStore,
+  NewBriefJob,
+  NewLink,
   ProjectStore,
   EventStore,
   InboxStore,
@@ -180,6 +187,54 @@ const MIGRATIONS: string[] = [
   // 13: fast mode per session — premium speed at premium price, so it is opt-in
   // per session and defaults off, including for every session that predates it.
   `ALTER TABLE sessions ADD COLUMN fast_mode INTEGER NOT NULL DEFAULT 0;`,
+  // 14: artifacts + links (.docs/next-version.md, phase 1). `artifacts` is an
+  // index over markdown files (the file is the truth); `links` is the one
+  // polymorphic relation table for artifact↔item, artifact↔session and, from
+  // phase 2, session↔item. IF NOT EXISTS because ensureDurableSchema also
+  // converges these for DBs whose version counter got here another way.
+  `CREATE TABLE IF NOT EXISTS artifacts (
+     id         TEXT PRIMARY KEY,
+     path       TEXT NOT NULL UNIQUE,
+     title      TEXT NOT NULL,
+     author     TEXT NOT NULL,
+     refs       TEXT NOT NULL,
+     created    INTEGER NOT NULL,
+     updated    INTEGER NOT NULL,
+     mtime      INTEGER NOT NULL,
+     size       INTEGER NOT NULL,
+     indexed_at INTEGER NOT NULL,
+     warning    TEXT
+   );
+   CREATE TABLE IF NOT EXISTS links (
+     id         TEXT PRIMARY KEY,
+     from_kind  TEXT NOT NULL,
+     from_id    TEXT NOT NULL,
+     to_kind    TEXT NOT NULL,
+     to_id      TEXT NOT NULL,
+     role       TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     UNIQUE (from_kind, from_id, to_kind, to_id, role)
+   );
+   CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_kind, to_id);
+   CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_kind, from_id);`,
+  // 15: brief jobs (.docs/next-version.md, phase 2) — the FIFO queue and the
+  // state machine for playbook runs, one row per run, newest = the item's brief.
+  `CREATE TABLE IF NOT EXISTS brief_jobs (
+     id          TEXT PRIMARY KEY,
+     item_id     TEXT NOT NULL,
+     status      TEXT NOT NULL,
+     playbook    TEXT NOT NULL,
+     model       TEXT,
+     note        TEXT,
+     session_id  TEXT,
+     artifact_id TEXT,
+     error       TEXT,
+     created_at  INTEGER NOT NULL,
+     started_at  INTEGER,
+     finished_at INTEGER
+   );
+   CREATE INDEX IF NOT EXISTS idx_brief_jobs_item ON brief_jobs(item_id, created_at DESC);
+   CREATE INDEX IF NOT EXISTS idx_brief_jobs_status ON brief_jobs(status, created_at);`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -198,6 +253,9 @@ export function openSqliteStore(file: string): Store {
     projects: new SqliteProjects(db),
     watches: new SqliteWatches(db),
     items: new SqliteWorkItems(db),
+    artifacts: new SqliteArtifacts(db),
+    links: new SqliteLinks(db),
+    briefs: new SqliteBriefJobs(db),
     close: async () => db.close(),
   }
 }
@@ -242,6 +300,48 @@ function ensureDurableSchema(db: DatabaseSync) {
      detail  TEXT,
      PRIMARY KEY (item_id, seq)
    );`)
+
+  db.exec(`CREATE TABLE IF NOT EXISTS artifacts (
+     id         TEXT PRIMARY KEY,
+     path       TEXT NOT NULL UNIQUE,
+     title      TEXT NOT NULL,
+     author     TEXT NOT NULL,
+     refs       TEXT NOT NULL,
+     created    INTEGER NOT NULL,
+     updated    INTEGER NOT NULL,
+     mtime      INTEGER NOT NULL,
+     size       INTEGER NOT NULL,
+     indexed_at INTEGER NOT NULL,
+     warning    TEXT
+   );
+   CREATE TABLE IF NOT EXISTS links (
+     id         TEXT PRIMARY KEY,
+     from_kind  TEXT NOT NULL,
+     from_id    TEXT NOT NULL,
+     to_kind    TEXT NOT NULL,
+     to_id      TEXT NOT NULL,
+     role       TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     UNIQUE (from_kind, from_id, to_kind, to_id, role)
+   );
+   CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_kind, to_id);
+   CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_kind, from_id);
+   CREATE TABLE IF NOT EXISTS brief_jobs (
+     id          TEXT PRIMARY KEY,
+     item_id     TEXT NOT NULL,
+     status      TEXT NOT NULL,
+     playbook    TEXT NOT NULL,
+     model       TEXT,
+     note        TEXT,
+     session_id  TEXT,
+     artifact_id TEXT,
+     error       TEXT,
+     created_at  INTEGER NOT NULL,
+     started_at  INTEGER,
+     finished_at INTEGER
+   );
+   CREATE INDEX IF NOT EXISTS idx_brief_jobs_item ON brief_jobs(item_id, created_at DESC);
+   CREATE INDEX IF NOT EXISTS idx_brief_jobs_status ON brief_jobs(status, created_at);`)
 
   const cols = (table: string): Set<string> =>
     new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((r) => r.name))
@@ -326,7 +426,7 @@ const toSession = (r: SessionRow): StoredSession => ({
   fastMode: r.fast_mode === 1,
   permissionMode: toPermissionMode(r.permission_mode),
   pinned: r.pinned === 1,
-  kind: r.kind === 'watch-run' ? 'watch-run' : 'chat',
+  kind: r.kind === 'watch-run' || r.kind === 'brief' ? r.kind : 'chat',
   watchId: r.watch_id,
   runStatus: toRunStatus(r.run_status),
   runMatches: r.run_matches ?? undefined,
@@ -652,8 +752,11 @@ const toStatus = (v: string): ItemStatus =>
  */
 function toWorkItem(r: WorkItemRow): WorkItem {
   const base = JSON.parse(r.payload) as WorkItem
+  // `note` is the pre-0.7 name of `description` on manual items; read it as a fallback.
+  const description = base.description ?? base.note
   return {
     ...base,
+    ...(description ? { description } : {}),
     status: toStatus(r.status),
     returned: r.returned === 1,
     ...(r.priority != null ? { priority: r.priority } : {}),
@@ -799,7 +902,7 @@ class SqliteWorkItems implements WorkItemStore {
       createdAt: iso,
       updatedAt: iso,
       ...(item.projectId ? { projectId: item.projectId } : {}),
-      ...(item.note ? { note: item.note, why: item.note } : {}),
+      ...(item.description ? { description: item.description, why: item.description } : {}),
     }
     this.db
       .prepare(
@@ -819,9 +922,11 @@ class SqliteWorkItems implements WorkItemStore {
     const next: WorkItem = { ...base }
     if (patch.title !== undefined) next.title = patch.title
     if (patch.url !== undefined) next.url = patch.url
-    if (patch.note !== undefined) {
-      next.note = patch.note || undefined
-      next.why = patch.note || undefined
+    if (patch.description !== undefined) {
+      next.description = patch.description || undefined
+      // manual items show the description as their "why" on the card
+      next.why = patch.description || undefined
+      delete next.note
     }
     if (patch.projectId !== undefined) next.projectId = patch.projectId || undefined
     const priority = patch.priority !== undefined ? patch.priority || null : r.priority
@@ -898,6 +1003,19 @@ class SqliteWorkItems implements WorkItemStore {
       ...(r.detail ? { detail: JSON.parse(r.detail) as Record<string, unknown> } : {}),
     }))
   }
+
+  async setDescription(id: string, description: string | null): Promise<void> {
+    const r = this.row(id)
+    if (!r) throw new Error('no such work item')
+    const base = JSON.parse(r.payload) as WorkItem
+    const next: WorkItem = { ...base }
+    delete next.note
+    if (description) next.description = description
+    else delete next.description
+    // A manual item's card quotes its description as the "why"; source items keep the scanner's.
+    if (base.source === 'manual') next.why = description || undefined
+    this.db.prepare('UPDATE work_items SET payload = ?, updated_at = ? WHERE id = ?').run(payloadOf(next), Date.now(), id)
+  }
 }
 
 class SqliteProjects implements ProjectStore {
@@ -918,5 +1036,278 @@ class SqliteProjects implements ProjectStore {
 
   async remove(id: string): Promise<void> {
     this.db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts index + links (.docs/next-version.md, phase 1)
+// ---------------------------------------------------------------------------
+
+type ArtifactRow = {
+  id: string
+  path: string
+  title: string
+  author: string
+  refs: string
+  created: number
+  updated: number
+  mtime: number
+  size: number
+  indexed_at: number
+  warning: string | null
+}
+
+const toArtifact = (r: ArtifactRow): Artifact => ({
+  id: r.id,
+  path: r.path,
+  title: r.title,
+  author: isArtifactAuthor(r.author) ? r.author : 'human',
+  refs: (() => {
+    try {
+      const v: unknown = JSON.parse(r.refs)
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+    } catch {
+      return []
+    }
+  })(),
+  created: r.created,
+  updated: r.updated,
+  mtime: r.mtime,
+  size: r.size,
+  ...(r.warning ? { warning: r.warning } : {}),
+})
+
+class SqliteArtifacts implements ArtifactStore {
+  constructor(private db: DatabaseSync) {}
+
+  async upsert(a: Artifact): Promise<void> {
+    // A different file now lives at this path (replaced, or re-created without
+    // its id): the old row is stale and would violate the UNIQUE(path).
+    this.db.prepare('DELETE FROM artifacts WHERE path = ? AND id != ?').run(a.path, a.id)
+    this.db
+      .prepare(
+        `INSERT INTO artifacts (id, path, title, author, refs, created, updated, mtime, size, indexed_at, warning)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           path = excluded.path, title = excluded.title, author = excluded.author, refs = excluded.refs,
+           created = excluded.created, updated = excluded.updated, mtime = excluded.mtime,
+           size = excluded.size, indexed_at = excluded.indexed_at, warning = excluded.warning`,
+      )
+      .run(a.id, a.path, a.title, a.author, JSON.stringify(a.refs), a.created, a.updated, a.mtime, a.size, Date.now(), a.warning ?? null)
+  }
+
+  async get(id: string): Promise<Artifact | null> {
+    const r = this.db.prepare('SELECT * FROM artifacts WHERE id = ?').get(id) as ArtifactRow | undefined
+    return r ? toArtifact(r) : null
+  }
+
+  async getByPath(p: string): Promise<Artifact | null> {
+    const r = this.db.prepare('SELECT * FROM artifacts WHERE path = ?').get(p) as ArtifactRow | undefined
+    return r ? toArtifact(r) : null
+  }
+
+  async list(): Promise<Artifact[]> {
+    const rows = this.db.prepare('SELECT * FROM artifacts ORDER BY updated DESC, title COLLATE NOCASE').all() as ArtifactRow[]
+    return rows.map(toArtifact)
+  }
+
+  async remove(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(id)
+  }
+}
+
+type LinkRow = {
+  id: string
+  from_kind: string
+  from_id: string
+  to_kind: string
+  to_id: string
+  role: string
+  created_at: number
+}
+
+const toLink = (r: LinkRow): Link => ({
+  id: r.id,
+  fromKind: isLinkKind(r.from_kind) ? r.from_kind : 'artifact',
+  fromId: r.from_id,
+  toKind: isLinkKind(r.to_kind) ? r.to_kind : 'item',
+  toId: r.to_id,
+  role: isLinkRole(r.role) ? r.role : 'context',
+  createdAt: r.created_at,
+})
+
+class SqliteLinks implements LinkStore {
+  constructor(private db: DatabaseSync) {}
+
+  async add(l: NewLink): Promise<Link> {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO links (id, from_kind, from_id, to_kind, to_id, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(randomUUID(), l.fromKind, l.fromId, l.toKind, l.toId, l.role, Date.now())
+    const r = this.db
+      .prepare('SELECT * FROM links WHERE from_kind = ? AND from_id = ? AND to_kind = ? AND to_id = ? AND role = ?')
+      .get(l.fromKind, l.fromId, l.toKind, l.toId, l.role) as LinkRow
+    return toLink(r)
+  }
+
+  async remove(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM links WHERE id = ?').run(id)
+  }
+
+  async removeFor(kind: LinkKind, id: string): Promise<void> {
+    this.db
+      .prepare('DELETE FROM links WHERE (from_kind = ? AND from_id = ?) OR (to_kind = ? AND to_id = ?)')
+      .run(kind, id, kind, id)
+  }
+
+  async forTarget(kind: LinkKind, id: string): Promise<Link[]> {
+    const rows = this.db.prepare('SELECT * FROM links WHERE to_kind = ? AND to_id = ? ORDER BY created_at').all(kind, id) as LinkRow[]
+    return rows.map(toLink)
+  }
+
+  async forSource(kind: LinkKind, id: string): Promise<Link[]> {
+    const rows = this.db.prepare('SELECT * FROM links WHERE from_kind = ? AND from_id = ? ORDER BY created_at').all(kind, id) as LinkRow[]
+    return rows.map(toLink)
+  }
+
+  async list(): Promise<Link[]> {
+    return (this.db.prepare('SELECT * FROM links ORDER BY created_at').all() as LinkRow[]).map(toLink)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Brief jobs (.docs/next-version.md, phase 2)
+// ---------------------------------------------------------------------------
+
+type BriefJobRow = {
+  id: string
+  item_id: string
+  status: string
+  playbook: string
+  model: string | null
+  note: string | null
+  session_id: string | null
+  artifact_id: string | null
+  error: string | null
+  created_at: number
+  started_at: number | null
+  finished_at: number | null
+}
+
+const BRIEF_STATUS_SET = new Set<string>(['queued', 'running', 'ready', 'failed'])
+
+const toBriefJob = (r: BriefJobRow): BriefJob => ({
+  id: r.id,
+  itemId: r.item_id,
+  status: BRIEF_STATUS_SET.has(r.status) ? (r.status as BriefStatus) : 'failed',
+  playbook: r.playbook,
+  model: r.model,
+  note: r.note,
+  sessionId: r.session_id,
+  artifactId: r.artifact_id,
+  error: r.error,
+  createdAt: r.created_at,
+  startedAt: r.started_at,
+  finishedAt: r.finished_at,
+})
+
+class SqliteBriefJobs implements BriefJobStore {
+  constructor(private db: DatabaseSync) {}
+
+  private row(id: string): BriefJobRow | undefined {
+    return this.db.prepare('SELECT * FROM brief_jobs WHERE id = ?').get(id) as BriefJobRow | undefined
+  }
+
+  async create(j: NewBriefJob): Promise<BriefJob> {
+    this.db
+      .prepare(
+        `INSERT INTO brief_jobs (id, item_id, status, playbook, model, note, created_at) VALUES (?, ?, 'queued', ?, ?, ?, ?)`,
+      )
+      .run(j.id, j.itemId, j.playbook, j.model ?? null, j.note ?? null, Date.now())
+    return toBriefJob(this.row(j.id)!)
+  }
+
+  async get(id: string): Promise<BriefJob | null> {
+    const r = this.row(id)
+    return r ? toBriefJob(r) : null
+  }
+
+  async latestForItem(itemId: string): Promise<BriefJob | null> {
+    const r = this.db
+      .prepare('SELECT * FROM brief_jobs WHERE item_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(itemId) as BriefJobRow | undefined
+    return r ? toBriefJob(r) : null
+  }
+
+  async forSession(sessionId: string): Promise<BriefJob | null> {
+    const r = this.db
+      .prepare('SELECT * FROM brief_jobs WHERE session_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(sessionId) as BriefJobRow | undefined
+    return r ? toBriefJob(r) : null
+  }
+
+  async latestPerItem(): Promise<BriefJob[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT b.* FROM brief_jobs b
+         JOIN (SELECT item_id, MAX(created_at) AS c FROM brief_jobs GROUP BY item_id) m
+           ON m.item_id = b.item_id AND m.c = b.created_at
+         ORDER BY b.created_at DESC`,
+      )
+      .all() as BriefJobRow[]
+    return rows.map(toBriefJob)
+  }
+
+  async list(status?: BriefStatus): Promise<BriefJob[]> {
+    const rows = (
+      status
+        ? this.db.prepare('SELECT * FROM brief_jobs WHERE status = ? ORDER BY created_at').all(status)
+        : this.db.prepare('SELECT * FROM brief_jobs ORDER BY created_at').all()
+    ) as BriefJobRow[]
+    return rows.map(toBriefJob)
+  }
+
+  async countStartedSince(sinceMs: number): Promise<number> {
+    const r = this.db
+      .prepare('SELECT COUNT(*) AS n FROM brief_jobs WHERE started_at IS NOT NULL AND started_at >= ?')
+      .get(sinceMs) as { n: number }
+    return r.n
+  }
+
+  async update(id: string, patch: Partial<Omit<BriefJob, 'id' | 'itemId' | 'playbook'>>): Promise<void> {
+    const sets: string[] = []
+    const vals: (string | number | null)[] = []
+    const col: Record<string, string> = {
+      status: 'status',
+      model: 'model',
+      note: 'note',
+      sessionId: 'session_id',
+      artifactId: 'artifact_id',
+      error: 'error',
+      createdAt: 'created_at',
+      startedAt: 'started_at',
+      finishedAt: 'finished_at',
+    }
+    for (const [k, v] of Object.entries(patch)) {
+      if (!(k in col) || v === undefined) continue
+      sets.push(`${col[k]} = ?`)
+      vals.push(v as string | number | null)
+    }
+    if (!sets.length) return
+    vals.push(id)
+    this.db.prepare(`UPDATE brief_jobs SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  }
+
+  async failAllRunning(error: string): Promise<string[]> {
+    const rows = this.db.prepare("SELECT id FROM brief_jobs WHERE status = 'running'").all() as { id: string }[]
+    const now = Date.now()
+    const upd = this.db.prepare("UPDATE brief_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?")
+    for (const { id } of rows) upd.run(error, now, id)
+    return rows.map((r) => r.id)
+  }
+
+  async remove(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM brief_jobs WHERE id = ?').run(id)
   }
 }
