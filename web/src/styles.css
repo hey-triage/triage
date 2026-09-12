@@ -1252,6 +1252,7 @@ dialog.itemComposer { width: 560px; padding: 0; overflow: hidden; }
   .dot.live, .tool .glyph.busy, .probing .pip, .msg.assistant.live .md > :last-child::after, .topIcon .connDot.down { animation: none; }
   .uiMenu[data-state="open"] { animation: none; }
   .settings, .settingsOverlay, .setActions .saved { animation: none; }
+  .selBar { animation: none; }
 }
 
 /* late additions */
@@ -1545,9 +1546,30 @@ dialog.artDialog textarea { min-height: 240px; font-family: var(--mono); font-si
 .descBlock textarea { width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 8px 12px; font-size: 1.0385rem; line-height: 1.55; outline: none; }
 .descBlock textarea:focus { border-color: var(--ink); }
 .descBlock .row { display: flex; gap: 6px; justify-content: flex-end; }
-.selBar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 12px; background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); font-size: 1rem; color: var(--body); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+/* Floating bulk-action bar (inbox multi-select). The page is the scroller, so
+   sticky-bottom keeps the bar inside the pane — never over the rail or Queue.
+   #inboxPage is a flex column whose inner column grows, so on short lists the
+   dock still lands at the bottom of the pane. A stuck element is clamped to
+   its containing block's content box, so the page's 48px bottom padding is
+   split 16px on the page + 32px on .inner: the bar clears the pane edge by
+   the same 16px whether it is stuck or in flow. Hairline elevation, no shadow. */
+#inboxPage { display: flex; flex-direction: column; padding-bottom: 16px; }
+#inboxPage > .inner { flex: 1 0 auto; width: 100%; padding-bottom: 32px; }
+.selDock { position: sticky; bottom: 0; z-index: 3; display: flex; justify-content: center; pointer-events: none; }
+.selBar {
+  pointer-events: auto; display: inline-flex; align-items: center; gap: 4px; padding: 6px 6px 6px 14px;
+  background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-full);
+  font-size: 1rem; color: var(--body); white-space: nowrap;
+  animation: selIn 0.16s ease-out;
+}
+.selBar .count { display: inline-flex; align-items: baseline; gap: 5px; }
 .selBar .n { font-family: var(--mono); color: var(--ink); }
-.selBar .spacer { flex: 1; }
+.selBar .sep { width: 1px; height: 16px; background: var(--hair-strong); margin: 0 6px; }
+.selBar .btn.sm { border-radius: var(--r-full); }
+.selBar .btn.ghost { color: var(--body); }
+.selBar .btn.ghost:hover:not(:disabled) { background: var(--wash-2); }
+.selBar .iconBtn.sm { border-radius: var(--r-full); }
+@keyframes selIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 dialog.briefDialog { width: 560px; max-height: 84vh; overflow-y: auto; }
 dialog.briefDialog .items { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 6px; max-height: 140px; overflow-y: auto; }
 dialog.briefDialog .items .it { font-size: 1rem; color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

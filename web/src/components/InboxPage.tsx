@@ -185,15 +185,7 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
     [removeLocally],
   )
 
-  const snooze1d = useCallback(
-    (item: ScoredItem) => {
-      const t = new Date()
-      t.setDate(t.getDate() + 1)
-      t.setHours(9, 0, 0, 0)
-      void setItemState(item, 'snoozed', t.getTime())
-    },
-    [setItemState],
-  )
+  const snooze1d = useCallback((item: ScoredItem) => void setItemState(item, 'snoozed', tomorrow9()), [setItemState])
 
   const selectTab = useCallback(
     (next: Tab) => {
@@ -214,6 +206,37 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
           ? other.items
           : [],
     [isOpen, snap.items, other],
+  )
+
+  // The live selection: checked ids that are still on screen. Ids of rows that
+  // already left the tab (done via the keyboard, refreshed away) don't count.
+  const checkedItems = useMemo(
+    () => (isOpen ? ordered.filter((i) => checked.has(i.id)) : []),
+    [isOpen, ordered, checked],
+  )
+  const clearChecked = useCallback(() => setChecked(new Set()), [])
+
+  // Bulk transition: every checked row leaves the tab optimistically, the N
+  // single-item POSTs run together, and a failed one resyncs the list so it
+  // stays honest (there is no batch form of /api/items/state).
+  const bulkState = useCallback(
+    async (status: ItemStatus, snoozeUntil?: number) => {
+      const targets = checkedItems
+      if (!targets.length) return
+      clearChecked()
+      for (const t of targets) removeLocally(t.id)
+      const results = await Promise.allSettled(
+        targets.map((t) =>
+          fetch('/api/items/state', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: t.id, status, snoozeUntil }),
+          }),
+        ),
+      )
+      if (results.some((r) => r.status === 'rejected' || !r.value.ok)) reload(false)
+    },
+    [checkedItems, clearChecked, removeLocally, reload],
   )
 
   useEffect(() => {
@@ -237,17 +260,29 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
         onDispatch(cur)
       } else if (e.key === 'b' && isOpen) {
         e.preventDefault()
-        const picked = checked.size ? ordered.filter((i) => checked.has(i.id)) : cur ? [cur] : []
+        const picked = checkedItems.length ? checkedItems : cur ? [cur] : []
         if (picked.length) setBriefing(picked)
       } else if (e.key === ' ' && cur && isOpen) {
         e.preventDefault()
         toggleChecked(cur.id)
+      } else if (e.key === 'Escape' && checkedItems.length && !e.defaultPrevented) {
+        e.preventDefault()
+        clearChecked()
+      } else if (e.key === 'e' && checkedItems.length) {
+        e.preventDefault()
+        void bulkState('done')
       } else if (e.key === 'e' && cur) {
         e.preventDefault()
         void setItemState(cur, isOpen ? 'done' : 'open')
+      } else if (e.key === 'x' && checkedItems.length) {
+        e.preventDefault()
+        void bulkState('archived')
       } else if (e.key === 'x' && cur) {
         e.preventDefault()
         void setItemState(cur, 'archived')
+      } else if (e.key === 'z' && checkedItems.length) {
+        e.preventDefault()
+        void bulkState('snoozed', tomorrow9())
       } else if (e.key === 'z' && cur && isOpen) {
         e.preventDefault()
         snooze1d(cur)
@@ -258,7 +293,7 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [ordered, sel, isOpen, onDispatch, onOpenItem, reload, setItemState, snooze1d, checked, toggleChecked])
+  }, [ordered, sel, isOpen, onDispatch, onOpenItem, reload, setItemState, snooze1d, checkedItems, toggleChecked, bulkState, clearChecked])
 
   const loadProjects = useCallback(() => {
     void fetch('/api/projects')
@@ -398,20 +433,6 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
 
         {!loading && !error && (
           <>
-            {isOpen && checked.size > 0 && (
-              <div className="selBar">
-                <span>
-                  <span className="n">{checked.size}</span> checked
-                </span>
-                <span className="spacer" />
-                <button type="button" className="btn sm primary" onClick={() => setBriefing(ordered.filter((i) => checked.has(i.id)))}>
-                  <Sparkles size={13} aria-hidden="true" /> Brief checked (b)
-                </button>
-                <button type="button" className="btn sm ghost" onClick={() => setChecked(new Set())}>
-                  Clear
-                </button>
-              </div>
-            )}
             {isOpen &&
               snap.notices.map((n) => (
                 <div key={n} className="notice">
@@ -450,6 +471,17 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
         )}
       </div>
 
+      {checkedItems.length > 0 && (
+        <SelectionBar
+          count={checkedItems.length}
+          onBrief={() => setBriefing(checkedItems)}
+          onDone={() => void bulkState('done')}
+          onSnooze={() => void bulkState('snoozed', tomorrow9())}
+          onArchive={() => void bulkState('archived')}
+          onClear={clearChecked}
+        />
+      )}
+
       <RepoPicker
         open={reposOpen}
         onClose={() => setReposOpen(false)}
@@ -476,8 +508,65 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
         open={briefing !== null}
         items={briefing ?? []}
         onClose={() => setBriefing(null)}
-        onQueued={() => setChecked(new Set())}
+        onQueued={clearChecked}
       />
+    </div>
+  )
+}
+
+/** Tomorrow 09:00 local — the one snooze duration the inbox knows (`z`). */
+function tomorrow9(): number {
+  const t = new Date()
+  t.setDate(t.getDate() + 1)
+  t.setHours(9, 0, 0, 0)
+  return t.getTime()
+}
+
+/**
+ * Floating bulk-action bar. Appears bottom-centre of the pane while rows are
+ * checked and offers the same verbs as a row's hover cluster, applied to all
+ * of them at once. It sticks to the bottom of the page scroller rather than
+ * the viewport so it never sits over the rail or the Queue panel.
+ */
+function SelectionBar({
+  count,
+  onBrief,
+  onDone,
+  onSnooze,
+  onArchive,
+  onClear,
+}: {
+  count: number
+  onBrief: () => void
+  onDone: () => void
+  onSnooze: () => void
+  onArchive: () => void
+  onClear: () => void
+}) {
+  return (
+    <div className="selDock">
+      <div className="selBar" role="toolbar" aria-label={`${count} checked`}>
+        <span className="count">
+          <span className="n">{count}</span> checked
+        </span>
+        <span className="sep" aria-hidden="true" />
+        <button type="button" className="btn sm primary" title="Brief the checked items together (b)" onClick={onBrief}>
+          <Sparkles size={13} aria-hidden="true" /> Brief
+        </button>
+        <button type="button" className="btn sm ghost" title="Mark the checked items done (e)" onClick={onDone}>
+          <Check size={14} aria-hidden="true" /> Done
+        </button>
+        <button type="button" className="btn sm ghost" title="Snooze the checked items until tomorrow 9am (z)" onClick={onSnooze}>
+          <AlarmClock size={13} aria-hidden="true" /> Snooze
+        </button>
+        <button type="button" className="btn sm ghost" title="Archive the checked items (x)" onClick={onArchive}>
+          <Archive size={13} aria-hidden="true" /> Archive
+        </button>
+        <span className="sep" aria-hidden="true" />
+        <button type="button" className="iconBtn sm" title="Clear selection (Esc)" aria-label="Clear selection" onClick={onClear}>
+          <X size={14} aria-hidden="true" />
+        </button>
+      </div>
     </div>
   )
 }
@@ -593,7 +682,7 @@ function WorkRow({
         <button
           type="button"
           className="check"
-          title={isChecked ? 'Uncheck (Space)' : 'Check to brief with others (Space)'}
+          title={isChecked ? 'Uncheck (Space)' : 'Check to act on several rows at once (Space)'}
           aria-pressed={isChecked}
           onClick={() => onToggle(item.id)}
         >
