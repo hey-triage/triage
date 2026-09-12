@@ -18,6 +18,7 @@ import {
   Keyboard,
   KeyRound,
   MessagesSquare,
+  Palette,
   Plug,
   RefreshCw,
   ScrollText,
@@ -46,6 +47,15 @@ import { SHORTCUTS } from '../keys.js'
 import { findModel, useModels } from '../models.js'
 import { KIND_LABEL } from '../itemUi.js'
 import { readSessionDefaults, writeSessionDefaults, type SessionDefaults } from '../sessionDefaults.js'
+import {
+  FONT_DEFAULT,
+  FONT_PRESETS,
+  useAppearance,
+  writeAppearance,
+  ZOOM_DEFAULT,
+  ZOOM_PRESETS,
+  type ThemeMode,
+} from '../appearance.js'
 import { closeSettings, SETTINGS_TABS, setSettingsTab, useSettings, type SettingsTab } from '../settings.js'
 import { store } from '../store.js'
 import { ModelPopover } from './ModelPopover.js'
@@ -67,6 +77,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   activity: Activity,
   usage: Wallet,
   logs: ScrollText,
+  appearance: Palette,
   sessions: MessagesSquare,
   shortcuts: Keyboard,
   about: Info,
@@ -182,6 +193,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="logs" className="settingsFill">
                     <LogsTab key={nonce} />
+                  </Tabs.Content>
+                  <Tabs.Content value="appearance">
+                    <AppearanceTab />
                   </Tabs.Content>
                   <Tabs.Content value="sessions">
                     <SessionsTab />
@@ -804,6 +818,92 @@ function ProseFileSection({
         {error && <div className="msg error">{error}</div>}
       </div>
     </Section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Appearance — theme, zoom and text size (per browser).
+// ---------------------------------------------------------------------------
+
+/** A pill of mutually-exclusive options — the same idiom as the inbox filter. */
+function Segmented<T extends string | number>({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+}: {
+  value: T
+  options: ReadonlyArray<{ value: T; label: string }>
+  onChange: (v: T) => void
+  ariaLabel: string
+}) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={ariaLabel}>
+      {options.map((o) => (
+        <button
+          key={String(o.value)}
+          type="button"
+          role="radio"
+          aria-checked={o.value === value}
+          className={o.value === value ? 'on' : ''}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+const THEME_OPTS: ReadonlyArray<{ value: ThemeMode; label: string }> = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+]
+const FONT_LABELS: Record<number, string> = { 12: 'Small', 13: 'Default', 14: 'Large', 15: 'Larger' }
+
+function AppearanceTab() {
+  const a = useAppearance()
+  return (
+    <>
+      <Section title="Theme" hint="System follows your operating system’s light or dark setting and switches with it.">
+        <Row label="Colour theme">
+          <Segmented ariaLabel="Colour theme" value={a.theme} options={THEME_OPTS} onChange={(theme) => writeAppearance({ theme })} />
+        </Row>
+      </Section>
+      <Section
+        title="Scale"
+        hint="Zoom scales the whole interface — layout, controls and text together, like browser zoom. Text size nudges just the reading text, on top of the zoom."
+      >
+        <Row label="Zoom" hint={`The interface renders at ${a.zoom}%.`}>
+          <Segmented
+            ariaLabel="Zoom"
+            value={a.zoom}
+            options={ZOOM_PRESETS.map((z) => ({ value: z, label: `${z}%` }))}
+            onChange={(zoom) => writeAppearance({ zoom })}
+          />
+        </Row>
+        <Row label="Text size" hint={`Body text is ${a.fontSize}px.`}>
+          <Segmented
+            ariaLabel="Text size"
+            value={a.fontSize}
+            options={FONT_PRESETS.map((f) => ({ value: f, label: FONT_LABELS[f] ?? `${f}px` }))}
+            onChange={(fontSize) => writeAppearance({ fontSize })}
+          />
+        </Row>
+      </Section>
+      <Section title="Reset">
+        <Row label="Back to defaults" hint="System theme, 100% zoom, default text size.">
+          <button
+            type="button"
+            className="btn"
+            onClick={() => writeAppearance({ theme: 'system', zoom: ZOOM_DEFAULT, fontSize: FONT_DEFAULT })}
+          >
+            Reset
+          </button>
+        </Row>
+      </Section>
+    </>
   )
 }
 
