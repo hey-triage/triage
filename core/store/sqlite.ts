@@ -16,7 +16,7 @@ import type { Provenance, WorkItem } from '../work/types.js'
 import type { ItemEvent, ItemEventKind, ItemStatus, StatusChange } from '../work/state.js'
 import { eventForStatus, shouldReopen } from '../work/state.js'
 import type { EffortLevel, PermissionMode } from '../../shared/protocol.js'
-import type { NewWatch, Watch, WatchCadence, WatchRunResult, WatchRunStatus } from '../watch/types.js'
+import type { NewWatch, Watch, WatchCadence, WatchConnector, WatchRunResult, WatchRunStatus } from '../watch/types.js'
 import { cronFromCadence } from '../watch/cron.js'
 import type {
   ArtifactStore,
@@ -235,6 +235,26 @@ const MIGRATIONS: string[] = [
    );
    CREATE INDEX IF NOT EXISTS idx_brief_jobs_item ON brief_jobs(item_id, created_at DESC);
    CREATE INDEX IF NOT EXISTS idx_brief_jobs_status ON brief_jobs(status, created_at);`,
+  // 16: watches name the connectors they may use (their tool allowlist) and an
+  // optional project, instead of one Slack place. Old rows were all Slack; a
+  // channel scope folds into the instruction so the rule stays readable.
+  `ALTER TABLE watches ADD COLUMN connectors TEXT;
+   ALTER TABLE watches ADD COLUMN project_id TEXT;
+   UPDATE watches SET instruction = 'In ' || scope || ': ' || instruction WHERE connectors IS NULL AND scope LIKE '#%';
+   UPDATE watches SET connectors = '["slack"]' WHERE connectors IS NULL;`,
+  // 17: what a watch run cost in dollars (the SDK's total_cost_usd on the result
+  // message), so the watch page can show spend, not just tokens. Backfilled from
+  // the event log — the result message is already persisted there.
+  `ALTER TABLE sessions ADD COLUMN run_cost_usd REAL;
+   UPDATE sessions SET run_cost_usd = (
+     SELECT json_extract(e.payload, '$.message.total_cost_usd') FROM session_events e
+     WHERE e.session_id = sessions.id AND e.kind = 'sdk' AND json_extract(e.payload, '$.message.type') = 'result'
+     ORDER BY e.seq DESC LIMIT 1)
+   WHERE kind = 'watch-run' AND run_cost_usd IS NULL;`,
+  // 18: a watch may pin the model its runs use; NULL = Claude Code's default.
+  `ALTER TABLE watches ADD COLUMN model TEXT;`,
+  // 19: what a run produces — many items (default) or one rolling digest.
+  `ALTER TABLE watches ADD COLUMN output TEXT;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -356,6 +376,7 @@ function ensureDurableSchema(db: DatabaseSync) {
   ensure('sessions', 'run_matches', 'run_matches INTEGER', s)
   ensure('sessions', 'run_tokens', 'run_tokens INTEGER', s)
   ensure('sessions', 'run_error', 'run_error TEXT', s)
+  ensure('sessions', 'run_cost_usd', 'run_cost_usd REAL', s)
 
   const w = cols('watches')
   ensure('watches', 'last_run_status', 'last_run_status TEXT', w)
@@ -363,6 +384,10 @@ function ensureDurableSchema(db: DatabaseSync) {
   ensure('watches', 'last_run_error', 'last_run_error TEXT', w)
   ensure('watches', 'template_id', 'template_id TEXT', w)
   ensure('watches', 'schedule', 'schedule TEXT', w)
+  ensure('watches', 'connectors', 'connectors TEXT', w)
+  ensure('watches', 'project_id', 'project_id TEXT', w)
+  ensure('watches', 'model', 'model TEXT', w)
+  ensure('watches', 'output', 'output TEXT', w)
 }
 
 function migrate(db: DatabaseSync) {
@@ -396,6 +421,7 @@ type SessionRow = {
   run_status: string | null
   run_matches: number | null
   run_tokens: number | null
+  run_cost_usd: number | null
   run_error: string | null
   created_at: number
   updated_at: number
@@ -431,6 +457,7 @@ const toSession = (r: SessionRow): StoredSession => ({
   runStatus: toRunStatus(r.run_status),
   runMatches: r.run_matches ?? undefined,
   runTokens: r.run_tokens ?? undefined,
+  runCostUsd: r.run_cost_usd ?? undefined,
   runError: r.run_error ?? undefined,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -521,8 +548,8 @@ class SqliteSessions implements SessionStore {
 
   async recordWatchRun(id: string, run: WatchRunRecord): Promise<void> {
     this.db
-      .prepare('UPDATE sessions SET run_status = ?, run_matches = ?, run_tokens = ?, run_error = ?, updated_at = ? WHERE id = ?')
-      .run(run.status, run.matches, run.tokens, run.error ?? null, Date.now(), id)
+      .prepare('UPDATE sessions SET run_status = ?, run_matches = ?, run_tokens = ?, run_cost_usd = ?, run_error = ?, updated_at = ? WHERE id = ?')
+      .run(run.status, run.matches, run.tokens, run.costUsd ?? null, run.error ?? null, Date.now(), id)
   }
 }
 
@@ -612,8 +639,25 @@ type WatchRow = {
   last_run_session_id: string | null
   last_run_error: string | null
   template_id: string | null
+  connectors: string | null
+  project_id: string | null
+  model: string | null
+  output: string | null
   created_at: number
   updated_at: number
+}
+
+const CONNECTORS = new Set<WatchConnector>(['slack', 'linear', 'github', 'web'])
+/** Parse the stored connector list; a legacy row (NULL) was a Slack watch. */
+function toConnectors(raw: string | null): WatchConnector[] {
+  if (!raw) return ['slack']
+  try {
+    const arr = JSON.parse(raw) as unknown
+    const out = Array.isArray(arr) ? arr.filter((c): c is WatchConnector => CONNECTORS.has(c as WatchConnector)) : []
+    return out.length ? out : ['slack']
+  } catch {
+    return ['slack']
+  }
 }
 
 const RUN_STATUSES: WatchRunStatus[] = ['ok', 'failed', 'skipped']
@@ -626,6 +670,10 @@ const toWatch = (r: WatchRow): Watch => ({
   title: r.title,
   scope: r.scope,
   instruction: r.instruction,
+  connectors: toConnectors(r.connectors),
+  projectId: r.project_id ?? undefined,
+  model: r.model ?? undefined,
+  output: r.output === 'digest' ? 'digest' : 'items',
   cadence: r.cadence as WatchCadence,
   windowStart: r.window_start ?? undefined,
   windowDay: r.window_day ?? undefined,
@@ -662,8 +710,9 @@ class SqliteWatches implements WatchStore {
     this.db
       .prepare(
         `INSERT INTO watches (id, source, title, scope, instruction, cadence, window_start, window_day,
-           schedule, enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+           schedule, enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id,
+           connectors, project_id, model, output, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         w.id, w.source, w.title, w.scope, w.instruction, w.cadence,
@@ -671,6 +720,7 @@ class SqliteWatches implements WatchStore {
         w.schedule,
         w.enabled ? 1 : 0, w.createsItems ? 1 : 0,
         w.templateId ?? null,
+        JSON.stringify(w.connectors), w.projectId ?? null, w.model ?? null, w.output,
         w.createdAt, w.updatedAt,
       )
   }
@@ -682,13 +732,14 @@ class SqliteWatches implements WatchStore {
     this.db
       .prepare(
         `UPDATE watches SET title = ?, scope = ?, instruction = ?, cadence = ?, window_start = ?,
-           window_day = ?, schedule = ?, enabled = ?, creates_items = ?, updated_at = ? WHERE id = ?`,
+           window_day = ?, schedule = ?, enabled = ?, creates_items = ?, connectors = ?, project_id = ?, model = ?, output = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
-        next.title, next.scope, next.instruction, next.cadence,
+        next.title, next.scope ?? '', next.instruction, next.cadence,
         next.windowStart ?? null, next.windowDay ?? null,
         next.schedule,
         next.enabled ? 1 : 0, next.createsItems ? 1 : 0,
+        JSON.stringify(next.connectors), next.projectId ?? null, next.model ?? null, next.output ?? 'items',
         Date.now(), id,
       )
   }

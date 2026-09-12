@@ -113,7 +113,7 @@ export function CommandPalette({
         id: `wa:${w.id}`,
         section: 'Watches',
         label: `${w.enabled ? 'Pause' : 'Resume'} watch: ${w.title}`,
-        hint: w.scope,
+        hint: w.connectors.join(', '),
         run: () => {
           void fetch(`/api/watches?id=${encodeURIComponent(w.id)}`, {
             method: 'PUT',

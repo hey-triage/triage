@@ -57,6 +57,8 @@ export type StoredSession = {
   runStatus?: WatchRunStatus
   runMatches?: number
   runTokens?: number
+  /** dollars, from the SDK's total_cost_usd */
+  runCostUsd?: number
   runError?: string
   createdAt: number
   updatedAt: number
@@ -67,6 +69,7 @@ export type WatchRunRecord = {
   status: WatchRunStatus
   matches: number
   tokens: number
+  costUsd?: number
   error?: string
 }
 

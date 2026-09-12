@@ -3,7 +3,7 @@
  * the web inbox renders. Kinds for sources not yet ported (slack, linear)
  * are kept: scoring is source-agnostic and the ids/kinds are settled.
  */
-export type WorkSource = 'github' | 'slack' | 'linear' | 'manual'
+export type WorkSource = 'github' | 'slack' | 'linear' | 'web' | 'watch' | 'manual'
 
 export type ItemKind =
   | 'review-requested' // someone asked you to review their PR
@@ -16,7 +16,8 @@ export type ItemKind =
   | 'slack-reply-pending'
   | 'slack-mention'
   | 'ticket-assigned'
-  | 'watch-hit' // a user-defined watch matched this thread (see .docs/watches.md)
+  | 'watch-hit' // a user-defined watch matched this thread
+  | 'digest' // a watch's rolling report: one item per watch, rewritten each run (see .docs/watches.md)
   | 'manual' // a to-do the user added by hand, in the inbox
   | 'fyi'
 

@@ -100,7 +100,6 @@ import {
 } from '../shared/protocol.js'
 import type {
   ActivityResponse,
-  CoverageResponse,
   FileSearchResponse,
   Mention,
   ResolvedMention,
@@ -122,7 +121,6 @@ import type {
   ReposResponse,
   UpsertResponse,
   WatchDraftResponse,
-  WatchPreviewResponse,
   WatchesResponse,
   WorkItem,
   WorkspaceResponse,
@@ -133,24 +131,21 @@ import { openSqliteStore } from '../core/store/sqlite.js'
 import type { Store, StoredSession, UpsertOutcome } from '../core/store/types.js'
 import { buildInbox } from '../core/work/inbox.js'
 import { BASE, rank } from '../core/work/score.js'
-import { canonicalizeRefs, linkByRefs } from '../core/work/link.js'
+import { canonicalizeRef, canonicalizeRefs, linkByRefs } from '../core/work/link.js'
 import type { ItemStatus } from '../core/work/state.js'
-import type { Provenance, WorkItem as CoreWorkItem } from '../core/work/types.js'
+import type { Provenance, WorkItem as CoreWorkItem, WorkSource } from '../core/work/types.js'
 import { fetchGitHub, fetchGitHubClosed, listAffiliatedRepos } from '../core/sources/github.js'
 import {
-  composeWatchRunPrompt,
   draftWatch,
-  MAX_ROWS_PER_WATCH,
   permalinkId,
-  previewWatch,
-  READ_ONLY_SLACK_TOOLS,
   safeWhen,
 } from '../core/sources/slack.js'
 import { scanUsage } from '../core/usage/ledger.js'
 import { summarize as summarizeUsage } from '../core/usage/summary.js'
 import { isDue } from '../core/watch/schedule.js'
 import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
-import type { NewWatch, Watch, WatchCadence, WatchRunStatus } from '../core/watch/types.js'
+import { WATCH_CONNECTORS, WATCH_OUTPUTS, type NewWatch, type Watch, type WatchCadence, type WatchConnector, type WatchOutput, type WatchRunStatus } from '../core/watch/types.js'
+import { composeRunPrompt, MAX_ROWS_PER_RUN, runAllowedTools } from '../core/watch/connectors.js'
 import { clearState, pkgVersion, TRIAGE_DIR, writeState } from './state.js'
 import { initLogFile, log, logFilePath, logSubsystems, recentLogs } from './log.js'
 import {
@@ -170,7 +165,7 @@ import {
 } from './workspaces.js'
 import { TerminalManager } from './terminals.js'
 import { FileIndexes, resolveFileMention } from './files.js'
-import { ArtifactIndex } from './artifacts.js'
+import { ArtifactIndex, slug } from './artifacts.js'
 import {
   BRIEF_SYSTEM_APPEND,
   briefRelPath,
@@ -1353,45 +1348,83 @@ function pumpRunQueue(rt: WorkspaceRuntime): void {
 }
 
 /**
- * The per-run ingestion tool. Upsert-only, permalink-shaped: the scanner passes
- * what it can see (permalink, title, why, timestamp, refs); the server stamps
- * identity (slack:<tail>), kind, channel, and provenance (this watch + run). So
+ * Identity for a filed item, derived from the link the scanner saw — never from
+ * the watch. A Slack permalink → slack:<tail>; a GitHub PR/issue URL →
+ * github:owner/repo#n; a Linear URL or key → linear:KEY-n. Anything else is
+ * rejected: an id we cannot canonicalize cannot dedupe.
+ */
+function identityFromUrl(raw: string): { id: string; source: WorkSource; url: string; home: string } | null {
+  const url = raw.trim()
+  if (/\/archives\//.test(url)) return { id: permalinkId(url), source: 'slack', url, home: '' }
+  const ref = canonicalizeRef(url)
+  if (!ref) return null
+  if (ref.startsWith('github:')) {
+    const m = /^github:([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref)
+    if (!m) return null
+    const href = url.startsWith('http') ? url : `https://github.com/${m[1]}/issues/${m[2]}`
+    return { id: ref, source: 'github', url: href, home: m[1] }
+  }
+  if (ref.startsWith('linear:')) {
+    const key = ref.slice('linear:'.length)
+    const href = url.startsWith('http') ? url : `https://linear.app/issue/${key}`
+    return { id: ref, source: 'linear', url: href, home: key.slice(0, key.indexOf('-')) }
+  }
+  if (ref.startsWith('web:')) return { id: ref, source: 'web', url, home: webHost(url) }
+  return null
+}
+
+function webHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The per-run ingestion tool. Upsert-only, link-shaped: the scanner passes
+ * what it can see (a link, title, why, timestamp, refs); the server derives
+ * identity from the link and stamps kind and provenance (this watch + run). So
  * the model only ADDS candidates and annotates why — lifecycle stays in code.
  */
 function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert: () => void) {
   let count = 0
+  if (watch.output === 'digest') return makeDigestMcp(rt, watch, runId, onUpsert)
   return createSdkMcpServer({
     name: 'triage',
     version: VERSION,
     tools: [
       tool(
         'upsert_work_item',
-        'Record ONE matching Slack thread as a work item. Call once per matching thread; the server assigns its id, kind, and channel.',
+        'Record ONE match as a work item. Call once per match; the server derives the id from the link and stamps provenance.',
         {
-          permalink: z.string().describe('the Slack message permalink'),
-          title: z.string().describe('a one-line summary of the thread'),
-          from: z.string().optional().describe('display name of the author/asker'),
-          lastActivity: z.string().describe('ISO 8601 timestamp of the newest message in the thread'),
-          why: z.string().describe('one line: exactly what matched the instruction'),
-          refs: z.array(z.string()).optional().describe('GitHub PR/issue URLs or Linear keys in the content'),
+          url: z.string().describe('the canonical link: Slack permalink, Linear issue URL or key, or GitHub PR/issue URL'),
+          title: z.string().describe('a one-line summary'),
+          place: z.string().optional().describe('where it lives: "#channel", "@dm", a Linear team key, or "owner/repo"'),
+          from: z.string().optional().describe('the author or asker'),
+          lastActivity: z.string().describe('ISO 8601 timestamp of the newest activity'),
+          why: z.string().describe('one line: exactly what matched the instructions'),
+          refs: z.array(z.string()).optional().describe('other GitHub PR/issue URLs or Linear keys in the content'),
         },
         async (args) => {
           try {
             // Cost guard, enforced here not just in the prompt.
-            if (count >= MAX_ROWS_PER_WATCH) {
-              return errResult(`row cap reached (${MAX_ROWS_PER_WATCH}) — stop calling this tool`)
+            if (count >= MAX_ROWS_PER_RUN) {
+              return errResult(`row cap reached (${MAX_ROWS_PER_RUN}) — stop calling this tool`)
             }
+            const ident = identityFromUrl(args.url)
+            if (!ident) return errResult('url must be a Slack permalink, a Linear issue URL or key, or a GitHub PR/issue URL')
             count += 1
             const now = Date.now()
             const when = safeWhen(args.lastActivity, now)
             const refs = canonicalizeRefs(args.refs)
             const item: CoreWorkItem = {
-              id: permalinkId(args.permalink),
-              source: 'slack',
+              id: ident.id,
+              source: ident.source,
               kind: watch.createsItems ? 'watch-hit' : 'fyi',
               title: args.title,
-              url: args.permalink,
-              repo: watch.scope,
+              url: ident.url,
+              repo: args.place?.trim() || ident.home,
               author: args.from ?? '',
               peopleWaiting: 0,
               createdAt: when,
@@ -1406,11 +1439,77 @@ function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert
               id: item.id,
               watchId: watch.id,
               runId,
-              channel: watch.scope,
+              place: item.repo,
               outcome,
               workspace: rt.meta.id,
             })
             return okResult('ok: recorded')
+          } catch (err) {
+            return errResult(err instanceof Error ? err.message : String(err))
+          }
+        },
+      ),
+    ],
+  })
+}
+
+/** The one file a digest watch rewrites: stable per watch, so writeAt updates in place. */
+const digestRelPath = (watch: Watch): string => `reports/${slug(watch.title) || 'digest'}-${watch.id.slice(0, 8)}.md`
+
+/**
+ * The digest watch's write tool. One call per run: the server rewrites the
+ * watch's report artifact in place, upserts the watch's single rolling item
+ * (id `watch:<id>`) with a fresh timestamp — so a done item returns with the
+ * "returned" marker — and links report → item. The model writes prose; code
+ * owns identity, lifecycle and the link, as everywhere else.
+ */
+function makeDigestMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onWrite: () => void) {
+  let written = false
+  return createSdkMcpServer({
+    name: 'triage',
+    version: VERSION,
+    tools: [
+      tool(
+        'write_digest',
+        'Save this run’s digest: ONE markdown report. Call exactly once with the whole document.',
+        {
+          title: z.string().describe('a short name for this edition, e.g. "AI news · 12 Sep"'),
+          body: z.string().describe('the whole digest as markdown'),
+          refs: z.array(z.string()).optional().describe('GitHub PR/issue URLs or Linear keys cited in the digest'),
+        },
+        async (args) => {
+          try {
+            if (written) return errResult('the digest was already written this run — stop calling this tool')
+            const title = args.title.trim() || `${watch.title} · ${new Date().toLocaleDateString()}`
+            const refs = canonicalizeRefs(args.refs)
+            const artifact = await rt.artifacts.writeAt(digestRelPath(watch), {
+              title,
+              body: args.body,
+              author: 'model',
+              ...(refs ? { refs } : {}),
+            })
+            const nowIso = new Date().toISOString()
+            const item: CoreWorkItem = {
+              id: `watch:${watch.id}`,
+              source: 'watch',
+              kind: 'digest',
+              title,
+              url: `#/artifact/${artifact.id}`,
+              repo: watch.title,
+              author: '',
+              peopleWaiting: 0,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+              ...(refs ? { refs } : {}),
+            }
+            const prov: Provenance = { watchId: watch.id, runId, at: Date.now(), why: 'digest rewritten' }
+            const { outcome, reopened } = await rt.store.items.upsert(item, prov)
+            await rt.store.links.add({ fromKind: 'artifact', fromId: artifact.id, toKind: 'item', toId: item.id, role: 'report' })
+            written = true
+            onWrite()
+            rt.inboxCache = null
+            log('info', 'watch', `digest written (${outcome}${reopened ? ', returned' : ''}): ${title}`, { id: item.id, watchId: watch.id, runId, artifact: artifact.path, workspace: rt.meta.id })
+            return okResult(`ok: digest saved as ${artifact.path}`)
           } catch (err) {
             return errResult(err instanceof Error ? err.message : String(err))
           }
@@ -1430,15 +1529,19 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
   if (!watch) return
   const startedMs = Date.now()
   const startedIso = new Date(startedMs).toISOString()
+  // An optional project gives the run a folder to read code in. A project that
+  // has since been removed degrades to no project — the run still happens.
+  const project = watch.projectId ? (await rt.store.projects.list()).find((p) => p.id === watch.projectId) ?? null : null
+  const cwd = project?.path ?? os.homedir()
   const session = await rt.store.sessions.create({
     id: randomUUID(),
     title: `Watch · ${watch.title}`,
-    cwd: os.homedir(),
+    cwd,
     kind: 'watch-run',
     watchId: watch.id,
   })
   rt.rows.set(session.id, session)
-  log('info', 'watch', `run started: ${watch.title}`, { watchId: watch.id, runId: session.id, scope: watch.scope, cursor: watch.cursor, workspace: rt.meta.id })
+  log('info', 'watch', `run started: ${watch.title}`, { watchId: watch.id, runId: session.id, connectors: watch.connectors, project: project?.name, model: watch.model, cursor: watch.cursor, workspace: rt.meta.id })
 
   let seq = 0
   const emit = (event: SessionEvent, persist = true) => {
@@ -1451,6 +1554,7 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
 
   let matches = 0
   let tokens = 0
+  let costUsd: number | undefined
   let status: WatchRunStatus = 'failed'
   let error: string | undefined
   const abort = new AbortController()
@@ -1461,12 +1565,21 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
 
   try {
     const q = query({
-      prompt: composeWatchRunPrompt({ scope: watch.scope, instruction: watch.instruction, cursor: watch.cursor }),
+      prompt: composeRunPrompt({
+        instruction: watch.instruction,
+        connectors: watch.connectors,
+        cursor: watch.cursor,
+        scope: watch.scope,
+        project: project ? { name: project.name, path: project.path } : null,
+        output: watch.output,
+      }),
       options: {
-        cwd: os.homedir(),
+        cwd,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         settingSources: ['user'],
-        allowedTools: [...READ_ONLY_SLACK_TOOLS, 'mcp__triage__upsert_work_item'],
+        allowedTools: runAllowedTools(watch.connectors, project !== null, watch.output),
+        // The watch's own model when it pinned one; otherwise Claude Code's default.
+        ...(watch.model ? { model: watch.model } : {}),
         mcpServers: { triage: scanMcp },
         abortController: abort,
         ...(rt.env ? { env: rt.env } : {}),
@@ -1475,7 +1588,7 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
     let sawResult = false
     let resultText = ''
     for await (const msg of q) {
-      const m = msg as unknown as SdkMessage & { result?: string; usage?: Record<string, unknown> }
+      const m = msg as unknown as SdkMessage & { result?: string; usage?: Record<string, unknown>; total_cost_usd?: unknown }
       if (m.type === 'system' && m.subtype === 'init' && m.session_id) {
         session.sdkSessionId = m.session_id
         rt.store.sessions.setSdkSessionId(session.id, m.session_id).catch(() => {})
@@ -1485,10 +1598,11 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
         sawResult = true
         resultText = typeof m.result === 'string' ? m.result : ''
         tokens = sumTokens(m.usage)
+        if (typeof m.total_cost_usd === 'number') costUsd = m.total_cost_usd
       }
     }
-    if (resultText.includes('no-slack-tools')) {
-      throw new Error('no Slack tools — enable Slack for Claude at claude.ai/settings/connectors')
+    if (resultText.includes('no-connector-tools') || resultText.includes('no-slack-tools')) {
+      throw new Error(`no connector tools — connect ${watch.connectors.join(', ')} for Claude at claude.ai/settings/connectors`)
     }
     if (!sawResult) throw new Error('scan ended without a result')
     status = 'ok'
@@ -1511,12 +1625,14 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
     session.runStatus = status
     session.runMatches = matches
     session.runTokens = tokens
+    session.runCostUsd = costUsd
     session.runError = error
-    await rt.store.sessions.recordWatchRun(session.id, { status, matches, tokens, error })
+    session.updatedAt = Date.now()
+    await rt.store.sessions.recordWatchRun(session.id, { status, matches, tokens, costUsd, error })
     log(
       status === 'ok' ? 'info' : 'error',
       'watch',
-      `run ${status}: ${watch.title}${status === 'ok' ? ` — ${matches} filed, ${Math.round(tokens / 1000)}k tok` : ''}${error ? ` — ${error}` : ''}`,
+      `run ${status}: ${watch.title}${status === 'ok' ? ` — ${matches} filed, ${Math.round(tokens / 1000)}k tok${costUsd != null ? `, $${costUsd.toFixed(2)}` : ''}` : ''}${error ? ` — ${error}` : ''}`,
       { watchId: watch.id, runId: session.id, status, matches, tokens, durationMs: Date.now() - startedMs, workspace: rt.meta.id, ...(error ? { error } : {}) },
     )
     if (status === 'ok') {
@@ -1533,13 +1649,13 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
  * disable, edit, or duplicate them; a `templateId` marks the origin.
  */
 const WATCH_TEMPLATES: Array<
-  Pick<Watch, 'title' | 'scope' | 'instruction' | 'schedule' | 'cadence' | 'createsItems'> & { templateId: string }
+  Pick<Watch, 'title' | 'instruction' | 'schedule' | 'cadence' | 'createsItems' | 'connectors'> & { templateId: string }
 > = [
   {
     templateId: 'unread-dms',
     title: 'Unread DMs',
-    scope: '@dm',
-    instruction: 'Find my unread Slack direct messages and triage each unanswered one into a work item.',
+    connectors: ['slack'],
+    instruction: 'Look through my unread Slack direct messages. File each unanswered one that asks something of me.',
     schedule: '0 * * * *',
     cadence: 'hourly',
     createsItems: true,
@@ -1547,8 +1663,8 @@ const WATCH_TEMPLATES: Array<
   {
     templateId: 'mentions',
     title: 'Mentions',
-    scope: '@mentions',
-    instruction: 'Find Slack messages where I am mentioned or tagged and my reply is still awaited, and triage each into a work item.',
+    connectors: ['slack'],
+    instruction: 'Find Slack messages where I am mentioned or tagged and my reply is still awaited. File each one.',
     schedule: '0 * * * *',
     cadence: 'hourly',
     createsItems: true,
@@ -1578,7 +1694,9 @@ async function seedWatchTemplates(rt: WorkspaceRuntime): Promise<void> {
         id: randomUUID(),
         source: 'slack',
         title: t.title,
-        scope: t.scope,
+        scope: '',
+        connectors: t.connectors,
+        output: 'items',
         instruction: t.instruction,
         schedule: t.schedule,
         cadence: t.cadence,
@@ -1921,10 +2039,10 @@ function resolveRuntime(req: http.IncomingMessage, url: URL): WorkspaceRuntime {
 const CADENCES = new Set<WatchCadence>(['hourly', 'daily', 'weekly'])
 const ITEM_STATUSES = new Set<ItemStatus>(['open', 'done', 'snoozed', 'archived'])
 const VALID_KINDS = new Set(Object.keys(BASE))
-const VALID_SOURCES = new Set(['github', 'slack', 'linear'])
+const VALID_SOURCES = new Set(['github', 'slack', 'linear', 'web'])
 // upsert accepts only scanner sources; state/resolve accept manual items too.
-const ITEM_ID_RE = /^(github|slack|linear):\S+$/
-const ANY_ITEM_ID_RE = /^(github|slack|linear|manual):\S+$/
+const ITEM_ID_RE = /^(github|slack|linear|web):\S+$/
+const ANY_ITEM_ID_RE = /^(github|slack|linear|web|manual):\S+$/
 
 type WatchPatch = Partial<NewWatch> & { enabled?: boolean }
 
@@ -1937,8 +2055,28 @@ function watchPatchFrom(raw: unknown): { patch: WatchPatch } | { error: string }
     patch.title = r.title.trim()
   }
   if (r.scope !== undefined) {
-    if (typeof r.scope !== 'string' || !/^[#@]\S+$/.test(r.scope.trim())) return { error: 'scope must be "#channel" or "@dm"' }
+    // legacy place hint; empty clears it
+    if (typeof r.scope !== 'string' || (r.scope.trim() && !/^[#@]\S+$/.test(r.scope.trim()))) return { error: 'scope must be "#channel", "@dm", or empty' }
     patch.scope = r.scope.trim()
+  }
+  if (r.connectors !== undefined) {
+    if (!Array.isArray(r.connectors) || r.connectors.length === 0 || !r.connectors.every((c) => WATCH_CONNECTORS.includes(c as WatchConnector))) {
+      return { error: `connectors must be a non-empty list of: ${WATCH_CONNECTORS.join(', ')}` }
+    }
+    patch.connectors = [...new Set(r.connectors as WatchConnector[])]
+  }
+  if (r.projectId !== undefined) {
+    if (r.projectId !== null && typeof r.projectId !== 'string') return { error: 'projectId must be a string or null' }
+    patch.projectId = r.projectId ? r.projectId : undefined
+  }
+  if (r.output !== undefined) {
+    if (!WATCH_OUTPUTS.includes(r.output as WatchOutput)) return { error: `output must be one of: ${WATCH_OUTPUTS.join(', ')}` }
+    patch.output = r.output as WatchOutput
+  }
+  if (r.model !== undefined) {
+    // an alias or wire id as the model picker reports it; null/empty = default
+    if (r.model !== null && (typeof r.model !== 'string' || r.model.length > 120)) return { error: 'model must be a string or null' }
+    patch.model = typeof r.model === 'string' && r.model.trim() ? r.model.trim() : undefined
   }
   if (r.instruction !== undefined) {
     if (typeof r.instruction !== 'string' || !r.instruction.trim()) return { error: 'instruction must be a non-empty string' }
@@ -2141,7 +2279,7 @@ function linkTargetFrom(raw: unknown): { kind: LinkKind; id: string; role: LinkR
   const l = (raw ?? {}) as Record<string, unknown>
   if (!isLinkKind(l.kind) || l.kind === 'artifact') throw new Error('link kind must be item or session')
   if (typeof l.id !== 'string' || !l.id) throw new Error('a link needs an id')
-  if (!isLinkRole(l.role)) throw new Error('link role must be brief, context or dispatch')
+  if (!isLinkRole(l.role)) throw new Error('link role must be brief, report, context or dispatch')
   return { kind: l.kind, id: l.id, role: l.role }
 }
 
@@ -2219,7 +2357,7 @@ async function addLinkOp(rt: WorkspaceRuntime, raw: unknown): Promise<Link> {
   const l = (raw ?? {}) as Record<string, unknown>
   if (!isLinkKind(l.fromKind) || !isLinkKind(l.toKind)) throw new Error('fromKind and toKind must be artifact, item or session')
   if (typeof l.fromId !== 'string' || !l.fromId || typeof l.toId !== 'string' || !l.toId) throw new Error('need fromId and toId')
-  if (!isLinkRole(l.role)) throw new Error('role must be brief, context or dispatch')
+  if (!isLinkRole(l.role)) throw new Error('role must be brief, report, context or dispatch')
   await assertLinkable(rt, l.fromKind, l.fromId)
   await assertLinkable(rt, l.toKind, l.toId)
   return rt.store.links.add({ fromKind: l.fromKind, fromId: l.fromId, toKind: l.toKind, toId: l.toId, role: l.role })
@@ -3115,8 +3253,11 @@ const server = http.createServer(async (req, res) => {
         const parsed = watchPatchFrom(await readJsonBody(req))
         if ('error' in parsed) throw new Error(parsed.error)
         const p = parsed.patch
-        if (!p.title || !p.scope || !p.instruction) {
-          throw new Error('a watch needs title, scope, and instruction')
+        if (!p.title || !p.instruction || !p.connectors?.length) {
+          throw new Error('a watch needs a title, instructions, and at least one connector')
+        }
+        if (p.projectId && !(await rt.store.projects.list()).some((pr) => pr.id === p.projectId)) {
+          throw new Error('unknown project')
         }
         // Schedule is the source of truth; accept a legacy cadence as a fallback.
         const schedule = p.schedule ?? (p.cadence ? cronFromCadence(p.cadence, p.windowStart, p.windowDay) : '0 9 * * *')
@@ -3125,7 +3266,11 @@ const server = http.createServer(async (req, res) => {
           id: randomUUID(),
           source: 'slack',
           title: p.title,
-          scope: p.scope,
+          scope: p.scope ?? '',
+          connectors: p.connectors,
+          projectId: p.projectId,
+          model: p.model,
+          output: p.output ?? 'items',
           instruction: p.instruction,
           schedule,
           cadence: p.cadence ?? 'daily',
@@ -3136,7 +3281,7 @@ const server = http.createServer(async (req, res) => {
           createdAt: now,
           updatedAt: now,
         })
-        log('info', 'watch', `created: ${p.title}`, { scope: p.scope, schedule, workspace: rt.meta.id })
+        log('info', 'watch', `created: ${p.title}`, { connectors: p.connectors, schedule, workspace: rt.meta.id })
         // active on the next scheduler tick (never run → due immediately)
       } else if (req.method === 'PUT') {
         const id = url.searchParams.get('id')
@@ -3144,6 +3289,9 @@ const server = http.createServer(async (req, res) => {
         if (!id || !existing) throw new Error('unknown watch id')
         const parsed = watchPatchFrom(await readJsonBody(req))
         if ('error' in parsed) throw new Error(parsed.error)
+        if (parsed.patch.projectId && !(await rt.store.projects.list()).some((pr) => pr.id === parsed.patch.projectId)) {
+          throw new Error('unknown project')
+        }
         await rt.store.watches.update(id, parsed.patch)
         log('info', 'watch', `updated: ${parsed.patch.title ?? existing.title}`, { watchId: id, workspace: rt.meta.id })
       } else if (req.method === 'DELETE') {
@@ -3181,22 +3329,6 @@ const server = http.createServer(async (req, res) => {
       const draft = await draftWatch(text, undefined, rt.env)
       if (!draft) throw new Error('could not parse that into a watch — fill the form manually')
       body = { ok: true, draft }
-    } catch (err) {
-      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-    json(body.ok ? 200 : 502, body)
-    return
-  }
-  if (url.pathname === '/api/watches/preview' && req.method === 'POST') {
-    let body: WatchPreviewResponse
-    try {
-      const parsed = watchPatchFrom(await readJsonBody(req))
-      if ('error' in parsed) throw new Error(parsed.error)
-      const { scope, instruction } = parsed.patch
-      if (!scope || !instruction) throw new Error('a preview needs scope and instruction')
-      if (slackConnected(rt) === false) throw new Error('the claude.ai Slack connector is not connected')
-      const { rows, tokens } = await previewWatch(scope, instruction, undefined, rt.env)
-      body = { ok: true, rows, tokens }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -3268,11 +3400,26 @@ const server = http.createServer(async (req, res) => {
           status: r.runStatus,
           matches: r.runMatches,
           tokens: r.runTokens,
+          ...(r.runCostUsd != null ? { costUsd: r.runCostUsd } : {}),
           startedAt: r.createdAt,
           finishedAt: r.updatedAt,
           ...(r.runError ? { error: r.runError } : {}),
         }))
       body = { ok: true, runs }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    json(body.ok ? 200 : 502, body)
+    return
+  }
+  // Every item a watch has ever filed, any status — the watch page's Items tab.
+  if (url.pathname === '/api/watches/items' && req.method === 'GET') {
+    let body: ItemListResponse
+    try {
+      const id = url.searchParams.get('id') ?? ''
+      const all = await rt.store.items.listAll()
+      const mine = all.filter((it) => it.watchId === id || (it.foundBy ?? []).some((p) => p.watchId === id))
+      body = { ok: true, items: linkByRefs(rank(mine)) }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -3291,31 +3438,6 @@ const server = http.createServer(async (req, res) => {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     json(body.ok ? 200 : 502, body)
-    return
-  }
-  // Coverage probe: which watches cover a given scope, and are they healthy?
-  if (url.pathname === '/api/coverage' && req.method === 'GET') {
-    let body: CoverageResponse
-    try {
-      const scope = (url.searchParams.get('scope') ?? '').trim()
-      if (!scope) throw new Error('need a scope, e.g. "#novus-px"')
-      const norm = scope.toLowerCase()
-      const watches = (await rt.store.watches.list())
-        .filter((w) => w.scope.toLowerCase() === norm)
-        .map((w) => ({
-          id: w.id,
-          title: w.title,
-          scope: w.scope,
-          enabled: w.enabled,
-          lastRunStatus: w.lastRunStatus,
-          lastRunAt: w.lastRunAt,
-          cursor: w.cursor,
-        }))
-      body = { ok: true, scope, watches }
-    } catch (err) {
-      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-    json(body.ok ? 200 : 400, body)
     return
   }
   // Force-run one watch now (the per-watch Run button). The run appears under
