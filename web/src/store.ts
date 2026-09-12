@@ -10,7 +10,7 @@
  *                animation frame, because token deltas arrive far faster than
  *                anything should re-render.
  */
-import type {
+import type { BriefJob,
   ClientMessage,
   ServerMessage,
   SessionEvent,
@@ -188,6 +188,11 @@ export class Store {
 
   // -- incoming -------------------------------------------------------------
 
+  /** Who wants to know when the artifacts index changed (the artifacts store, an open artifact page). */
+  readonly #artifactsListeners = new Set<() => void>()
+  /** Who follows brief jobs (the brief store) — one frame per transition. */
+  readonly #briefListeners = new Set<(job: BriefJob) => void>()
+
   #handle(msg: ServerMessage) {
     switch (msg.type) {
       case 'hello':
@@ -256,6 +261,12 @@ export class Store {
         this.#subscribedTerminals.delete(msg.terminalId)
         this.#notify()
         break
+      case 'artifacts_changed':
+        for (const fn of this.#artifactsListeners) fn()
+        break
+      case 'brief_status':
+        for (const fn of this.#briefListeners) fn(msg.job)
+        break
       case 'error':
         // Server-level failure, not scoped to a session.
         console.error('[triage] server error:', msg.message)
@@ -265,6 +276,22 @@ export class Store {
 
   onSessionCreated(fn: (s: SessionSummary) => void) {
     this.#onSessionCreated = fn
+  }
+
+  /** Fires on every `brief_status` frame with the job that moved; returns the unsubscribe. */
+  onBriefStatus(fn: (job: BriefJob) => void): () => void {
+    this.#briefListeners.add(fn)
+    return () => {
+      this.#briefListeners.delete(fn)
+    }
+  }
+
+  /** Fires on every `artifacts_changed` frame; returns the unsubscribe. */
+  onArtifactsChanged(fn: () => void): () => void {
+    this.#artifactsListeners.add(fn)
+    return () => {
+      this.#artifactsListeners.delete(fn)
+    }
   }
 
   #applyEvent(sessionId: string, ev: SessionEvent) {

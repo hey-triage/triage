@@ -1,8 +1,8 @@
-import { Eye, Folder, Inbox, MessagesSquare, Terminal, type LucideProps } from 'lucide-react'
+import { Eye, FileText, Folder, Inbox, MessagesSquare, Terminal, type LucideProps } from 'lucide-react'
 import type { ComponentType } from 'react'
 import type { ConnState } from '../store.js'
 
-export type RailSection = 'inbox' | 'sessions' | 'terminals' | 'watches' | 'projects'
+export type RailSection = 'inbox' | 'sessions' | 'artifacts' | 'terminals' | 'watches' | 'projects'
 
 type Props = {
   active: RailSection | null
@@ -17,6 +17,7 @@ type Props = {
 const ITEMS: Array<{ id: RailSection; label: string; icon: ComponentType<LucideProps> }> = [
   { id: 'inbox', label: 'Inbox', icon: Inbox },
   { id: 'sessions', label: 'Sessions', icon: MessagesSquare },
+  { id: 'artifacts', label: 'Artifacts', icon: FileText },
   { id: 'terminals', label: 'Terminals', icon: Terminal },
   { id: 'watches', label: 'Watches', icon: Eye },
   { id: 'projects', label: 'Projects', icon: Folder },
