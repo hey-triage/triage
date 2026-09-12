@@ -1,15 +1,21 @@
 /**
- * One work item, in full: what it is, why it ranked, what has happened to it,
- * and the sessions working on it. The actions live in the right column so the
- * brief on the left reads as a page, not a form.
+ * One work item, in full: what it is (title + your description), the brief
+ * about it (a markdown document a playbook run wrote — .docs/next-version.md),
+ * why it ranked, what has happened to it, and the sessions working on it.
+ * The actions live in the right column so the left reads as a page, not a form.
  */
-import { AlarmClock, Archive, Check, ChevronRight, ExternalLink, Hash } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { AlarmClock, Archive, Check, ChevronRight, ExternalLink, FileText, Hash, Sparkles, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
+  BriefJobsResponse,
+  BriefResponse,
+  BriefView,
   ItemEvent,
   ItemEventsResponse,
   ItemListResponse,
   ItemStatus,
+  Link,
+  LinksResponse,
   Project,
   ProjectsResponse,
   ScoredItem,
@@ -17,7 +23,11 @@ import type {
 } from '../../../shared/protocol.js'
 import { useSessions } from '../hooks.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
+import { briefPill, useBriefs } from '../briefStore.js'
+import { store } from '../store.js'
 import { KIND_LABEL, PRIORITY_LABEL, PRIORITY_VALUES, ago, kindIcon, relTime } from '../itemUi.js'
+import { CreateBriefDialog } from './CreateBriefDialog.js'
+import { Markdown } from './Markdown.js'
 
 type Props = {
   id: string
@@ -48,12 +58,20 @@ const OTHER_STATUSES: ItemStatus[] = ['snoozed', 'done', 'archived']
 export function ItemPage({ id, onDispatch, onNavigate }: Props) {
   const snap = useInbox()
   const sessions = useSessions()
+  const briefs = useBriefs()
   const open = snap.items.find((i) => i.id === id)
   // Not in the open inbox → it may be snoozed, done or archived.
   const [other, setOther] = useState<{ id: string; item: ScoredItem | null } | null>(null)
   const [events, setEvents] = useState<ItemEvent[] | null>(null)
   const [watchTitles, setWatchTitles] = useState<Map<string, string>>(new Map())
   const [projects, setProjects] = useState<Project[]>([])
+  const [links, setLinks] = useState<Link[]>([])
+  const [brief, setBrief] = useState<BriefView | null>(null)
+  const [briefOpen, setBriefOpen] = useState(false)
+  const [descDraft, setDescDraft] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
     if (!snap.loaded && !snap.loading) void inboxStore.refresh()
@@ -101,13 +119,54 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
       .catch(() => {})
   }, [])
 
+  // The brief and the links follow the item's newest job: every transition
+  // (queued → running → ready) arrives as a frame and refetches both.
+  const job = briefs.byItem.get(id)
+  const jobKey = job ? `${job.id}:${job.status}` : ''
+  const loadBrief = useCallback(() => {
+    void fetch(`/api/briefs?itemId=${encodeURIComponent(id)}`)
+      .then((r) => r.json() as Promise<BriefResponse>)
+      .then((b) => {
+        if (b.ok) setBrief(b.brief)
+      })
+      .catch(() => {})
+    void fetch(`/api/links?kind=item&id=${encodeURIComponent(id)}`)
+      .then((r) => r.json() as Promise<LinksResponse>)
+      .then((b) => {
+        if (b.ok) setLinks(b.links)
+      })
+      .catch(() => {})
+  }, [id])
+  useEffect(loadBrief, [loadBrief, jobKey, sessions.length])
+  // A hand edit of the brief file lands as an index change.
+  useEffect(() => store.onArtifactsChanged(loadBrief), [loadBrief])
+
+  useEffect(() => {
+    if (!notice) return
+    const t = window.setTimeout(() => setNotice(null), 2500)
+    return () => window.clearTimeout(t)
+  }, [notice])
+
   const item = open ?? (other?.id === id ? other.item : undefined)
 
-  // Dispatch titles a session with the item's title — that is the link back.
-  const linkedSessions = useMemo(
-    () => (item ? sessions.filter((s) => s.title === item.title.slice(0, 80)) : []),
-    [sessions, item],
-  )
+  // Sessions from the links table (dispatch / brief); the pre-0.7 title match stays as a fallback.
+  const linkedSessions = useMemo(() => {
+    if (!item) return []
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    const seen = new Set<string>()
+    const out: { s: (typeof sessions)[number]; role: string }[] = []
+    for (const l of links) {
+      if (l.fromKind !== 'session') continue
+      const s = byId.get(l.fromId)
+      if (!s || seen.has(s.id)) continue
+      seen.add(s.id)
+      out.push({ s, role: l.role })
+    }
+    for (const s of sessions) {
+      if (!seen.has(s.id) && s.kind !== 'brief' && s.title === item.title.slice(0, 80)) out.push({ s, role: 'dispatch' })
+    }
+    return out
+  }, [sessions, links, item])
 
   async function setState(status: ItemStatus, snoozeUntil?: number) {
     if (!item) return
@@ -137,6 +196,56 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
     }).catch(() => {})
   }
 
+  async function saveDescription() {
+    if (!item || descDraft === null) return
+    const description = descDraft.trim()
+    setBusy('desc')
+    try {
+      const res = await fetch('/api/items/description', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: item.id, description: description || null }),
+      })
+      const b = (await res.json()) as { ok: boolean; error?: string }
+      if (!b.ok) {
+        setNotice(b.error ?? 'could not save')
+        return
+      }
+      const patch = (i: ScoredItem) => (i.id === item.id ? { ...i, description: description || undefined } : i)
+      inboxStore.patch((items) => items.map(patch))
+      setOther((o) => (o?.item ? { ...o, item: patch(o.item) } : o))
+      setDescDraft(null)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function iterate() {
+    if (!item || !feedback.trim()) return
+    setBusy('iterate')
+    try {
+      const res = await fetch('/api/briefs/iterate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemId: item.id, text: feedback.trim() }),
+      })
+      const b = (await res.json()) as BriefJobsResponse
+      if (b.ok) setFeedback('')
+      else setNotice(b.error)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function cancelBrief() {
+    if (!job || job.status !== 'queued') return
+    await fetch('/api/briefs/cancel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jobId: job.id }),
+    }).catch(() => {})
+  }
+
   if (!item) {
     const stillLooking = !snap.loaded || (other?.id !== id && !open)
     return (
@@ -149,7 +258,9 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
                 <span className="pip" /> Loading item…
               </>
             ) : (
-              <>This item is not in the inbox any more. <a href="#/inbox">Back to the inbox</a></>
+              <>
+                This item is not in the inbox any more. <a href="#/inbox">Back to the inbox</a>
+              </>
             )}
           </div>
         </div>
@@ -163,7 +274,8 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
   const pri = item.priority ?? 0
   const watchId = item.watchId ?? item.foundBy?.[item.foundBy.length - 1]?.watchId
   const project = item.projectId ? projects.find((p) => p.id === item.projectId) : undefined
-  const note = item.note ?? item.why
+  const settled = !job || job.status === 'ready' || job.status === 'failed'
+  const pill = briefPill(job, brief?.stale ?? false)
 
   return (
     <div className="itemPage">
@@ -172,18 +284,14 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
       <div className="itemMain">
         <div className="itemMeta">
           <Icon size={13} aria-hidden="true" />
-          <span className="mono">{item.repo}</span>
-          <span className="sep">·</span>
+          {item.repo && <span className="mono">{item.repo}</span>}
+          {item.repo && <span className="sep">·</span>}
           <span>{KIND_LABEL[item.kind] ?? item.kind}</span>
-          {item.author && (
-            <>
-              <span className="sep">·</span>
-              <span>
-                {item.source === 'manual' ? 'added' : 'opened'} {ago(item.createdAt)}
-                {item.source !== 'manual' && ` by ${item.author}`}
-              </span>
-            </>
-          )}
+          <span className="sep">·</span>
+          <span>
+            {item.source === 'manual' ? 'added' : 'opened'} {ago(item.createdAt)}
+            {item.source !== 'manual' && item.author && ` by ${item.author}`}
+          </span>
         </div>
 
         <h1 className="display md">{item.title}</h1>
@@ -192,18 +300,141 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
           <span className="pill mono">↑ {Math.round(item.score)}</span>
           {item.ciFailing && <span className="pill red">CI red</span>}
           {item.kind === 'own-pr-conflicting' && <span className="pill red">conflicts</span>}
-          {item.peopleWaiting > 0 && (
-            <span className="pill">
-              {item.peopleWaiting} waiting
-            </span>
-          )}
+          {item.peopleWaiting > 0 && <span className="pill">{item.peopleWaiting} waiting</span>}
           {pri > 0 && <span className={`pill ${pri <= 2 ? 'yellow' : ''}`}>{PRIORITY_LABEL[pri]}</span>}
           {item.isDraft && <span className="pill mute">draft</span>}
           {item.returned && <span className="pill green">returned</span>}
           {project && <span className="pill">{project.name}</span>}
           {watchId && watchTitles.has(watchId) && <span className="pill blue">{watchTitles.get(watchId)}</span>}
           {!isOpen && <span className="pill mute">{status}</span>}
+          {pill && (
+            <span className={`pill ${pill.tone}`}>
+              {job?.status === 'running' && <span className="dot live sm" aria-hidden="true" />}
+              {pill.label}
+            </span>
+          )}
         </div>
+
+        {/* Description — the human's intent, in their words. Never written by a run. */}
+        <div className="descBlock">
+          <div className="secLabel mute">Description</div>
+          {descDraft !== null ? (
+            <>
+              <textarea
+                autoFocus
+                value={descDraft}
+                onChange={(e) => setDescDraft(e.target.value)}
+                placeholder="Your intent, in your words. The brief and any dispatched session read this."
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void saveDescription()
+                  if (e.key === 'Escape') setDescDraft(null)
+                }}
+              />
+              <div className="row">
+                <button type="button" className="btn xs ghost" onClick={() => setDescDraft(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="btn xs primary" disabled={busy === 'desc'} onClick={() => void saveDescription()}>
+                  Save
+                </button>
+              </div>
+            </>
+          ) : (
+            <div
+              className={`descText${item.description ? '' : ' empty'}`}
+              role="button"
+              tabIndex={0}
+              title="Click to edit"
+              onClick={() => setDescDraft(item.description ?? '')}
+              onKeyDown={(e) => e.key === 'Enter' && setDescDraft(item.description ?? '')}
+            >
+              {item.description ?? 'Add a description — your intent, in your words. The brief and dispatched sessions read it.'}
+            </div>
+          )}
+        </div>
+
+        {/* The brief: a document a playbook run wrote, rewritten in place on iteration. */}
+        <div className="card briefCard">
+          <div className="briefHead">
+            <FileText size={14} aria-hidden="true" />
+            <span className="title">Brief</span>
+            {pill && (
+              <span className={`pill ${pill.tone}`}>
+                {job?.status === 'running' && <span className="dot live sm" aria-hidden="true" />}
+                {pill.label}
+              </span>
+            )}
+            {job?.status === 'queued' && brief?.queuePosition != null && (
+              <span className="when">#{brief.queuePosition + 1} in the queue</span>
+            )}
+            {brief?.artifact && <span className="when">updated {ago(brief.artifact.updated)}</span>}
+            <span className="right">
+              {job?.sessionId && (
+                <button type="button" className="btn xs" onClick={() => onNavigate(job.sessionId!)} title="The run's transcript">
+                  Open session
+                </button>
+              )}
+              {brief?.artifact && (
+                <button type="button" className="btn xs" onClick={() => onNavigate(`/artifact/${brief.artifact!.id}`)} title="The brief as an artifact">
+                  Open artifact
+                </button>
+              )}
+              {job?.status === 'queued' && (
+                <button type="button" className="btn xs ghost" onClick={() => void cancelBrief()}>
+                  <X size={11} aria-hidden="true" /> Cancel
+                </button>
+              )}
+              {settled && (
+                <button type="button" className="btn xs primary" onClick={() => setBriefOpen(true)}>
+                  <Sparkles size={11} aria-hidden="true" /> {brief?.artifact ? 'Re-brief' : 'Create brief'}
+                </button>
+              )}
+            </span>
+          </div>
+
+          {job?.status === 'failed' && job.error && <div className="msg error">{job.error}</div>}
+          {brief?.stale && settled && (
+            <div className="notice">The source moved after this brief was written — re-brief to catch up.</div>
+          )}
+
+          {brief?.body ? (
+            <div className="briefBody">
+              <Markdown text={brief.body} />
+            </div>
+          ) : (
+            <div className="briefEmpty">
+              {job?.status === 'running' ? (
+                <>The playbook is reading the item now. The brief lands here when it calls <b>write_brief</b>.</>
+              ) : job?.status === 'queued' ? (
+                <>Queued. Briefs run one at a time, in order.</>
+              ) : (
+                <>
+                  No brief yet. <b>Create brief</b> runs the <b>{KIND_LABEL[item.kind] ?? item.kind}</b> playbook against this item
+                  — it reads, never writes — and the result lands here as a document you can iterate on. Or skip it and{' '}
+                  <b>Dispatch</b> if you already know what to do.
+                </>
+              )}
+            </div>
+          )}
+
+          {brief?.body && settled && (
+            <div className="briefIterate">
+              <textarea
+                placeholder="You missed X… — the same session rewrites the brief"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void iterate()
+                }}
+              />
+              <button type="button" className="btn sm" disabled={!feedback.trim() || busy === 'iterate'} onClick={() => void iterate()}>
+                Send
+              </button>
+            </div>
+          )}
+        </div>
+
+        {notice && <div className="notice">{notice}</div>}
 
         <div className="card brief">
           <div className="briefHead">
@@ -224,10 +455,10 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
             <span>{item.reason}</span>
           </div>
 
-          {note && (
+          {item.why && item.source !== 'manual' && (
             <>
-              <div className="secLabel mute">{item.source === 'manual' ? 'Note' : 'Match reason'}</div>
-              <div className="quote">{note}</div>
+              <div className="secLabel mute">Match reason</div>
+              <div className="quote">{item.why}</div>
             </>
           )}
 
@@ -240,8 +471,8 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
                 <div className="line" key={`${p.at}-${i}`}>
                   <span className="dash">—</span>
                   <span>
-                    <span className="k">{p.watchId ? watchTitles.get(p.watchId) ?? 'a watch' : 'source scan'}</span>{' '}
-                    · {ago(p.at)}{p.why ? ` · ${p.why}` : ''}
+                    <span className="k">{p.watchId ? watchTitles.get(p.watchId) ?? 'a watch' : 'source scan'}</span> · {ago(p.at)}
+                    {p.why ? ` · ${p.why}` : ''}
                   </span>
                 </div>
               ))}
@@ -260,9 +491,14 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
 
       <div className="itemAside">
         <div className="asideActions">
-          <button type="button" className="btn primary wide" onClick={() => onDispatch(item)}>
-            {linkedSessions.length > 0 ? 'Dispatch another session' : 'Dispatch to a session'}
+          <button type="button" className="btn primary wide" onClick={() => onDispatch(item)} title="Start a session on this item — the brief rides along if there is one">
+            {linkedSessions.some((x) => x.role === 'dispatch') ? 'Dispatch another session' : 'Dispatch to a session'}
           </button>
+          {isOpen && settled && (
+            <button type="button" className="btn wide" onClick={() => setBriefOpen(true)}>
+              <Sparkles size={12} aria-hidden="true" /> {brief?.artifact ? 'Re-brief' : 'Create brief'}
+            </button>
+          )}
           {isOpen ? (
             <div className="btnGrid">
               <button type="button" className="btn" title="Mark done (e)" onClick={() => void setState('done')}>
@@ -288,12 +524,7 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
             </div>
           )}
           {isOpen && (
-            <select
-              className={`prioSelect prio${pri}`}
-              title="Set priority"
-              value={pri}
-              onChange={(e) => setPriority(Number(e.target.value))}
-            >
+            <select className={`prioSelect prio${pri}`} title="Set priority" value={pri} onChange={(e) => setPriority(Number(e.target.value))}>
               {PRIORITY_VALUES.map((v) => (
                 <option key={v} value={v}>
                   {v === 0 ? 'priority — none' : `priority — ${PRIORITY_LABEL[v]}`}
@@ -307,22 +538,30 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
           Sessions <span className="n">{linkedSessions.length}</span>
         </div>
         {linkedSessions.length === 0 ? (
-          <div className="asideEmpty">None yet — Dispatch opens one in the matching project.</div>
+          <div className="asideEmpty">None yet — Dispatch opens one in the matching project; a brief run is one too.</div>
         ) : (
-          linkedSessions.map((s) => (
+          linkedSessions.map(({ s, role }) => (
             <div key={s.id} className="card sessCard">
               <div className="head">
                 <span className={`dot ${s.status === 'running' || s.status === 'starting' ? 'live' : s.status === 'error' ? 'red' : 'green'}`} />
                 <span>{s.title}</span>
-                <span className="when">{s.status}</span>
+                <span className="when">
+                  {role} · {s.status}
+                </span>
               </div>
               <div className="row mono">
                 {s.cwd.split('/').pop()}
                 {s.branch ? ` · ${s.branch}` : ''}
                 {s.model ? ` · ${s.model}` : ''}
               </div>
-              <a href={`#${s.id}`} onClick={(e) => { e.preventDefault(); onNavigate(s.id) }}>
-                Re-enter session <ChevronRight size={12} aria-hidden="true" />
+              <a
+                href={`#${s.id}`}
+                onClick={(e) => {
+                  e.preventDefault()
+                  onNavigate(s.id)
+                }}
+              >
+                {role === 'brief' ? 'Open the run' : 'Re-enter session'} <ChevronRight size={12} aria-hidden="true" />
               </a>
             </div>
           ))
@@ -334,7 +573,9 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
             <div key={l.url} className="linkedRow">
               <Hash size={13} aria-hidden="true" />
               <span>
-                <span className="src">{l.source} · {l.repo}</span>
+                <span className="src">
+                  {l.source} · {l.repo}
+                </span>
                 <br />
                 <a href={l.url} target="_blank" rel="noreferrer">
                   {l.url.replace(/^https?:\/\//, '')}
@@ -369,6 +610,8 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
           </div>
         )}
       </div>
+
+      <CreateBriefDialog open={briefOpen} items={[item]} onClose={() => setBriefOpen(false)} onQueued={() => {}} />
     </div>
   )
 }
