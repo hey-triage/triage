@@ -22,8 +22,27 @@ export function canonicalizeRef(raw: string): string | null {
   if (linUrl) return `linear:${linUrl[1]}`
   if (LINEAR_KEY.test(s)) return `linear:${s}`
   // already-canonical refs pass through (external scanners may send them)
-  if (/^(github|linear|slack):\S+$/.test(s)) return s
+  if (/^(github|linear|slack|web):\S+$/.test(s)) return s
+  // any other web page: one item per page, tracking noise stripped
+  const web = webRef(s)
+  if (web) return web
   return null
+}
+
+/** `web:<host/path>` for an http(s) URL — lowercase host, no hash, no utm_* params, no trailing slash. */
+export function webRef(raw: string): string | null {
+  if (!/^https?:\/\//i.test(raw)) return null
+  try {
+    const u = new URL(raw)
+    if (!u.hostname.includes('.')) return null
+    for (const k of [...u.searchParams.keys()]) if (/^(utm_|fbclid|gclid|ref$)/i.test(k)) u.searchParams.delete(k)
+    const host = u.hostname.toLowerCase().replace(/^www\./, '')
+    const path = u.pathname.replace(/\/+$/, '')
+    const q = u.searchParams.toString()
+    return `web:${host}${path}${q ? `?${q}` : ''}`
+  } catch {
+    return null
+  }
 }
 
 export function canonicalizeRefs(raw: unknown): string[] | undefined {

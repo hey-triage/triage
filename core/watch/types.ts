@@ -6,6 +6,22 @@
 
 export type WatchCadence = 'hourly' | 'daily' | 'weekly'
 
+/**
+ * A connector a watch run may use. This is the real fence: the run's tool
+ * allowlist is composed from these (read-only tools per connector, see
+ * connectors.ts). Where to look inside a connector lives in the instruction.
+ */
+export type WatchConnector = 'slack' | 'linear' | 'github' | 'web'
+
+/**
+ * What a run produces. `items`: one work item per match, deduped by the link
+ * it passes. `digest`: ONE rolling work item per watch with a markdown report
+ * attached; each run rewrites the report and the item returns to the inbox.
+ */
+export type WatchOutput = 'items' | 'digest'
+export const WATCH_OUTPUTS: WatchOutput[] = ['items', 'digest']
+export const WATCH_CONNECTORS: WatchConnector[] = ['web', 'slack', 'linear', 'github']
+
 /** The outcome of one watch run (.docs/watches-v2.md). */
 export type WatchRunStatus = 'ok' | 'failed' | 'skipped'
 
@@ -15,10 +31,21 @@ export interface Watch {
   source: 'slack'
   /** "PX topics in #novus-px" */
   title: string
-  /** '#channel' | '@dm' — code-enforced boundary the scan may not leave */
+  /**
+   * Legacy (pre-connectors) place hint: '#channel' | '@dm'. Empty for watches
+   * created since; kept so old rows still say where they used to look.
+   */
   scope: string
-  /** the NL sentence; editable forever, never opaque weights */
+  /** the NL instructions: where to look and what counts; editable forever */
   instruction: string
+  /** connectors the run may use — its tool allowlist (never empty) */
+  connectors: WatchConnector[]
+  /** optional project: the run gets its folder as cwd plus read-only code tools */
+  projectId?: string
+  /** model alias or wire id for the run; omitted = Claude Code's own default */
+  model?: string
+  /** items (default) or one rolling digest with a report */
+  output: WatchOutput
   /**
    * A 5-field cron expression, the source of truth for when the watch runs
    * (.docs/watches-v2.md). Legacy rows without one derive it from `cadence`.
@@ -52,7 +79,12 @@ export interface Watch {
   updatedAt: number
 }
 
-export type NewWatch = Pick<Watch, 'title' | 'scope' | 'instruction' | 'schedule' | 'createsItems'> & {
+export type NewWatch = Pick<Watch, 'title' | 'instruction' | 'schedule' | 'createsItems' | 'connectors'> & {
+  /** legacy place hint; new watches leave it empty */
+  scope?: string
+  projectId?: string
+  model?: string
+  output?: WatchOutput
   /** legacy; defaults to a coarse bucket when omitted */
   cadence?: WatchCadence
   windowStart?: string

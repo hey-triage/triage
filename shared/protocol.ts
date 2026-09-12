@@ -307,6 +307,8 @@ export type ActivityRun = {
   status?: WatchRunStatus
   matches?: number
   tokens?: number
+  /** dollars, when the run recorded one */
+  costUsd?: number
   startedAt: number
   finishedAt: number
   error?: string
@@ -314,24 +316,6 @@ export type ActivityRun = {
 
 export type ActivityResponse =
   | { ok: true; runs: ActivityRun[] }
-  | { ok: false; error: string }
-
-// ---------------------------------------------------------------------------
-// Coverage probe (GET /api/coverage?scope=…) — the trust ritual: is this channel
-// watched, and are its watches healthy? (.docs/watches-v2.md)
-// ---------------------------------------------------------------------------
-export type CoverageWatch = {
-  id: string
-  title: string
-  scope: string
-  enabled: boolean
-  lastRunStatus?: WatchRunStatus
-  lastRunAt?: number
-  cursor?: string
-}
-
-export type CoverageResponse =
-  | { ok: true; scope: string; watches: CoverageWatch[] }
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +491,7 @@ export type PickFolderResponse =
 // server-side leaks into the browser bundle.
 // ---------------------------------------------------------------------------
 
-export type { NewWatch, Watch, WatchCadence, WatchDraft, WatchPreviewRow, WatchRunStatus } from '../core/watch/types.js'
+export type { NewWatch, Watch, WatchCadence, WatchConnector, WatchDraft, WatchOutput, WatchPreviewRow, WatchRunStatus } from '../core/watch/types.js'
 
 export type WatchesResponse =
   | { ok: true; watches: import('../core/watch/types.js').Watch[] }
@@ -652,8 +636,8 @@ export const isLinkKind = (v: unknown): v is LinkKind => LINK_KINDS.includes(v a
  * artifact→session: `context`; session→item: `dispatch` (the session works
  * the item) or `brief` (the session wrote its brief).
  */
-export type LinkRole = 'brief' | 'context' | 'dispatch'
-export const LINK_ROLES: readonly LinkRole[] = ['brief', 'context', 'dispatch']
+export type LinkRole = 'brief' | 'report' | 'context' | 'dispatch'
+export const LINK_ROLES: readonly LinkRole[] = ['brief', 'report', 'context', 'dispatch']
 export const isLinkRole = (v: unknown): v is LinkRole => LINK_ROLES.includes(v as LinkRole)
 
 export type Link = {
