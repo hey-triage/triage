@@ -15,7 +15,17 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { canonicalizeRefs } from '../work/link.js'
 import type { WorkItem } from '../work/types.js'
-import type { WatchDraft, WatchPreviewRow } from '../watch/types.js'
+import type { WatchDraft } from '../watch/types.js'
+
+/** the legacy Slack-only preview row (the live preview lives in server/index.ts now) */
+interface WatchPreviewRow {
+  title: string
+  permalink: string
+  channel: string
+  from: string
+  lastActivity: string
+  why: string
+}
 
 export const READ_ONLY_SLACK_TOOLS = [
   'ToolSearch',

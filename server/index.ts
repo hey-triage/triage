@@ -121,6 +121,8 @@ import type {
   ReposResponse,
   UpsertResponse,
   WatchDraftResponse,
+  WatchPreviewStartResponse,
+  WatchPreviewStatusResponse,
   WatchesResponse,
   WorkItem,
   WorkspaceResponse,
@@ -144,7 +146,7 @@ import { scanUsage } from '../core/usage/ledger.js'
 import { summarize as summarizeUsage } from '../core/usage/summary.js'
 import { isDue } from '../core/watch/schedule.js'
 import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
-import { WATCH_CONNECTORS, WATCH_OUTPUTS, type NewWatch, type Watch, type WatchCadence, type WatchConnector, type WatchOutput, type WatchRunStatus } from '../core/watch/types.js'
+import { WATCH_CONNECTORS, WATCH_OUTPUTS, type NewWatch, type Watch, type WatchCadence, type WatchConnector, type WatchOutput, type WatchPreviewResult, type WatchPreviewRow, type WatchRunStatus } from '../core/watch/types.js'
 import { composeRunPrompt, MAX_ROWS_PER_RUN, runAllowedTools } from '../core/watch/connectors.js'
 import { clearState, pkgVersion, TRIAGE_DIR, writeState } from './state.js'
 import { initLogFile, log, logFilePath, logSubsystems, recentLogs } from './log.js'
@@ -337,6 +339,8 @@ class WorkspaceRuntime {
   // watch runs
   readonly runQueue: string[] = []
   readonly runningWatches = new Set<string>()
+  /** in-flight and recently finished dry runs, by ephemeral session id (never persisted) */
+  readonly previews = new Map<string, WatchPreview>()
   activeRuns = 0
 
   // probes
@@ -1381,6 +1385,22 @@ function webHost(url: string): string {
   }
 }
 
+/** The upsert tool's arguments — shared by the real run and the dry run so the prompt fits both. */
+const UPSERT_SHAPE = {
+  url: z.string().describe('the canonical link: Slack permalink, Linear issue URL or key, GitHub PR/issue URL, or the web page URL'),
+  title: z.string().describe('a one-line summary'),
+  place: z.string().optional().describe('where it lives: "#channel", "@dm", a Linear team key, "owner/repo", or the site name'),
+  from: z.string().optional().describe('the author or asker'),
+  lastActivity: z.string().describe('ISO 8601 timestamp of the newest activity'),
+  why: z.string().describe('one line: exactly what matched the instructions'),
+  refs: z.array(z.string()).optional().describe('other GitHub PR/issue URLs or Linear keys in the content'),
+}
+const DIGEST_SHAPE = {
+  title: z.string().describe('a short name for this edition, e.g. "AI news · 12 Sep"'),
+  body: z.string().describe('the whole digest as markdown'),
+  refs: z.array(z.string()).optional().describe('GitHub PR/issue URLs or Linear keys cited in the digest'),
+}
+
 /**
  * The per-run ingestion tool. Upsert-only, link-shaped: the scanner passes
  * what it can see (a link, title, why, timestamp, refs); the server derives
@@ -1397,15 +1417,7 @@ function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert
       tool(
         'upsert_work_item',
         'Record ONE match as a work item. Call once per match; the server derives the id from the link and stamps provenance.',
-        {
-          url: z.string().describe('the canonical link: Slack permalink, Linear issue URL or key, or GitHub PR/issue URL'),
-          title: z.string().describe('a one-line summary'),
-          place: z.string().optional().describe('where it lives: "#channel", "@dm", a Linear team key, or "owner/repo"'),
-          from: z.string().optional().describe('the author or asker'),
-          lastActivity: z.string().describe('ISO 8601 timestamp of the newest activity'),
-          why: z.string().describe('one line: exactly what matched the instructions'),
-          refs: z.array(z.string()).optional().describe('other GitHub PR/issue URLs or Linear keys in the content'),
-        },
+        UPSERT_SHAPE,
         async (args) => {
           try {
             // Cost guard, enforced here not just in the prompt.
@@ -1472,11 +1484,7 @@ function makeDigestMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onWrit
       tool(
         'write_digest',
         'Save this run’s digest: ONE markdown report. Call exactly once with the whole document.',
-        {
-          title: z.string().describe('a short name for this edition, e.g. "AI news · 12 Sep"'),
-          body: z.string().describe('the whole digest as markdown'),
-          refs: z.array(z.string()).optional().describe('GitHub PR/issue URLs or Linear keys cited in the digest'),
-        },
+        DIGEST_SHAPE,
         async (args) => {
           try {
             if (written) return errResult('the digest was already written this run — stop calling this tool')
@@ -1517,6 +1525,127 @@ function makeDigestMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onWrit
       ),
     ],
   })
+}
+
+type WatchPreview = {
+  id: string
+  status: 'running' | 'ready' | 'failed'
+  /** the transcript, minus stream deltas — replayed to late subscribers like a session's log */
+  events: SessionEvent[]
+  result?: WatchPreviewResult
+  error?: string
+  startedAt: number
+}
+const PREVIEW_TTL_MS = 15 * 60_000
+
+type PreviewSpec = { instruction: string; connectors: WatchConnector[]; projectId?: string; model?: string; output: WatchOutput }
+
+/**
+ * Start a dry run of a watch as the form currently describes it. Same prompt,
+ * tools and fences as a real run; the write tool only collects. The run is
+ * streamed over the WebSocket under an ephemeral session id so the form can
+ * show the transcript live, but nothing is persisted — no session row, no
+ * events, no items, no artifact. The caller polls for the outcome.
+ */
+function startWatchPreview(rt: WorkspaceRuntime, spec: PreviewSpec): string {
+  const pv: WatchPreview = { id: randomUUID(), status: 'running', events: [], startedAt: Date.now() }
+  rt.previews.set(pv.id, pv)
+  void runWatchPreview(rt, pv, spec)
+  return pv.id
+}
+
+async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: PreviewSpec): Promise<void> {
+  const emit = (event: SessionEvent, keep = true) => {
+    if (keep) pv.events.push(event)
+    broadcast(rt, { type: 'session_event', sessionId: pv.id, event })
+  }
+  const project = spec.projectId ? (await rt.store.projects.list()).find((p) => p.id === spec.projectId) ?? null : null
+  const cwd = project?.path ?? os.homedir()
+  const rows: WatchPreviewRow[] = []
+  let digest: { title: string; body: string } | undefined
+  const collector = createSdkMcpServer({
+    name: 'triage',
+    version: VERSION,
+    tools:
+      spec.output === 'digest'
+        ? [
+            tool('write_digest', 'Save this run’s digest: ONE markdown report. Call exactly once with the whole document.', DIGEST_SHAPE, async (args) => {
+              if (digest) return errResult('the digest was already written this run — stop calling this tool')
+              digest = { title: args.title.trim() || 'Digest', body: args.body }
+              return okResult('ok: digest recorded')
+            }),
+          ]
+        : [
+            tool('upsert_work_item', 'Record ONE match as a work item. Call once per match; the server derives the id from the link.', UPSERT_SHAPE, async (args) => {
+              if (rows.length >= MAX_ROWS_PER_RUN) return errResult(`row cap reached (${MAX_ROWS_PER_RUN}) — stop calling this tool`)
+              const ident = identityFromUrl(args.url)
+              if (!ident) return errResult('url must be a Slack permalink, a Linear issue URL or key, a GitHub PR/issue URL, or a web page URL')
+              if (rows.some((r) => r.id === ident.id)) return okResult('ok: already recorded')
+              rows.push({
+                id: ident.id,
+                title: args.title,
+                url: ident.url,
+                place: args.place?.trim() || ident.home,
+                from: args.from ?? '',
+                lastActivity: safeWhen(args.lastActivity, Date.now()),
+                why: args.why,
+              })
+              return okResult('ok: recorded')
+            }),
+          ],
+  })
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), WATCH_TIMEOUT_MS)
+  let tokens = 0
+  let costUsd: number | undefined
+  let resultText = ''
+  let sawResult = false
+  try {
+    const q = query({
+      prompt: composeRunPrompt({
+        instruction: spec.instruction,
+        connectors: spec.connectors,
+        project: project ? { name: project.name, path: project.path } : null,
+        output: spec.output,
+      }),
+      options: {
+        cwd,
+        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        settingSources: ['user'],
+        includePartialMessages: true,
+        allowedTools: runAllowedTools(spec.connectors, project !== null, spec.output),
+        ...(spec.model ? { model: spec.model } : {}),
+        mcpServers: { triage: collector },
+        abortController: abort,
+        ...(rt.env ? { env: rt.env } : {}),
+      },
+    })
+    for await (const msg of q) {
+      const m = msg as unknown as SdkMessage & { result?: string; usage?: Record<string, unknown>; total_cost_usd?: unknown }
+      emit({ kind: 'sdk', message: m as SdkMessage }, m.type !== 'stream_event')
+      if (m.type === 'result') {
+        sawResult = true
+        resultText = typeof m.result === 'string' ? m.result : ''
+        tokens = sumTokens(m.usage)
+        if (typeof m.total_cost_usd === 'number') costUsd = m.total_cost_usd
+      }
+    }
+    if (resultText.includes('no-connector-tools')) {
+      throw new Error(`no connector tools — connect ${spec.connectors.join(', ')} for Claude at claude.ai/settings/connectors`)
+    }
+    if (!sawResult) throw new Error(abort.signal.aborted ? 'the preview timed out' : 'the preview ended without a result')
+    pv.result = { output: spec.output, rows, ...(digest ? { digest } : {}), tokens, ...(costUsd != null ? { costUsd } : {}), durationMs: Date.now() - pv.startedAt }
+    pv.status = 'ready'
+    log('info', 'watch', `preview: ${rows.length} row(s)${digest ? ', digest' : ''}, ${Math.round(tokens / 1000)}k tok`, { previewId: pv.id, workspace: rt.meta.id })
+  } catch (err) {
+    pv.error = err instanceof Error ? err.message : String(err)
+    pv.status = 'failed'
+    emit({ kind: 'error', message: pv.error })
+    log('warn', 'watch', `preview failed: ${pv.error}`, { previewId: pv.id, workspace: rt.meta.id })
+  } finally {
+    clearTimeout(timer)
+    setTimeout(() => rt.previews.delete(pv.id), PREVIEW_TTL_MS).unref()
+  }
 }
 
 /**
@@ -3320,6 +3449,38 @@ const server = http.createServer(async (req, res) => {
     json(body.ok ? 200 : status, body)
     return
   }
+  // Dry run of the form's current state (.docs/watches.md "Preview step"):
+  // POST starts it and hands back an ephemeral session id to subscribe to for
+  // the live transcript; GET polls its outcome. Nothing is written anywhere.
+  if (url.pathname === '/api/watches/preview' && req.method === 'POST') {
+    let body: WatchPreviewStartResponse
+    try {
+      const parsed = watchPatchFrom(await readJsonBody(req))
+      if ('error' in parsed) throw new Error(parsed.error)
+      const p = parsed.patch
+      if (!p.instruction || !p.connectors?.length) throw new Error('a preview needs instructions and at least one integration')
+      const previewId = startWatchPreview(rt, {
+        instruction: p.instruction,
+        connectors: p.connectors,
+        projectId: p.projectId,
+        model: p.model,
+        output: p.output ?? 'items',
+      })
+      body = { ok: true, previewId }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  if (url.pathname === '/api/watches/preview' && req.method === 'GET') {
+    const pv = rt.previews.get(url.searchParams.get('id') ?? '')
+    const body: WatchPreviewStatusResponse = pv
+      ? { ok: true, status: pv.status, ...(pv.result ? { result: pv.result } : {}), ...(pv.error ? { error: pv.error } : {}) }
+      : { ok: false, error: 'unknown or expired preview' }
+    json(body.ok ? 200 : 404, body)
+    return
+  }
   if (url.pathname === '/api/watches/draft' && req.method === 'POST') {
     let body: WatchDraftResponse
     try {
@@ -4236,7 +4397,12 @@ wss.on('connection', (ws, req) => {
           break
         }
         case 'subscribe': {
-          if (!rt.rows.has(msg.sessionId)) break
+          if (!rt.rows.has(msg.sessionId)) {
+            // a dry run streams under an ephemeral id; its transcript lives in memory
+            const pv = rt.previews.get(msg.sessionId)
+            if (pv) send(ws, { type: 'history', sessionId: msg.sessionId, events: pv.events })
+            break
+          }
           const events = await rt.store.events.read(msg.sessionId)
           send(ws, { type: 'history', sessionId: msg.sessionId, events: events.map((e) => e.event) })
           break

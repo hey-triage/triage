@@ -491,7 +491,7 @@ export type PickFolderResponse =
 // server-side leaks into the browser bundle.
 // ---------------------------------------------------------------------------
 
-export type { NewWatch, Watch, WatchCadence, WatchConnector, WatchDraft, WatchOutput, WatchPreviewRow, WatchRunStatus } from '../core/watch/types.js'
+export type { NewWatch, Watch, WatchCadence, WatchConnector, WatchDraft, WatchOutput, WatchPreviewResult, WatchPreviewRow, WatchRunStatus } from '../core/watch/types.js'
 
 export type WatchesResponse =
   | { ok: true; watches: import('../core/watch/types.js').Watch[] }
@@ -501,8 +501,12 @@ export type WatchDraftResponse =
   | { ok: true; draft: import('../core/watch/types.js').WatchDraft }
   | { ok: false; error: string }
 
-export type WatchPreviewResponse =
-  | { ok: true; rows: import('../core/watch/types.js').WatchPreviewRow[]; tokens: number }
+// A preview is a dry run streamed like a session: POST starts it and returns
+// an ephemeral session id to subscribe to; GET polls its outcome. Nothing is
+// stored — the events live in memory for a few minutes and then go.
+export type WatchPreviewStartResponse = { ok: true; previewId: string } | { ok: false; error: string }
+export type WatchPreviewStatusResponse =
+  | { ok: true; status: 'running' | 'ready' | 'failed'; result?: import('../core/watch/types.js').WatchPreviewResult; error?: string }
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------

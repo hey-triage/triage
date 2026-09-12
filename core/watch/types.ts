@@ -117,10 +117,22 @@ export interface WatchDraft {
 
 /** One thread a preview run would have matched, with its why-line. */
 export interface WatchPreviewRow {
+  /** the canonical id the real run would file under */
+  id: string
   title: string
-  permalink: string
-  channel: string
+  url: string
+  place: string
   from: string
   lastActivity: string
   why: string
+}
+
+/** What a dry run returns: the would-be items or the would-be digest, and what it cost. Nothing is saved. */
+export interface WatchPreviewResult {
+  output: WatchOutput
+  rows: WatchPreviewRow[]
+  digest?: { title: string; body: string }
+  tokens: number
+  costUsd?: number
+  durationMs: number
 }
