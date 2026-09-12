@@ -76,6 +76,14 @@ triage logs        # tail the server log
 
 > Early software. Expect rough edges and breaking changes between minor versions.
 
+## What's new in 0.7
+
+- Watches name the **integrations** they may use (Web, Slack, Linear, GitHub) instead of one Slack channel, with an optional project and a pinned model.
+- **Digest** output: one rolling item per watch with a markdown report that is rewritten each run.
+- **Two-step create** with a streamed dry run: watch the transcript, see what would be filed, then create.
+- Each watch has a page: health, cost in dollars, a spend chart, and every run's transcript in place.
+- Watches list is a table with the last seven outcomes per row.
+
 ## What feeds it
 
 | Source | How | What arrives |
