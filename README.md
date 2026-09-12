@@ -1,19 +1,41 @@
-# triage
-
-A ranked work inbox for engineers — review requests, mentions, and threads that need
-you, scored deterministically and dispatched straight into your **locally installed
-Claude Code**. A local web UI over `@anthropic-ai/claude-agent-sdk`: no API key — it
-uses your existing Claude Code login, and sessions load your user-level settings,
-plugins, and claude.ai connectors exactly like an interactive `claude` session.
-
-Everything runs on your machine. Sessions and inbox data live in a local SQLite file
-(`~/.triage/`), the server binds to localhost, and this package never holds Slack or
-GitHub credentials — sources go through your local `gh` login and your claude.ai
-connectors.
+<p align="center">
+  <img src="docs/header.png" alt="triage" width="100%">
+</p>
 
 <p align="center">
-  <img src="docs/inbox.png" alt="Triage inbox: a ranked queue of review requests, mentions and tasks, each with a Dispatch action" width="100%">
+  <a href="#install">Install</a> ·
+  <a href="#what-feeds-it">Sources</a> ·
+  <a href="#watches">Watches</a> ·
+  <a href="#development">Development</a> ·
+  <a href="https://heytriage.com">Website</a>
 </p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@hey-triage/triage"><img src="https://img.shields.io/npm/v/@hey-triage/triage?color=fcfdff&labelColor=000" alt="npm"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A5%2022.5-fcfdff?labelColor=000" alt="node ≥ 22.5">
+  <a href="https://github.com/hey-triage/triage/commits/main"><img src="https://img.shields.io/github/last-commit/hey-triage/triage?color=fcfdff&labelColor=000" alt="last commit"></a>
+</p>
+
+**triage** is a ranked work inbox for engineers that dispatches straight into your local Claude Code.
+Review requests, mentions, threads waiting on you, and things you told it to look for arrive as one
+queue, scored deterministically, each with a Dispatch button that opens a Claude session with the
+context already loaded.
+
+It runs on your machine, uses your existing Claude Code login, and never holds a credential.
+
+<p align="center">
+  <img src="docs/inbox.png" alt="The triage inbox: a ranked queue of review requests, mentions and tasks, each with a Dispatch action" width="100%">
+</p>
+
+## Features
+
+- **One inbox.** GitHub, Slack, Linear and your own watches, ranked by the same rules. No LLM in the scoring path.
+- **Dispatch.** Any item opens a Claude Code session in the right project folder with a brief attached.
+- **Watches.** One paragraph of instructions, the integrations it may use, a schedule. It files work items or writes a digest.
+- **Briefs.** Queue an item and a playbook writes a markdown brief before you look at it.
+- **Sessions and terminals.** Full Claude Code chats and real PTY terminals in the same workspace, same auth.
+- **Receipts.** Every automated run is a session you can open. "Found nothing" is provably "looked and found nothing".
+- **Workspaces.** Work and personal stay apart: separate inbox, watches, connectors and Claude login per workspace.
 
 <table>
   <tr>
@@ -22,230 +44,102 @@ connectors.
   </tr>
   <tr>
     <td align="center"><sub>Dispatch opens a Claude session with the item's brief.</sub></td>
-    <td align="center"><sub>Verify in a real terminal — same workspace, same auth.</sub></td>
+    <td align="center"><sub>Verify in a real terminal, same workspace, same auth.</sub></td>
   </tr>
 </table>
-
-> Early software: this is a young project moving fast. Expect rough edges and
-> breaking changes between minor versions.
 
 ## Install
 
 ```sh
 npm i -g @hey-triage/triage
-triage                    # → http://triage.localhost:5178  (or http://localhost:5178)
+triage
 ```
 
-`triage.localhost` resolves to your own machine automatically in Chrome, Edge, and Firefox
-— no DNS, no `/etc/hosts`, no extra tooling. On Safari, use `http://localhost:5178` instead.
+Then open [http://triage.localhost:5178](http://triage.localhost:5178). Safari users, use [http://localhost:5178](http://localhost:5178).
 
-Requirements:
+| Requirement | Why |
+| --- | --- |
+| Node ≥ 22.5 | uses `node:sqlite`, no native deps |
+| [Claude Code](https://claude.com/claude-code), logged in | sessions and watch runs use your login, not an API key |
+| `gh` logged in | GitHub source · optional |
+| claude.ai Slack or Linear connector | Slack and Linear sources · optional |
 
-- Node **≥ 22.5** (uses `node:sqlite`)
-- [Claude Code](https://claude.com/claude-code) installed and logged in
-- `gh` (GitHub CLI) logged in, for the GitHub inbox source — optional
-- the claude.ai Slack connector authorized, for the Slack source — optional
-
-## The `triage` CLI
-
-`triage` manages the server as a background process and is idempotent — run it any
-time; if the server is already up it just tells you where.
+The `triage` command manages a background server and is safe to run any time.
 
 ```sh
-triage             # start in the background if not running, print the URL
-triage stop        # stop it (ends any live Claude sessions)
-triage restart     # stop + start — also how an `npm i -g` upgrade takes effect
-triage status      # running? version, pid, port, live sessions, db
-triage logs        # tail ~/.triage/server.log
-triage serve       # run in the foreground instead (debugging, launchd/systemd)
-triage --port 5179 # non-default port (PORT env works too)
+triage             # start if not running, print the URL
+triage stop        # stop it (ends live sessions)
+triage restart     # how an upgrade takes effect
+triage status      # version, pid, port, live sessions
+triage logs        # tail the server log
 ```
 
-"Is triage running" is decided by `GET /api/health`, never by the pid file alone;
-`~/.triage/server.json` only records the port/pid of the last start so `stop`/`status`
-can find a `--port` server. If the port is held by something that isn't triage, the
-CLI fails fast with a message rather than auto-picking another port — the MCP shim
-and bookmarks assume a stable port.
+> Early software. Expect rough edges and breaking changes between minor versions.
 
-## What it does
+## What feeds it
 
-- **Sessions**: "+ New session" spawns a long-lived Claude Code subprocess
-  (streaming-input mode) in the working directory you choose. Each session is a
-  back-and-forth chat — send follow-ups any time. Open a session in its own tab
-  with the ↗ link (`/#<sessionId>`).
-- **Streaming**: assistant text streams token-by-token over WebSocket
-  (`includePartialMessages` → `stream_event` deltas).
-- **Tool calls**: rendered as collapsible cards (input + result).
-- **Permissions**: the SDK's `canUseTool` callback surfaces Allow/Deny prompts in the
-  browser — your `~/.claude` allowlists still apply first (only unmatched tools prompt).
-- **Connectors & plugins**: sessions run with the `claude_code` system-prompt preset and
-  `settingSources: ['user','project','local']`, so your claude.ai connectors (Slack,
-  Notion, …) and installed plugins load exactly like an interactive `claude` session.
-  The init card in each chat shows the MCP servers and their status.
-- **Inbox** (`/#/inbox`): ranked work items. Deterministic scoring — no LLM in the
-  scoring path.
-  - **GitHub** via `gh`: review requests, your PRs classified as
-    conflicting/approved/stale/open, mentions. Scoped to the **connected repos**
-    (the "Repos" picker on the page; nothing selected = all repos, noisy).
-  - **Slack** via the claude.ai Slack connector, when the connector probe says
-    it's connected: a headless read-only Claude session scans for mentions and
-    reply-pending threads and returns strict JSON. It costs tokens and ~a minute,
-    so it runs in the **background** with a 30-min cached TTL — never in the inbox
-    view's critical path; the page shows a gray notice while a scan is in flight
-    and the snapshot updates when it lands.
-  - **No cron**: the server is the long-running process — sync happens on view
-    when the 5-min TTL has lapsed, on Refresh, and on a 15-min keep-warm
-    interval; the latest snapshot persists in SQLite (one replaced-wholesale
-    row — a cache of what sources said, not your data) so first paint is instant
-    even after a restart. A laptop that slept just syncs on the next view.
-  - **Dispatch** prefills a new session with the item's context; when a project
-    is tied to the item's repo, the session lands in that project's folder.
-- **Watches** (`/#/watches`): user-defined ingestion rules — one plain-English
-  sentence, scoped to a `#channel` or `@dm`, on an hourly/daily/weekly cadence.
-  Creation flow: plain text → LLM draft into an editable form → **required
-  preview** against the scope's last week (each match with a why-line) → create.
-  The scanner LLM only answers "does this match — yes/no + why" and extracts
-  refs; identity, de-dupe, scheduling, and scoring are all code. Due watches run
-  as **one composed scan** with the built-in Slack rules (a minute-tick
-  due-checker, not cron — missed runs coalesce and cursor-based reads make the
-  coalesced run lossless). Matches land in the inbox as `watch-hit` items
-  (mentions and reviews outrank topical matches) with the watch chip, why-line,
-  and a 👎 that appends a correction to the instruction text. Items sharing an
-  extracted ref (e.g. a Slack ask about PR #123) render as **one card, both
-  sources shown**, with a multi-source bonus — linked by string equality, never
-  by LLM judgment.
-- **Done / snooze / dismiss**: `e` done, `z` snooze until tomorrow, `x` dismiss.
-  User state lives in its own `item_state` table and survives every snapshot
-  rebuild; a done item whose source updates afterwards **re-arms** and returns
-  with a `↩ returned` marker (dismissed never re-arms).
-- **Ingestion API**: `POST /api/items/upsert` (idempotent: id-keyed,
-  update-only-if-newer, user-state-preserving; invalid items are rejected,
-  never repaired) and `POST /api/items/resolve`. Also exposed as MCP tools
-  (`list_work_items` / `upsert_work_item` / `resolve_work_item`) via the
-  bundled dependency-free stdio shim:
+| Source | How | What arrives |
+| --- | --- | --- |
+| GitHub | your local `gh` login | review requests, your PRs by state, mentions |
+| Slack | claude.ai connector, read-only | unread DMs, mentions, anything a watch finds |
+| Linear | claude.ai connector, read-only | issues a watch finds |
+| Web | Claude Code's own search and fetch | pages a watch finds |
+| You | the composer, the palette, or MCP | anything, by hand or by paste |
 
-  ```sh
-  claude mcp add triage -- triage-mcp    # TRIAGE_URL overrides http://localhost:5178
-  ```
+Every item has a canonical id, so the same PR asked about in Slack and requested on GitHub is one row, not two.
 
-  The power-user recipe: any Claude Code routine or scheduled headless session
-  can *be* a watch-runner — "read X, find Y, call `upsert_work_item`" — and
-  cannot create duplicates or clobber user state, because every rule is
-  enforced server-side.
-- **Projects** (`/#/projects`): name + optional repo + local folder. The session
-  dialog gets a project picker; dispatch matches `item.repo` → project folder.
-  Folder paths are validated server-side (`stat`) at creation.
-- **Keyboard + command center**: `⌘K`/`Ctrl+K` palette (actions, pages, "new
-  session in <project>", jump to session, dispatch work items — filterable);
-  `g i`/`g w`/`g p`/`g c` page navigation, `n` new session, `?` shortcuts overlay;
-  inbox: `j`/`k` select, `Enter`/`o` open, `d` dispatch, `e` done, `z` snooze,
-  `x` dismiss, `r` refresh. Single-key hotkeys stay quiet while typing or while
-  any dialog is open.
-- **Connectors page** (`/#/connectors`): every claude.ai connector and local MCP
-  server a session will load, with live status (connected / needs auth / failed).
-  Probed honestly — the server spawns a throwaway SDK query with the same options
-  real sessions use and asks it via the `mcpServerStatus()` control request (no
-  user message, so no API cost). Cached; Refresh re-probes.
+## Watches
+
+A watch is what you would tell a colleague: where to look, what counts, how often.
+
+- **Instructions** in plain English. The run finds teams, channels and labels itself.
+- **Integrations** it may use. This is the fence: the run only gets those tools, read-only.
+- **Output**: work items, one per match, or a single rolling digest with a markdown report.
+- **Schedule**, plus a model if you want to pin one.
+
+Creating one is two steps. Fill in the details, then preview: the watch runs once as a dry run, the
+transcript streams in, and you see exactly what it would have filed. Nothing is saved until you create it.
+
+Every run is a session. Each watch has a page with its health, cost in dollars, and every run's transcript.
+
+## Ingestion API
+
+Any Claude Code routine or script can be a watch runner. The bundled stdio MCP shim exposes the inbox as tools:
+
+```sh
+claude mcp add triage -- triage-mcp
+```
+
+`list_work_items`, `create_work_item`, `edit_work_item`, `upsert_work_item`, `resolve_work_item`. Upserts are idempotent and
+never overwrite your own state, so an external scanner cannot create duplicates or undo a "done".
+
+## Privacy
+
+Everything runs locally. Data lives in SQLite under `~/.triage/`. The server binds to localhost.
+This package holds no Slack, GitHub or Linear credentials: sources go through your `gh` login and your
+claude.ai connectors. Watch runs and briefs spend your Claude tokens; the app shows you what each one cost.
 
 ## Development
 
 ```sh
 git clone https://github.com/hey-triage/triage && cd triage
 npm install
-npm run dev          # → http://localhost:5189  (Vite dev server, proxies to :5188)
+npm run dev          # server on :5188, Vite on :5189 — open the Vite URL
 ```
 
-`npm run dev` starts both halves: the node server on `:5188` (API + WebSocket) and Vite
-on `:5189`, which proxies `/api` and `/ws` back to it. Open the Vite URL — HMR applies to
-the UI, and live sessions survive it. Dev runs on 5188/5189 (off the production default
-5178) so `npm run dev` and `triage start` never fight over a port.
+The server is not run under a file watcher on purpose: restarting it kills live Claude subprocesses.
+Restart it by hand after changing `server/`. `npm run typecheck` covers both halves; `npm run smoke` is
+the end-to-end check against a running server.
 
-The server is deliberately **not** run under `tsx watch`: restarting it kills every live
-Claude subprocess. Restart it by hand when you change `server/`.
-
-For a production-style run on a single port:
-
-```sh
-npm run build && npm start   # → http://localhost:5178 (foreground)
-```
-
-| script | what it does |
+| Path | What lives there |
 | --- | --- |
-| `npm run dev` | server + Vite dev server together |
-| `npm run dev:server` / `npm run dev:web` | either half on its own |
-| `npm run build` | Vite production build → `dist/web` + server build → `dist` |
-| `npm start` | server only, serving `dist/web` on `:5178` |
-| `npm run typecheck` | `tsc` over both projects |
-| `npm run smoke` | end-to-end test over WS against a running server |
+| `shared/protocol.ts` | the WebSocket contract, imported by both sides |
+| `core/` | store interfaces and SQLite adapter, scoring, watches, sources |
+| `server/` | HTTP and WebSocket server, the `triage` and `triage-mcp` bins |
+| `web/` | Vite + React UI |
 
-React and Vite are **devDependencies** — the published package ships the built `dist/`,
-so a global install pulls only the runtime deps (`ws`, the Agent SDK).
+## Links
 
-## Architecture
-
-```
-shared/protocol.ts   the WebSocket contract — imported by BOTH server and web, so a
-                     wire-format change is a compile error on whichever side lags
-core/store/          the persistence seam: async repository interfaces (types.ts)
-                     + the SQLite adapter (node:sqlite — zero deps). A Postgres
-                     adapter for a hosted version implements types.ts, not sqlite.ts
-server/index.ts      http :5178 (JSON API + the built SPA) + WebSocket /ws
-                     LiveSession = AsyncQueue<SDKUserMessage> → query() → event pump
-                     events broadcast to all clients AND persisted (write-through)
-server/cli.ts        the `triage` bin — start/stop/restart/status/logs lifecycle
-server/mcp.ts        the `triage-mcp` bin — stdio MCP shim over the HTTP API
-web/                 Vite + React + TS frontend, built to dist/web
-  src/store.ts       the client's view of the server, as an external store
-  src/transcript.ts  pure fold of a session's event log into renderable items
-```
-
-The frontend is thin by construction: it knows `shared/protocol.ts` and nothing else
-about the server.
-
-### Persistence & resume
-
-Sessions and their event logs live in SQLite at `~/.triage/triage-dev.db`
-(override with `TRIAGE_DB`). Two tables: `sessions` (including `sdk_session_id`,
-captured from the SDK's init message) and `session_events` (append-only,
-`(session_id, seq)`-keyed, stream deltas excluded).
-
-The Claude subprocess is ephemeral. A session with no live subprocess is revived
-on the next user message via the SDK's `resume: sdkSessionId` — Claude Code
-replays its own transcript from `~/.claude/projects/…` into the new subprocess.
-The division of labor is deliberate: **our event log restores the page; `resume`
-restores the agent.** Nothing in `session_events` is ever fed back to the model.
-
-Permission prompts don't survive their subprocess: on process exit (and at boot,
-for prompts orphaned by a previous server run) unanswered requests are resolved
-as `expired` so the UI never shows an Allow button that can't apply.
-
-### Rendering the stream
-
-Token deltas arrive far faster than anything should re-render, so the store has two
-notification channels:
-
-- **structural** — sessions, connection state, committed events. Fires once per SDK
-  message.
-- **live** — the in-flight assistant line. Deltas are buffered and flushed on
-  `requestAnimationFrame`, and only `<LiveLine>` subscribes, so a burst of tokens
-  re-renders one text node and leaves the rest of the transcript alone.
-
-`buildTranscript()` is a pure function memoised on the events array, so the fold runs
-once per committed event rather than once per frame.
-
-### WS protocol
-
-Client → server: `create_session {title, cwd, firstMessage?}`, `subscribe {sessionId}`,
-`user_message {sessionId, text}`,
-`permission_response {sessionId, requestId, behavior}`, `interrupt {sessionId}`.
-Server → client: `hello`, `sessions`, `session_created`, `history`, `session_event`,
-`error`. Incoming frames are validated into the union rather than cast — the socket is
-untrusted input.
-
-## Known limits
-
-- One Claude subprocess per session; nothing caps concurrency.
-- claude.ai connectors that show `needs-auth` need their OAuth done once in interactive
-  `claude` (`/mcp`); headless sessions then pick the tokens up.
-- The Slack source requires the claude.ai Slack connector; there is no direct
-  Slack API integration (by design — this package never holds credentials).
+- Website: [heytriage.com](https://heytriage.com)
+- Issues: [github.com/hey-triage/triage/issues](https://github.com/hey-triage/triage/issues)
+- npm: [@hey-triage/triage](https://www.npmjs.com/package/@hey-triage/triage)
