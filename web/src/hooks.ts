@@ -48,7 +48,6 @@ export type Route =
   | { page: 'item'; id: string }
   | { page: 'terminal'; id: string }
   | { page: 'terminals' }
-  | { page: 'projects' }
   | { page: 'watches' }
   | { page: 'artifacts' }
   | { page: 'artifact'; id: string }
@@ -73,7 +72,8 @@ function parseRoute(hash: string): Route {
   if (hash.startsWith('/terminal/')) return { page: 'terminal', id: hash.slice('/terminal/'.length) }
   // Connectors used to be a page; the link still works, as a settings tab.
   if (hash === '/connectors') return { page: 'settings', tab: 'connectors' }
-  if (hash === '/projects') return { page: 'projects' }
+  // Projects used to be a page too; same deal.
+  if (hash === '/projects') return { page: 'settings', tab: 'projects' }
   if (hash === '/watches') return { page: 'watches' }
   if (hash === '/artifacts') return { page: 'artifacts' }
   if (hash.startsWith('/artifact/')) return { page: 'artifact', id: hash.slice('/artifact/'.length) }

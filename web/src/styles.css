@@ -880,12 +880,18 @@ dialog.watchDialog { width: 560px; max-height: 84vh; overflow-y: auto; }
 .projDelete { flex: none; background: none; border: none; color: var(--stone); font-size: 12px; width: 24px; height: 24px; border-radius: var(--r-xs); transition: color 0.1s, background 0.1s; display: inline-flex; align-items: center; justify-content: center; }
 .projDelete:hover { color: var(--red); background: var(--tint-red); }
 .projModal { width: 460px; }
+/* Add-a-project is Radix-driven (it opens inside the settings dialog), so it
+   centres itself rather than riding the browser's top layer, and sits above
+   the settings dialog's z-index 81. */
+.projOverlay { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, 0.6); animation: fadeIn 0.14s ease; }
+.projAddDialog { position: fixed; z-index: 91; inset: 50% auto auto 50%; margin: 0; transform: translate(-50%, -50%); }
 .projPickRow { display: flex; align-items: center; gap: 10px; }
 .projPick { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: var(--r); font-size: 13px; background: var(--elev); color: var(--ink); border: 1px solid var(--hair-strong); }
 .projPick:hover:not(:disabled) { border-color: var(--hair-bright); }
 .projPick:disabled { opacity: 0.45; cursor: default; }
 .projPickPath { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .projPickPath.empty { color: var(--stone); font-family: inherit; font-style: italic; }
+.projEmpty { color: var(--ash); font-size: 13px; padding: 4px 0 22px; }
 .projError { margin-top: 12px; color: var(--red); font-size: 12px; }
 
 /* repo picker */

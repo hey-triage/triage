@@ -1,4 +1,4 @@
-import { FileText, Eye, Folder, Terminal as TerminalIcon } from 'lucide-react'
+import { FileText, Eye, Terminal as TerminalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { DispatchPreviewResponse,
   EffortLevel,
@@ -20,7 +20,6 @@ import { HelpOverlay } from './components/HelpOverlay.js'
 import { InboxPage } from './components/InboxPage.js'
 import { ItemPage } from './components/ItemPage.js'
 import { NewSessionComposer, type NewSession } from './components/NewSessionComposer.js'
-import { ProjectsPage } from './components/ProjectsPage.js'
 import { Rail, type RailSection } from './components/Rail.js'
 import { SettingsModal } from './components/SettingsModal.js'
 import { SystemModal, type SystemTab } from './components/SystemModal.js'
@@ -64,11 +63,10 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'error',
 }
 
-const PAGE_TABS: Record<'watches' | 'projects' | 'terminals' | 'artifacts', PageTab> = {
+const PAGE_TABS: Record<'watches' | 'terminals' | 'artifacts', PageTab> = {
   terminals: { key: 'page:terminals', label: 'Terminals', icon: TerminalIcon },
   artifacts: { key: 'page:artifacts', label: 'Artifacts', icon: FileText },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
-  projects: { key: 'page:projects', label: 'Projects', icon: Folder },
 }
 
 export function App() {
@@ -359,7 +357,7 @@ export function App() {
         if (e.key === 's') return goTo('sessions')
         if (e.key === 't') return goTo('terminals')
         if (e.key === 'c') return openSettings('connectors')
-        if (e.key === 'p') return navigate('/projects')
+        if (e.key === 'p') return openSettings('projects')
         if (e.key === 'w') return navigate('/watches')
         return // unknown sequence — swallow
       }
@@ -484,7 +482,7 @@ export function App() {
   )
 
   const pageTab =
-    route.page === 'watches' || route.page === 'projects' || route.page === 'terminals' || route.page === 'artifacts'
+    route.page === 'watches' || route.page === 'terminals' || route.page === 'artifacts'
       ? PAGE_TABS[route.page]
       : route.page === 'artifact'
         ? PAGE_TABS.artifacts
@@ -639,8 +637,6 @@ export function App() {
               <ArtifactPage key={route.id} id={route.id} onNavigate={navigate} />
             ) : route.page === 'watches' ? (
               <WatchesPage />
-            ) : route.page === 'projects' ? (
-              <ProjectsPage />
             ) : route.page === 'draft' ? (
               currentDraft ? (
                 <NewSessionComposer

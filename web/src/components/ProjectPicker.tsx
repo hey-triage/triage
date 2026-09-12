@@ -67,13 +67,13 @@ export function ProjectPicker({ projects, cwd, onPick, disabled }: Props) {
         {projects.length === 0 && <div className="projMenuEmpty">No projects yet. Add the folders you work in.</div>}
         <MenuSeparator />
         <MenuItem asChild>
-          <a href="#/projects">
+          <a href="#/settings/projects">
             <Settings2 size={14} aria-hidden="true" />
             Manage projects…
           </a>
         </MenuItem>
         <MenuItem asChild>
-          <a href="#/projects">
+          <a href="#/settings/projects">
             <Folder size={14} aria-hidden="true" />
             Add a project…
           </a>

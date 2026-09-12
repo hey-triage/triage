@@ -4,7 +4,7 @@
  * right: `openSettings('auth')` (or `#/settings/auth`) lands on Claude auth
  * with nothing to click through, which is what a "Fix" link needs.
  *
- * Workspace-scoped tabs (Workspace · Claude auth · Sources) write to the
+ * Workspace-scoped tabs (Workspace · Claude auth · Sources · Projects) write to the
  * server; browser-scoped ones (Sessions · Shortcuts) write to localStorage.
  */
 import * as Dialog from '@radix-ui/react-dialog'
@@ -12,6 +12,7 @@ import * as Switch from '@radix-ui/react-switch'
 import * as Tabs from '@radix-ui/react-tabs'
 import {
   Activity,
+  Folder,
   Gauge,
   Info,
   Keyboard,
@@ -50,6 +51,7 @@ import { store } from '../store.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 import { ConnectorsPanel } from './Connectors.js'
+import { ProjectsTab } from './ProjectsTab.js'
 import { RepoScopeEditor } from './RepoScope.js'
 import { UsageTab } from './UsageTab.js'
 import { ActivityTab, LogsTab, type SystemTab } from './SystemModal.js'
@@ -59,6 +61,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   workspace: Settings2,
   auth: KeyRound,
   sources: Plug,
+  projects: Folder,
   briefs: Sparkles,
   connectors: Plug,
   activity: Activity,
@@ -161,6 +164,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="sources">
                     <SourcesTab />
+                  </Tabs.Content>
+                  <Tabs.Content value="projects">
+                    <ProjectsTab />
                   </Tabs.Content>
                   <Tabs.Content value="briefs">
                     <BriefsTab />

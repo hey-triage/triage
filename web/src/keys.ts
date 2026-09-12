@@ -32,7 +32,7 @@ export const SHORTCUTS: ReadonlyArray<[keys: string, what: string]> = [
   ['g s', 'Go to Sessions'],
   ['g t', 'Go to Terminals (n opens a new one there)'],
   ['g w', 'Go to Watches'],
-  ['g p', 'Go to Projects'],
+  ['g p', 'Projects (in Settings)'],
   ['g c', 'Connectors (in Settings)'],
   ['j / k', 'Inbox: move selection'],
   ['Enter', 'Inbox: open the selected item'],
