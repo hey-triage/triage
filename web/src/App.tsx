@@ -29,7 +29,9 @@ import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
 import { Transcript } from './components/Transcript.js'
-import { ADD_WATCH_KEY, REFINE_WATCH_KEY, WatchesPage } from './components/WatchesPage.js'
+import { WatchesPage } from './components/WatchesPage.js'
+import { REFINE_WATCH_KEY, WatchFormPage } from './components/WatchFormPage.js'
+import { WatchPage } from './components/WatchPage.js'
 import { ArtifactsPage } from './components/ArtifactsPage.js'
 import { ArtifactPage } from './components/ArtifactPage.js'
 import { WorkspaceModal, type WorkspaceModalMode } from './components/WorkspaceModal.js'
@@ -314,7 +316,9 @@ export function App() {
               ? 'home'
               : route.page === 'artifact'
                 ? PAGE_TABS.artifacts.key
-                : PAGE_TABS[route.page].key
+                : route.page === 'watch-form' || route.page === 'watch'
+                  ? PAGE_TABS.watches.key
+                  : PAGE_TABS[route.page].key
   const tabRoute = (key: string) =>
     key.startsWith('term:') ? `/terminal/${key.slice(5)}` : key.startsWith('draft:') ? draftRoute(key.slice(6)) : key
   const closeOpenTab = useCallback(
@@ -399,10 +403,7 @@ export function App() {
     })
   }, [])
 
-  const addWatch = useCallback(() => {
-    sessionStorage.setItem(ADD_WATCH_KEY, '1')
-    navigate('/watches')
-  }, [navigate])
+  const addWatch = useCallback(() => navigate('/watches/new'), [navigate])
 
   // Thumbs-down on a matched item: the correction lands as appended text on
   // the watch's instruction — the rule stays human-readable.
@@ -410,7 +411,7 @@ export function App() {
     (item: ScoredItem) => {
       if (!item.watchId) return
       sessionStorage.setItem(REFINE_WATCH_KEY, JSON.stringify({ watchId: item.watchId, note: item.title }))
-      navigate('/watches')
+      navigate(`/watches/${encodeURIComponent(item.watchId)}/edit`)
     },
     [navigate],
   )
@@ -460,7 +461,9 @@ export function App() {
             ? null
             : route.page === 'artifact'
               ? 'artifacts'
-              : route.page
+              : route.page === 'watch-form' || route.page === 'watch'
+                ? 'watches'
+                : route.page
 
   const openTabs = useMemo<OpenTab[]>(
     () =>
@@ -486,7 +489,9 @@ export function App() {
       ? PAGE_TABS[route.page]
       : route.page === 'artifact'
         ? PAGE_TABS.artifacts
-        : null
+        : route.page === 'watch-form' || route.page === 'watch'
+          ? PAGE_TABS.watches
+          : null
 
   // Brief runs are sessions too, but they belong to their item: the Sessions
   // panel and the palette list only chats.
@@ -636,7 +641,11 @@ export function App() {
             ) : route.page === 'artifact' ? (
               <ArtifactPage key={route.id} id={route.id} onNavigate={navigate} />
             ) : route.page === 'watches' ? (
-              <WatchesPage />
+              <WatchesPage onNavigate={navigate} />
+            ) : route.page === 'watch' ? (
+              <WatchPage key={route.id} id={route.id} onNavigate={navigate} />
+            ) : route.page === 'watch-form' ? (
+              <WatchFormPage key={route.id ?? 'new'} id={route.id} onNavigate={navigate} />
             ) : route.page === 'draft' ? (
               currentDraft ? (
                 <NewSessionComposer

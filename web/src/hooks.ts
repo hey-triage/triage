@@ -49,6 +49,10 @@ export type Route =
   | { page: 'terminal'; id: string }
   | { page: 'terminals' }
   | { page: 'watches' }
+  /** `#/watches/new` or `#/watches/<id>/edit` — the full-page watch form */
+  | { page: 'watch-form'; id: string | null }
+  /** `#/watches/<id>` — one watch: health, runs, items */
+  | { page: 'watch'; id: string }
   | { page: 'artifacts' }
   | { page: 'artifact'; id: string }
   /** `#/settings/<tab>` — opens the settings modal on that tab, then yields to the page underneath */
@@ -75,6 +79,13 @@ function parseRoute(hash: string): Route {
   // Projects used to be a page too; same deal.
   if (hash === '/projects') return { page: 'settings', tab: 'projects' }
   if (hash === '/watches') return { page: 'watches' }
+  if (hash === '/watches/new') return { page: 'watch-form', id: null }
+  {
+    const m = /^\/watches\/([^/]+)\/edit$/.exec(hash)
+    if (m) return { page: 'watch-form', id: decodeURIComponent(m[1]) }
+    const d = /^\/watches\/([^/]+)$/.exec(hash)
+    if (d) return { page: 'watch', id: decodeURIComponent(d[1]) }
+  }
   if (hash === '/artifacts') return { page: 'artifacts' }
   if (hash.startsWith('/artifact/')) return { page: 'artifact', id: hash.slice('/artifact/'.length) }
   if (hash === '/settings' || hash.startsWith('/settings/')) {
