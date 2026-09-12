@@ -394,34 +394,106 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--ash); border: 1px 
 #empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--stone); }
 .pickerLoading { color: var(--ash); font-size: 13px; padding: 16px 12px; }
 
-/* ---------- inbox home: work cards ---------- */
-.homeList { display: flex; flex-direction: column; gap: 14px; }
-.wcard {
-  display: flex; gap: 16px; padding: 14px 16px; cursor: default;
-  transition: border-color 0.1s ease, background 0.1s ease, opacity 0.1s ease;
+/* ---------- inbox home: the ledger (.docs/work-item-variations.html, A) ----
+   One item, one line. Hierarchy comes from alignment — state, source and age
+   sit in fixed-width right-aligned cells so they read as columns down the
+   page — not from a strip of pills. Three things take turns in that right-
+   hand space and never share it: the meta columns at rest, the shortcut
+   legend when the row is keyboard-selected, the actions on hover. They swap
+   in place, so nothing reflows under the cursor.                            */
+/* The row's breakpoints track the list's own width, not the viewport — the
+   rail and the Queue panel eat 344px before the ledger gets any. */
+.homeList { display: flex; flex-direction: column; container-type: inline-size; container-name: ledger; }
+.homeList .secLabel { margin: 26px 0 0; }
+.homeList > .secLabel:first-child { margin-top: 0; }
+
+.wrow {
+  position: relative; display: grid; align-items: center; height: 42px;
+  grid-template-columns: 20px 3px 20px minmax(0, 1fr) auto;
+  column-gap: 11px; padding-right: 10px;
+  border-bottom: 1px solid var(--hair);
+  transition: background 0.1s ease;
 }
-.wcard.quiet { opacity: 0.75; }
-.wcard:hover, .wcard.sel { opacity: 1; }
-.wcard.sel { border-color: var(--hair-bright); background: #0c0c0f; }
-.wcard .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.wcard .cmeta { display: flex; align-items: center; gap: 8px; color: var(--ash); font-size: 12px; min-width: 0; }
-.wcard .cmeta > svg { flex: none; }
-.wcard .cmeta .sep { color: var(--stone); }
-.wcard .cmeta .score { margin-left: auto; font-family: var(--mono); flex: none; }
-.wcard .cmeta .repo { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wcard .title {
-  font-size: 15px; color: var(--ink); letter-spacing: -0.1px; text-align: left; background: none; border: 0; padding: 0;
-  cursor: pointer; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.secLabel + .wrow { border-top: 1px solid var(--hair); }
+.wrow:hover { background: rgba(255, 255, 255, 0.025); }
+.wrow.sel { background: rgba(255, 255, 255, 0.045); }
+.wrow.checked { background: var(--tint-blue); }
+
+.wrow .check {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+  border: 0; background: transparent; color: var(--stone); border-radius: var(--r-xs); padding: 0;
+  opacity: 0; transition: opacity 0.1s;
 }
-.wcard .title:hover { text-decoration: underline; text-decoration-color: var(--stone); text-underline-offset: 3px; }
-.wcard .title .returned { color: var(--green); font-family: var(--mono); font-size: 10px; margin-right: 8px; vertical-align: 2px; }
-.wcard .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--body); min-width: 0; flex-wrap: wrap; row-gap: 4px; }
-.wcard .status .why { color: var(--mute); font-style: italic; }
-.wcard .status .pill { font-size: 10px; padding: 1px 7px; }
-.wcard .side { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; justify-content: center; flex: none; }
-.wcard .sideRow { display: flex; gap: 2px; align-items: center; opacity: 0; transition: opacity 0.12s; }
-.wcard:hover .sideRow, .wcard.sel .sideRow, .wcard .sideRow:focus-within { opacity: 1; }
-.wcard .keys { display: flex; gap: 6px; }
+.wrow:hover .check, .wrow.sel .check, .wrow.checked .check, .wrow .check:focus-visible { opacity: 1; }
+.wrow.checked .check { color: var(--blue); }
+
+/* The gutter bar is the one place priority is printed (itemUi.priorityClass).
+   Normal and Low get no bar — a mark on every row marks nothing. */
+.wrow .bar { width: 3px; height: 20px; border-radius: 2px; background: transparent; }
+.wrow.p1 .bar { background: var(--orange); }
+.wrow.p2 .bar { background: var(--yellow); }
+
+/* Trouble with the item colours the glyph, so it never fights the bar. */
+.wrow .glyph { display: flex; align-items: center; justify-content: center; color: var(--stone); }
+.wrow.alert .glyph { color: var(--red); }
+.wrow:hover .glyph, .wrow.sel .glyph { color: var(--ash); }
+.wrow.alert:hover .glyph, .wrow.alert.sel .glyph { color: var(--red); }
+
+.wrow .t {
+  display: flex; align-items: baseline; gap: 10px; min-width: 0; overflow: hidden; white-space: nowrap;
+  background: none; border: 0; padding: 0; text-align: left; cursor: pointer; line-height: 1.4;
+}
+.wrow .t .name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; color: var(--body); letter-spacing: -0.1px; }
+.wrow:hover .t .name, .wrow.sel .t .name { color: var(--ink); }
+.wrow .t:hover .name { text-decoration: underline; text-decoration-color: var(--stone); text-underline-offset: 3px; }
+/* The trailing clause yields the whole width before the title gives up any. */
+.wrow .t .why { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; color: var(--stone); }
+.wrow .t .returned { flex: none; color: var(--green); font-family: var(--mono); font-size: 11px; }
+
+.wrow .meta { display: flex; align-items: center; font-size: 12px; color: var(--ash); transition: opacity 0.1s; }
+.wrow .meta .c { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 18px; }
+.wrow .meta .state { width: 134px; color: var(--mute); }
+.wrow .meta .state.brief-ready { color: var(--green); }
+.wrow .meta .state.brief-queued, .wrow .meta .state.brief-running { color: var(--blue); }
+.wrow .meta .state.brief-stale { color: var(--yellow); }
+.wrow .meta .state.brief-failed { color: var(--red); }
+.wrow .meta .src { width: 120px; font-family: var(--mono); font-size: 11px; color: var(--stone); }
+.wrow .meta .when { width: 40px; font-family: var(--mono); font-size: 11px; color: var(--stone); }
+
+/* Cramped: the columns give way one at a time, and the trailing clause goes
+   first — a `why` squeezed to a single letter reads as a glitch. */
+@container ledger (max-width: 800px) {
+  .wrow .t .why { display: none; }
+}
+@container ledger (max-width: 620px) {
+  .wrow .meta .src { display: none; }
+}
+@container ledger (max-width: 470px) {
+  .wrow .meta .state { display: none; }
+}
+
+.wrow .keys, .wrow .acts {
+  position: absolute; right: 10px; top: 0; height: 100%; display: flex; align-items: center;
+  opacity: 0; pointer-events: none; transition: opacity 0.1s;
+}
+.wrow .keys { gap: 13px; font-size: 11.5px; color: var(--stone); }
+.wrow .acts { gap: 2px; }
+.wrow .acts .btn { height: 24px; }
+/* Order matters: selection reveals the legend, hover overrides it with the
+   real controls, and an open row menu pins them while the pointer wanders. */
+.wrow.sel .meta { opacity: 0; }
+.wrow.sel .keys { opacity: 1; }
+.wrow:hover .meta, .wrow.menu .meta, .wrow:focus-within .meta { opacity: 0; }
+.wrow:hover .keys, .wrow.menu .keys, .wrow:focus-within .keys { opacity: 0; }
+.wrow:hover .acts, .wrow.menu .acts, .wrow:focus-within .acts { opacity: 1; pointer-events: auto; }
+
+/* The row's overflow menu: every glyph above also exists here with a word. */
+.uiMenu.rowMenu { min-width: 228px; }
+.uiMenuCap { padding: 7px 9px 4px; font-family: var(--mono); font-size: 10.5px; color: var(--stone); }
+.uiMenuItem .k { margin-left: auto; padding-left: 14px; font-family: var(--mono); font-size: 10px; color: var(--stone); }
+.uiMenuItem .dot.prio1 { background: var(--orange); }
+.uiMenuItem .dot.prio2 { background: var(--yellow); }
+.uiMenuItem .dot.prio0, .uiMenuItem .dot.prio3, .uiMenuItem .dot.prio4 { background: var(--stone); }
 
 /* priority — a compact select styled as a pill */
 .prioSelect {
@@ -1392,9 +1464,6 @@ dialog.artDialog textarea { min-height: 240px; font-family: var(--mono); font-si
 .descBlock textarea { width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 8px 12px; font-size: 13.5px; line-height: 1.55; outline: none; }
 .descBlock textarea:focus { border-color: var(--ink); }
 .descBlock .row { display: flex; gap: 6px; justify-content: flex-end; }
-.wcard .check { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; background: transparent; color: var(--stone); border-radius: var(--r); padding: 0; flex: none; }
-.wcard .check:hover, .wcard.checked .check { color: var(--ink); background: var(--elev); }
-.wcard.checked { border-color: var(--hair-bright); }
 .selBar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 12px; background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); font-size: 13px; color: var(--body); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
 .selBar .n { font-family: var(--mono); color: var(--ink); }
 .selBar .spacer { flex: 1; }

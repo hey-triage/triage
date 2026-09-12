@@ -3,7 +3,10 @@ import {
   Archive,
   Check,
   CheckSquare,
+  ChevronRight,
   ExternalLink,
+  MoreHorizontal,
+  Play,
   Sparkles,
   Square,
   Flag,
@@ -12,6 +15,7 @@ import {
   RefreshCw,
   ThumbsDown,
   Trash2,
+  Undo2,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -40,8 +44,11 @@ import {
   itemTone,
   kindIcon,
   ago,
+  priorityClass,
+  shortAge,
   weekday,
 } from '../itemUi.js'
+import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
 import { anyDialogOpen, isTypingTarget } from '../keys.js'
 
 /** The status tabs (.docs/watches-v2.md): items are durable and never deleted,
@@ -435,7 +442,7 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
             ) : (
               <div className="homeList">
                 {items.map((item) => (
-                  <WorkCard key={item.id} item={item} selected={item.id === (ordered[sel]?.id ?? null)} {...rowProps} />
+                  <WorkRow key={item.id} item={item} selected={item.id === (ordered[sel]?.id ?? null)} {...rowProps} />
                 ))}
               </div>
             )}
@@ -515,13 +522,24 @@ function ItemGroup({
         {qual && <span className="qual">{qual}</span>}
       </div>
       {items.map((item) => (
-        <WorkCard key={item.id} item={item} selected={item.id === selectedId} {...actions} />
+        <WorkRow key={item.id} item={item} selected={item.id === selectedId} {...actions} />
       ))}
     </>
   )
 }
 
-function WorkCard({
+/**
+ * One work item, one line (.docs/work-item-variations.html — variation A).
+ *
+ * The row is a ledger entry, not a card: state, source and age sit in
+ * fixed-width right-aligned cells so they form columns down the page, and
+ * scanning happens by alignment rather than by reading a strip of pills. The
+ * right-hand cells are the row's one piece of real estate and three things
+ * take turns in it, never two at once — the meta columns at rest, the
+ * shortcut legend when the row is keyboard-selected, the action cluster on
+ * hover. Because they swap in place, nothing reflows under the cursor.
+ */
+function WorkRow({
   item,
   selected,
   tab,
@@ -543,25 +561,35 @@ function WorkCard({
   onBrief,
   briefOf,
 }: { item: ScoredItem; selected: boolean } & RowActions) {
+  const [menuOpen, setMenuOpen] = useState(false)
   const isManual = item.source === 'manual'
   const isOpen = tab === 'open'
   const isChecked = checked.has(item.id)
   const brief = briefPill(briefOf(item.id))
-  const proj = projectName(item.projectId)
   const pri = item.priority ?? 0
   // watchId now rides in the provenance list; fall back to the item field.
   const watchId = item.watchId ?? item.foundBy?.[item.foundBy.length - 1]?.watchId
+  const watchTitle = watchId ? watchTitles.get(watchId) : undefined
   const Icon = kindIcon(item)
-  const tone = itemTone(item)
-  const quiet = item.group === 'cycle' || item.group === 'fyi'
+  const alert = itemTone(item) === 'red'
+
+  // The state cell speaks only when it has something the glyph does not say:
+  // a brief's progress outranks the kind, and "to-do" is what the glyph means.
+  const state = brief?.label ?? (isManual ? (watchTitle ?? '') : (KIND_LABEL[item.kind] ?? item.kind))
+  const source = projectName(item.projectId) ?? item.repo
+  // The scored reason ("2 people waiting · opened 3d ago") is the fallback when
+  // the item carries no human note.
+  const trailing = item.why || item.reason
 
   return (
     <div
-      className={`card wcard${selected ? ' sel' : ''}${quiet ? ' quiet' : ''}${isChecked ? ' checked' : ''}`}
+      className={['wrow', priorityClass(item), selected && 'sel', isChecked && 'checked', menuOpen && 'menu', alert && 'alert']
+        .filter(Boolean)
+        .join(' ')}
       ref={selected ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
       onMouseMove={() => !selected && onSelect(item.id)}
     >
-      {isOpen && (
+      {isOpen ? (
         <button
           type="button"
           className="check"
@@ -569,141 +597,155 @@ function WorkCard({
           aria-pressed={isChecked}
           onClick={() => onToggle(item.id)}
         >
-          {isChecked ? <CheckSquare size={14} aria-hidden="true" /> : <Square size={14} aria-hidden="true" />}
+          {isChecked ? <CheckSquare size={13} aria-hidden="true" /> : <Square size={13} aria-hidden="true" />}
         </button>
+      ) : (
+        <span />
       )}
-      <div className="main">
-        <div className="cmeta">
-          <Icon size={13} aria-hidden="true" />
-          <span className="repo">{item.repo}</span>
-          <span className="sep">·</span>
-          <span>{KIND_LABEL[item.kind] ?? item.kind}</span>
-          {item.peopleWaiting > 0 && (
-            <>
-              <span className="sep">·</span>
-              <span>{item.peopleWaiting} waiting</span>
-            </>
-          )}
-          {item.ciFailing && (
-            <>
-              <span className="sep">·</span>
-              <span style={{ color: 'var(--red)' }}>CI red</span>
-            </>
-          )}
-          <span className="score">↑ {Math.round(item.score)}</span>
-        </div>
-        <button type="button" className="title" title={item.title} onClick={() => onOpen(item.id)}>
-          {item.returned && (
-            <span className="returned" title="Was done — the source updated since">
-              ↩ returned
-            </span>
-          )}
-          {item.title}
-        </button>
-        <div className="status">
-          <span className={`dot ${tone ?? (item.group === 'blocking' ? 'green' : 'stone')}`} aria-hidden="true" />
-          <span>{item.reason}</span>
-          {item.why && <span className="why">“{item.why}”</span>}
-          {brief && (
-            <span className={`pill ${brief.tone}`} title="Brief">
-              {brief.label}
-            </span>
-          )}
-          {proj && (
-            <span className="pill" title="Project">
-              <Folder size={10} aria-hidden="true" />
-              {proj}
-            </span>
-          )}
-          {pri > 0 && (
-            <span className={`pill ${pri <= 2 ? 'yellow' : ''}`} title="Priority">
-              {PRIORITY_LABEL[pri]}
-            </span>
-          )}
-          {watchId && watchTitles.has(watchId) && (
-            <span className="pill blue" title="Matched by this watch">
-              {watchTitles.get(watchId)}
-            </span>
-          )}
-          {item.linked?.map((l) => (
-            <a key={l.url} className="pill" href={l.url} target="_blank" rel="noreferrer" title="Same work, another source">
-              + {l.source} · {l.repo}
-            </a>
-          ))}
-        </div>
-      </div>
+      <span className="bar" title={pri > 0 ? `Priority: ${PRIORITY_LABEL[pri]}` : undefined} />
+      <span className="glyph">
+        <Icon size={14} aria-hidden="true" />
+      </span>
+      <button type="button" className="t" title={item.title} onClick={() => onOpen(item.id)}>
+        {item.returned && (
+          <span className="returned" title="Was done — the source updated since">
+            ↩
+          </span>
+        )}
+        <span className="name">{item.title}</span>
+        {trailing && <span className="why">{trailing}</span>}
+      </button>
 
-      <div className="side">
+      <span className="meta" aria-hidden={selected || undefined}>
+        <span className={`c state${brief ? ` ${brief.tone}` : ''}`}>{state}</span>
+        <span className="c src">{source}</span>
+        <span className="c when" title={item.updatedAt ? new Date(item.updatedAt).toLocaleString() : undefined}>
+          {shortAge(item.updatedAt)}
+        </span>
+      </span>
+
+      {selected && (
+        <span className="keys" aria-hidden="true">
+          <span>
+            <span className="kbd">↵</span> open
+          </span>
+          <span>
+            <span className="kbd">d</span> dispatch
+          </span>
+          {isOpen && (
+            <>
+              <span>
+                <span className="kbd">e</span> done
+              </span>
+              <span>
+                <span className="kbd">z</span> snooze
+              </span>
+            </>
+          )}
+        </span>
+      )}
+
+      <span className="acts">
         {isOpen ? (
-          <button
-            type="button"
-            className={`btn${selected ? ' primary' : ''}`}
-            title="Start a Claude Code session on this item (d)"
-            onClick={() => onDispatch(item)}
-          >
+          <button type="button" className="btn sm primary" title="Start a Claude Code session on this item (d)" onClick={() => onDispatch(item)}>
             Dispatch
           </button>
         ) : (
-          <button type="button" className={`btn${selected ? ' primary' : ''}`} title="Move back to the open inbox (e)" onClick={() => onReopen(item)}>
+          <button type="button" className="btn sm primary" title="Move back to the open inbox (e)" onClick={() => onReopen(item)}>
             Reopen
           </button>
         )}
-        <div className="sideRow">
-          {item.url && (
-            <a className="iconBtn sm" href={item.url} target="_blank" rel="noreferrer" title="Open at the source (o)">
-              <ExternalLink size={13} aria-hidden="true" />
-            </a>
-          )}
-          {isOpen && (
-            <>
-              <button type="button" className="iconBtn sm" title="Create a brief (b)" onClick={() => onBrief(item)}>
-                <Sparkles size={13} aria-hidden="true" />
-              </button>
-              <button type="button" className="iconBtn sm green" title="Mark done (e)" onClick={() => onDone(item)}>
-                <Check size={14} aria-hidden="true" />
-              </button>
-              <button type="button" className="iconBtn sm" title="Snooze until tomorrow 9am (z)" onClick={() => onSnooze(item)}>
-                <AlarmClock size={13} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="iconBtn sm"
-                title={isManual ? 'Delete — moves to Archived (x)' : 'Archive (x)'}
-                onClick={() => (isManual ? onDelete(item) : onArchive(item))}
-              >
-                {isManual ? <Trash2 size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
-              </button>
-              {isManual && (
-                <button type="button" className="iconBtn sm" title="Edit" onClick={() => onEdit(item)}>
-                  <Pencil size={13} aria-hidden="true" />
-                </button>
-              )}
-              {watchId && (
-                <button type="button" className="iconBtn sm red" title="Bad match — refine this watch" onClick={() => onRefineWatch(item)}>
-                  <ThumbsDown size={13} aria-hidden="true" />
-                </button>
-              )}
-              <select
-                className={`prioSelect prio${pri}`}
-                title="Set priority"
-                value={pri}
-                onChange={(e) => onSetPriority(item, Number(e.target.value))}
-              >
-                {PRIORITY_VALUES.map((v) => (
-                  <option key={v} value={v}>
-                    {v === 0 ? '— priority' : PRIORITY_LABEL[v]}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-          {!isOpen && tab !== 'archived' && (
-            <button type="button" className="iconBtn sm" title="Archive" onClick={() => onArchive(item)}>
-              <Archive size={13} aria-hidden="true" />
+        {isOpen && (
+          <>
+            <button type="button" className="iconBtn sm" title={brief ? 'Re-brief (b)' : 'Create a brief (b)'} onClick={() => onBrief(item)}>
+              <Sparkles size={13} aria-hidden="true" />
             </button>
-          )}
-        </div>
-      </div>
+            <button type="button" className="iconBtn sm green" title="Mark done (e)" onClick={() => onDone(item)}>
+              <Check size={14} aria-hidden="true" />
+            </button>
+            <button type="button" className="iconBtn sm" title="Snooze until tomorrow 9am (z)" onClick={() => onSnooze(item)}>
+              <AlarmClock size={13} aria-hidden="true" />
+            </button>
+          </>
+        )}
+        <Menu open={menuOpen} onOpenChange={setMenuOpen}>
+          <MenuTrigger asChild>
+            <button type="button" className="iconBtn sm" title="More actions">
+              <MoreHorizontal size={15} aria-hidden="true" />
+            </button>
+          </MenuTrigger>
+          <MenuContent align="end" className="rowMenu">
+            <MenuItem onSelect={() => onOpen(item.id)}>
+              <ChevronRight size={13} aria-hidden="true" /> Open item<span className="k">↵</span>
+            </MenuItem>
+            {item.url && (
+              <MenuItem onSelect={() => window.open(item.url, '_blank', 'noopener')}>
+                <ExternalLink size={13} aria-hidden="true" /> Open at the source<span className="k">o</span>
+              </MenuItem>
+            )}
+            {item.linked?.map((l) => (
+              <MenuItem key={l.url} onSelect={() => window.open(l.url, '_blank', 'noopener')}>
+                <ExternalLink size={13} aria-hidden="true" /> Also in {l.source} · {l.repo}
+              </MenuItem>
+            ))}
+            {isOpen ? (
+              <>
+                <MenuSeparator />
+                <MenuItem onSelect={() => onBrief(item)}>
+                  <Sparkles size={13} aria-hidden="true" /> {brief ? 'Re-brief' : 'Create a brief'}
+                  <span className="k">b</span>
+                </MenuItem>
+                <MenuItem onSelect={() => onDispatch(item)}>
+                  <Play size={13} aria-hidden="true" /> Dispatch to a session<span className="k">d</span>
+                </MenuItem>
+                <MenuItem onSelect={() => onDone(item)}>
+                  <Check size={13} aria-hidden="true" /> Mark done<span className="k">e</span>
+                </MenuItem>
+                <MenuItem onSelect={() => onSnooze(item)}>
+                  <AlarmClock size={13} aria-hidden="true" /> Snooze to tomorrow<span className="k">z</span>
+                </MenuItem>
+                <MenuSeparator />
+                <div className="uiMenuCap">Priority</div>
+                {PRIORITY_VALUES.map((v) => (
+                  <MenuItem key={v} onSelect={() => onSetPriority(item, v)}>
+                    <span className={`dot sm prio${v}`} aria-hidden="true" />
+                    {v === 0 ? 'None' : PRIORITY_LABEL[v]}
+                    {v === pri && <Check className="check" size={13} aria-hidden="true" />}
+                  </MenuItem>
+                ))}
+                <MenuSeparator />
+                {isManual && (
+                  <MenuItem onSelect={() => onEdit(item)}>
+                    <Pencil size={13} aria-hidden="true" /> Edit
+                  </MenuItem>
+                )}
+                {watchId && (
+                  <MenuItem onSelect={() => onRefineWatch(item)}>
+                    <ThumbsDown size={13} aria-hidden="true" /> Bad match — refine this watch
+                  </MenuItem>
+                )}
+                <MenuItem className="danger" onSelect={() => (isManual ? onDelete(item) : onArchive(item))}>
+                  {isManual ? <Trash2 size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
+                  {isManual ? 'Delete' : 'Archive'}
+                  <span className="k">x</span>
+                </MenuItem>
+              </>
+            ) : (
+              <>
+                <MenuSeparator />
+                <MenuItem onSelect={() => onReopen(item)}>
+                  <Undo2 size={13} aria-hidden="true" /> Move back to open<span className="k">e</span>
+                </MenuItem>
+                {tab !== 'archived' && (
+                  <MenuItem className="danger" onSelect={() => onArchive(item)}>
+                    <Archive size={13} aria-hidden="true" /> Archive<span className="k">x</span>
+                  </MenuItem>
+                )}
+              </>
+            )}
+          </MenuContent>
+        </Menu>
+      </span>
     </div>
   )
 }

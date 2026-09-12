@@ -71,6 +71,17 @@ export function itemTone(item: ScoredItem): 'red' | 'yellow' | null {
   return null
 }
 
+/**
+ * The inbox row's gutter bar carries priority and nothing else — one channel,
+ * read down the page, never also printed as a pill. Trouble with the *item*
+ * (failing CI, conflicts) colours the kind glyph instead, so the two signals
+ * never compete for the same 3px.
+ */
+export function priorityClass(item: Pick<ScoredItem, 'priority'>): string {
+  const p = item.priority ?? 0
+  return p > 0 ? `p${p}` : ''
+}
+
 export function relTime(input: number | string | undefined | null): string {
   if (input == null) return '—'
   const ms = typeof input === 'string' ? Date.parse(input) : input
@@ -81,6 +92,24 @@ export function relTime(input: number | string | undefined | null): string {
   if (s < 86400) return `${Math.round(s / 3600)}h`
   if (s < 86400 * 14) return `${Math.round(s / 86400)}d`
   return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+/**
+ * The ledger's age cell: always one compact token so the column stays a
+ * column. `relTime` widens to a locale date past two weeks ("28 Aug"), which
+ * overflows a narrow cell and makes the column read ragged; the exact
+ * timestamp lives in the cell's tooltip instead.
+ */
+export function shortAge(input: number | string | undefined | null): string {
+  if (input == null) return ''
+  const ms = typeof input === 'string' ? Date.parse(input) : input
+  if (!Number.isFinite(ms)) return ''
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m`
+  if (s < 86400) return `${Math.round(s / 3600)}h`
+  if (s < 86400 * 7) return `${Math.round(s / 86400)}d`
+  if (s < 86400 * 365) return `${Math.round(s / 604800)}w`
+  return `${Math.round(s / 31536000)}y`
 }
 
 /** "3h ago" / "just now" — relTime with the suffix handled. */
