@@ -893,11 +893,11 @@ function AppearanceTab() {
         </Row>
       </Section>
       <Section title="Reset">
-        <Row label="Back to defaults" hint="System theme, 100% zoom, default text size.">
+        <Row label="Back to defaults" hint="Dark theme, 100% zoom, default text size.">
           <button
             type="button"
             className="btn"
-            onClick={() => writeAppearance({ theme: 'system', zoom: ZOOM_DEFAULT, fontSize: FONT_DEFAULT })}
+            onClick={() => writeAppearance({ theme: 'dark', zoom: ZOOM_DEFAULT, fontSize: FONT_DEFAULT })}
           >
             Reset
           </button>

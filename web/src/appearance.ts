@@ -61,7 +61,9 @@ function writeRaw(key: string, value: string) {
 export function readAppearance(): Appearance {
   const theme = readRaw(THEME_KEY)
   return {
-    theme: isThemeMode(theme) ? theme : 'system',
+    // Dark-first: with nothing saved yet (a fresh install), default to dark
+    // regardless of the OS scheme. "System" is an explicit opt-in, not the default.
+    theme: isThemeMode(theme) ? theme : 'dark',
     zoom: clampNum(Number(readRaw(ZOOM_KEY)), ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT),
     fontSize: clampNum(Number(readRaw(FONT_KEY)), FONT_MIN, FONT_MAX, FONT_DEFAULT),
   }
