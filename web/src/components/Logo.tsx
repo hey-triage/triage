@@ -1,3 +1,5 @@
+import lockupUrl from '@assets/brand/triage-lockup.svg'
+
 /**
  * The Triage mark: three strokes at sixty degrees, bottom-aligned, each shorter
  * than the last, ending in a dot. Drawn on a 48-unit grid at a single 5.5 stroke
@@ -25,14 +27,19 @@ export function TriageMark({ size = 18, className }: { size?: number; className?
   )
 }
 
-/** Mark + wordmark lockup (the "F2" ratio: mark box ≈ 1.03× the type size, gap ≈ 0.31em). */
+/**
+ * Mark + wordmark lockup, rendered from the brand source of truth
+ * (assets/brand/triage-lockup.svg). Painted as a mask filled with the current
+ * text colour, so the single white-on-transparent file adapts to the theme.
+ */
 export function TriageLogo({ className }: { className?: string }) {
   return (
-    <span className={`logo${className ? ` ${className}` : ''}`} aria-label="triage">
-      <TriageMark className="logoMark" />
-      <span className="logoWord" aria-hidden="true">
-        triage
-      </span>
+    <span className={`logo${className ? ` ${className}` : ''}`} role="img" aria-label="triage">
+      <span
+        className="logoLockup"
+        aria-hidden="true"
+        style={{ WebkitMaskImage: `url("${lockupUrl}")`, maskImage: `url("${lockupUrl}")` }}
+      />
     </span>
   )
 }
