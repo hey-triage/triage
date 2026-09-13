@@ -24,7 +24,7 @@ context already loaded.
 It runs on your machine, uses your existing Claude Code login, and never holds a credential.
 
 <p align="center">
-  <img src="docs/inbox.png" alt="The triage inbox: a ranked queue of review requests, mentions and tasks, each with a Dispatch action" width="100%">
+  <img src="docs/inbox.png" alt="The triage inbox: work grouped into Blocking, Your cycle and FYI, each a dense ledger row with its reason, source and score — the top row ready to re-enter as a Claude session" width="100%">
 </p>
 
 ## Features
