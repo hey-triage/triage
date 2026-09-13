@@ -4,7 +4,7 @@
  * why it ranked, what has happened to it, and the sessions working on it.
  * The actions live in the right column so the left reads as a page, not a form.
  */
-import { AlarmClock, Archive, Check, ChevronRight, ExternalLink, FileText, Hash, Sparkles, X } from 'lucide-react'
+import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Hash, Play, Sparkles, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   BriefJobsResponse,
@@ -28,6 +28,7 @@ import { store } from '../store.js'
 import { KIND_LABEL, PRIORITY_LABEL, PRIORITY_VALUES, ago, kindIcon, relTime } from '../itemUi.js'
 import { CreateBriefDialog } from './CreateBriefDialog.js'
 import { Markdown } from './Markdown.js'
+import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
 
 type Props = {
   id: string
@@ -517,6 +518,7 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
       <div className="itemAside">
         <div className="asideActions">
           <button type="button" className="btn primary wide" onClick={() => onDispatch(item)} title="Start a session on this item — the brief rides along if there is one">
+            <Play size={12} aria-hidden="true" />
             {linkedSessions.some((x) => x.role === 'dispatch') ? 'Dispatch another session' : 'Dispatch to a session'}
           </button>
           {isOpen && settled && (
@@ -525,37 +527,50 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
             </button>
           )}
           {isOpen ? (
-            <div className="btnGrid">
-              <button type="button" className="btn" title="Mark done (e)" onClick={() => void setState('done')}>
+            <div className="segRow">
+              <button type="button" title="Mark done (e)" onClick={() => void setState('done')}>
                 <Check size={12} aria-hidden="true" /> Done
               </button>
-              <button type="button" className="btn" title="Snooze until tomorrow 9am (z)" onClick={snooze1d}>
+              <button type="button" title="Snooze until tomorrow 9am (z)" onClick={snooze1d}>
                 <AlarmClock size={12} aria-hidden="true" /> Snooze
               </button>
-              <button type="button" className="btn" title="Archive (x)" onClick={() => void setState('archived')}>
+              <button type="button" title="Archive (x)" onClick={() => void setState('archived')}>
                 <Archive size={12} aria-hidden="true" /> Archive
               </button>
             </div>
           ) : (
-            <div className="btnGrid">
-              <button type="button" className="btn" onClick={() => void setState('open')}>
+            <div className="segRow">
+              <button type="button" onClick={() => void setState('open')}>
                 Reopen
               </button>
               {status !== 'archived' && (
-                <button type="button" className="btn" onClick={() => void setState('archived')}>
-                  Archive
+                <button type="button" onClick={() => void setState('archived')}>
+                  <Archive size={12} aria-hidden="true" /> Archive
                 </button>
               )}
             </div>
           )}
           {isOpen && (
-            <select className={`prioSelect prio${pri}`} title="Set priority" value={pri} onChange={(e) => setPriority(Number(e.target.value))}>
-              {PRIORITY_VALUES.map((v) => (
-                <option key={v} value={v}>
-                  {v === 0 ? 'priority — none' : `priority — ${PRIORITY_LABEL[v]}`}
-                </option>
-              ))}
-            </select>
+            <Menu>
+              <MenuTrigger asChild>
+                <button type="button" className={`prioBar prio${pri}`} title="Set priority">
+                  <span className="dot" aria-hidden="true" />
+                  <span className="lab">Priority</span>
+                  <span className="val">{pri === 0 ? 'None' : PRIORITY_LABEL[pri]}</span>
+                  <ChevronDown className="caret" size={13} aria-hidden="true" />
+                </button>
+              </MenuTrigger>
+              <MenuContent align="end">
+                <div className="uiMenuCap">Priority</div>
+                {PRIORITY_VALUES.map((v) => (
+                  <MenuItem key={v} onSelect={() => setPriority(v)}>
+                    <span className={`dot sm prio${v}`} aria-hidden="true" />
+                    {v === 0 ? 'None' : PRIORITY_LABEL[v]}
+                    {v === pri && <Check className="check" size={13} aria-hidden="true" />}
+                  </MenuItem>
+                ))}
+              </MenuContent>
+            </Menu>
           )}
         </div>
 
@@ -565,31 +580,36 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
         {linkedSessions.length === 0 ? (
           <div className="asideEmpty">None yet — Dispatch opens one in the matching project; a brief run is one too.</div>
         ) : (
-          linkedSessions.map(({ s, role }) => (
-            <div key={s.id} className="card sessCard">
-              <div className="head">
-                <span className={`dot ${s.status === 'running' || s.status === 'starting' ? 'live' : s.status === 'error' ? 'red' : 'green'}`} />
-                <span>{s.title}</span>
-                <span className="when">
-                  {role} · {s.status}
-                </span>
-              </div>
-              <div className="row mono">
-                {s.cwd.split('/').pop()}
-                {s.branch ? ` · ${s.branch}` : ''}
-                {s.model ? ` · ${s.model}` : ''}
-              </div>
+          linkedSessions.map(({ s, role }) => {
+            const live = s.status === 'running' || s.status === 'starting'
+            const err = s.status === 'error'
+            return (
               <a
+                key={s.id}
                 href={`#${s.id}`}
+                className={`card sessCard${live ? ' run' : err ? ' err' : ''}`}
                 onClick={(e) => {
                   e.preventDefault()
                   onNavigate(s.id)
                 }}
               >
-                {role === 'brief' ? 'Open the run' : 'Re-enter session'} <ChevronRight size={12} aria-hidden="true" />
+                <div className="top">
+                  <span className="ti">{s.title}</span>
+                  <span className="rs">
+                    <span className="role">{role} ·</span> {s.status}
+                  </span>
+                </div>
+                <div className="me">
+                  {s.cwd.split('/').pop()}
+                  {s.branch ? ` · ${s.branch}` : ''}
+                  {s.model ? ` · ${s.model}` : ''}
+                </div>
+                <span className="act">
+                  {role === 'brief' ? 'Open the run' : 'Re-enter session'} <ChevronRight size={12} aria-hidden="true" />
+                </span>
               </a>
-            </div>
-          ))
+            )
+          })
         )}
 
         <div className="secLabel mute">Linked</div>
