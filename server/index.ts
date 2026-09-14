@@ -767,6 +767,7 @@ function summarize(rt: WorkspaceRuntime, row: StoredSession): SessionSummary {
     title: row.title,
     cwd: row.cwd,
     status: l?.status ?? 'idle',
+    updatedAt: row.updatedAt,
     // The user's pick wins: it is what the next turn runs on, and it is set
     // before the subprocess has reported anything.
     model: row.model ?? l?.model,

@@ -388,6 +388,11 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .panelHead .acts { margin-left: auto; display: flex; gap: 2px; }
 .panelGroup { display: flex; align-items: center; gap: 8px; padding: 10px 16px 4px; color: var(--stone); font-size: 0.8462rem; letter-spacing: 0.4px; text-transform: uppercase; }
 .panelGroup .n { font-family: var(--mono); letter-spacing: 0; }
+.panelGroup.asBtn { gap: 0; width: 100%; padding-left: 4px; border: 0; background: transparent; cursor: pointer; font: inherit; font-size: 0.8462rem; text-transform: uppercase; }
+.panelGroup.asBtn:hover { color: var(--ash); }
+/* Chevron sits in the 16px gutter so the label lines up with every other group head. */
+.panelGroup.asBtn > svg { flex: none; }
+.panelGroup.asBtn .n { margin-left: 8px; }
 .prow {
   position: relative; display: flex; align-items: center; gap: 8px; height: 30px; margin: 0 6px;
   padding: 0 10px 0 14px; border-radius: var(--r-sm); color: var(--body); font-size: 1rem; cursor: pointer;

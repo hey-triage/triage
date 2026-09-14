@@ -4,6 +4,8 @@
  * session pages). Both open with the search field, which is the ⌘K palette.
  */
 import {
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   FileText,
   Folder,
@@ -193,6 +195,20 @@ export function ArtifactsPanel({ artifacts, loaded, currentId, onOpen, onNew, on
 // Sessions — every session in the workspace, pinned first
 // ---------------------------------------------------------------------------
 
+/** Newest first. Archived is only the tail of the same axis — nothing is filed by hand. */
+const TIME_BUCKETS = ['Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'Archived'] as const
+
+/** Which bucket a session falls in, by last activity against local midnight. */
+function bucketOf(updatedAt: number): (typeof TIME_BUCKETS)[number] {
+  const midnight = new Date().setHours(0, 0, 0, 0)
+  const day = 86_400_000
+  if (updatedAt >= midnight) return 'Today'
+  if (updatedAt >= midnight - day) return 'Yesterday'
+  if (updatedAt >= midnight - 7 * day) return 'Previous 7 days'
+  if (updatedAt >= midnight - 30 * day) return 'Previous 30 days'
+  return 'Archived'
+}
+
 type SessionsProps = {
   sessions: readonly SessionSummary[]
   currentId: string | null
@@ -227,6 +243,16 @@ export function SessionsPanel({
   const [renaming, setRenaming] = useState<string | null>(null)
   // Deleting is irreversible, so it is confirmed in a modal rather than on the row.
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
+  // Archive is the one unbounded group, so it is the only one that collapses.
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  // Selecting an archived session reveals it, but the toggle still wins afterwards:
+  // this fires on the selection changing, not on every summaries broadcast.
+  useEffect(() => {
+    if (!currentId) return
+    const s = sessions.find((x) => x.id === currentId)
+    if (s && !s.pinned && bucketOf(s.updatedAt) === 'Archived') setArchiveOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentId])
 
   const pinned = sessions.filter((s) => s.pinned)
   const rest = sessions.filter((s) => !s.pinned)
@@ -304,25 +330,41 @@ export function SessionsPanel({
             ))}
           </>
         )}
-        {(pinned.length > 0 || (drafts.length > 0 && rest.length > 0)) && pinned.length === 0 && (
-          <div className="panelGroup">
-            Recent <span className="n">{rest.length}</span>
-          </div>
-        )}
         {pinned.length > 0 && (
           <>
             <div className="panelGroup">
               Pinned <span className="n">{pinned.length}</span>
             </div>
             {pinned.map(row)}
-            {rest.length > 0 && (
-              <div className="panelGroup">
-                Recent <span className="n">{rest.length}</span>
-              </div>
-            )}
           </>
         )}
-        {rest.map(row)}
+        {TIME_BUCKETS.map((label) => {
+          const rows = rest.filter((s) => bucketOf(s.updatedAt) === label)
+          if (rows.length === 0) return null
+          if (label !== 'Archived')
+            return (
+              <div key={label}>
+                <div className="panelGroup">
+                  {label} <span className="n">{rows.length}</span>
+                </div>
+                {rows.map(row)}
+              </div>
+            )
+          return (
+            <div key={label}>
+              <button
+                type="button"
+                className="panelGroup asBtn"
+                aria-expanded={archiveOpen}
+                onClick={() => setArchiveOpen((v) => !v)}
+              >
+                {archiveOpen ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+                {label} <span className="n">{rows.length}</span>
+              </button>
+              {archiveOpen && rows.map(row)}
+            </div>
+          )
+        })}
       </div>
       <div className="panelFoot">
         <span className="kbd">n</span> new session <span className="kbd">g s</span> here

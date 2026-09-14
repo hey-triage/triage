@@ -179,6 +179,8 @@ export type SessionSummary = {
   watchId?: string
   /** the work item this session was dispatched for, or briefs (from the links table). */
   itemId?: string
+  /** Last activity, epoch ms. The sidebar sorts and time-buckets on this. */
+  updatedAt: number
 }
 
 // ---------------------------------------------------------------------------
