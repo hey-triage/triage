@@ -19,8 +19,11 @@ import type {
   Project,
   ProjectsResponse,
   ScoredItem,
+  SessionsUsage,
+  SessionsUsageResponse,
   WatchesResponse,
 } from '../../../shared/protocol.js'
+import { MAX_SERIES, OTHER, OTHER_KEY, SERIES, modelLabel, money, tokens } from '../usageFormat.js'
 import { useSessions } from '../hooks.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
 import { briefPill, useBriefs } from '../briefStore.js'
@@ -75,6 +78,9 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
   const [feedback, setFeedback] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [spend, setSpend] = useState<SessionsUsage | null>(null)
+  /** the readout is optional — a ledger that can't be read hides it rather than sitting on a skeleton */
+  const [spendFailed, setSpendFailed] = useState(false)
 
   useEffect(() => {
     if (!snap.loaded && !snap.loading) void inboxStore.refresh()
@@ -170,6 +176,55 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
     }
     return out
   }, [sessions, links, item])
+
+  // What the item cost: the ledger, folded by the sessions above. Refetched
+  // when the set changes and when a live one settles — a running session's
+  // transcript is still growing, so its figure is a floor, not a total.
+  const spendKey = linkedSessions.map(({ s }) => `${s.id}:${s.status}`).join(',')
+  useEffect(() => {
+    const ids = linkedSessions.map(({ s }) => s.id)
+    if (ids.length === 0) {
+      setSpend(null)
+      return
+    }
+    let live = true
+    void fetch(`/api/usage/sessions?ids=${encodeURIComponent(ids.join(','))}`)
+      .then((r) => r.json() as Promise<SessionsUsageResponse>)
+      .then((b) => {
+        if (!live) return
+        setSpend(b.ok ? b.usage : null)
+        setSpendFailed(!b.ok)
+      })
+      .catch(() => {
+        if (!live) return
+        setSpend(null)
+        setSpendFailed(true)
+      })
+    return () => {
+      live = false
+    }
+    // `spendKey` is the real dependency — `linkedSessions` is a fresh array each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spendKey])
+
+  // The split under the total: at most six hues in fixed order, the tail
+  // stacked as one "Other" band rather than inventing colours. Slices are
+  // already cost-sorted by the server.
+  const split = useMemo(() => {
+    const rows = spend?.models.filter((m) => m.cost > 0) ?? []
+    if (rows.length <= MAX_SERIES) return rows.map((m, i) => ({ ...m, color: SERIES[i] }))
+    const tail = rows.slice(MAX_SERIES)
+    return [
+      ...rows.slice(0, MAX_SERIES).map((m, i) => ({ ...m, color: SERIES[i] })),
+      {
+        model: OTHER_KEY,
+        cost: tail.reduce((n, m) => n + m.cost, 0),
+        tokens: tail.reduce((n, m) => n + m.tokens, 0),
+        priced: tail.every((m) => m.priced),
+        color: OTHER,
+      },
+    ]
+  }, [spend])
 
   async function setState(status: ItemStatus, snoozeUntil?: number) {
     if (!item) return
@@ -574,6 +629,64 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
           )}
         </div>
 
+        {/* What the item cost: the ledger, folded over this item's sessions.
+            Deliberately small — the cache share, the daily series and the
+            per-project view stay on Usage. Placements considered:
+            .docs/item-cost-variations.html */}
+        {linkedSessions.length > 0 && !spendFailed && (
+          <div className="costBlock">
+            <div className="head">
+              <span className="lab">Cost</span>
+              <span className="win">last {spend?.days ?? 30}d</span>
+            </div>
+            {spend ? (
+              <>
+                <div className="big" title="Priced at API list prices — on a Pro or Max plan nothing is billed per token">
+                  {money(spend.totals.cost)}
+                  {!spend.totals.priced && <span className="approx">+</span>}
+                </div>
+                <div className="sub">
+                  {tokens(spend.totals.tokens)} tokens · {spend.totals.sessions}
+                  {spend.totals.sessions === 1 ? ' session' : ' sessions'}
+                </div>
+                {/* A single-model item gets no meter — one full bar says nothing.
+                    The legend below always names the models and carries their
+                    values, so identity is never colour alone. */}
+                {split.length > 1 && (
+                  <div
+                    className="meter"
+                    role="img"
+                    aria-label={`Spend by model: ${split.map((m) => `${modelLabel(m.model)} ${money(m.cost)}`).join(', ')}`}
+                  >
+                    {split.map((m) => (
+                      <span
+                        key={m.model}
+                        style={{ width: `${(m.cost / spend.totals.cost) * 100}%`, background: m.color }}
+                        title={`${modelLabel(m.model)} · ${money(m.cost)} · ${tokens(m.tokens)} tokens`}
+                      />
+                    ))}
+                  </div>
+                )}
+                {split.length > 0 && (
+                  <div className="keys">
+                    {split.map((m) => (
+                      <span className="key" key={m.model}>
+                        <i className="sw" style={{ background: m.color }} aria-hidden="true" />
+                        {modelLabel(m.model)} <span className="v">{money(m.cost)}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="foot">
+                  list-price equivalent{!spend.totals.priced && ' · some tokens unpriced'}
+                </div>
+              </>
+            ) : (
+              <div className="asideEmpty">Reading transcripts…</div>
+            )}
+          </div>
+        )}
+
         <div className="secLabel mute">
           Sessions <span className="n">{linkedSessions.length}</span>
         </div>
@@ -606,6 +719,11 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
                 </div>
                 <span className="act">
                   {role === 'brief' ? 'Open the run' : 'Re-enter session'} <ChevronRight size={12} aria-hidden="true" />
+                  {spend?.bySession[s.id] && (
+                    <span className="spend" title={`${tokens(spend.bySession[s.id].tokens)} tokens over ${spend.bySession[s.id].messages} messages`}>
+                      {money(spend.bySession[s.id].cost)}
+                    </span>
+                  )}
                 </span>
               </a>
             )

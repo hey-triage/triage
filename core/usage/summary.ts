@@ -4,7 +4,9 @@
  * model, one row per project folder.
  */
 import type {
+  SessionSpend,
   UsageByModel,
+  UsageModelSlice,
   UsageByProject,
   UsageDay,
   UsageSummary,
@@ -133,4 +135,46 @@ export function summarize(entries: UsageEntry[], since: number, now: number): Us
     unpricedModels: [...unpriced],
     scan: { files: 0, reread: 0, ms: 0 },
   }
+}
+
+/**
+ * Spend folded by Claude session id — the join key onto a triage session's
+ * `sdkSessionId`. Kept beside `summarize()` rather than inside it: the item
+ * page wants one number per session and none of the day/model/project rollups.
+ *
+ * Note the same caveat the window carries elsewhere: `entries` is whatever
+ * `scanUsage` was asked for, so a session whose transcript predates the window
+ * simply isn't in here — the caller reports that, it is not an error.
+ */
+export function summarizeBySession(entries: UsageEntry[]): Map<string, SessionSpend> {
+  const out = new Map<string, SessionSpend>()
+  for (const e of entries) {
+    if (!e.sessionId) continue
+    const row = out.get(e.sessionId) ?? { cost: 0, tokens: 0, messages: 0, priced: true }
+    const cost = entryCost(e)
+    if (cost === undefined) row.priced = false
+    row.cost += cost ?? 0
+    row.tokens += e.input + e.output + e.cacheWrite5m + e.cacheWrite1h + e.cacheRead
+    row.messages++
+    out.set(e.sessionId, row)
+  }
+  return out
+}
+
+/**
+ * Spend folded by model, largest first — the split behind a cost readout.
+ * A sibling of `summarize()` for callers that want only this slice: the item
+ * page asks about one item's sessions, not the whole machine.
+ */
+export function summarizeModels(entries: UsageEntry[]): UsageModelSlice[] {
+  const out = new Map<string, UsageModelSlice>()
+  for (const e of entries) {
+    const row = out.get(e.model) ?? { model: e.model, cost: 0, tokens: 0, priced: true }
+    const cost = entryCost(e)
+    if (cost === undefined) row.priced = false
+    row.cost += cost ?? 0
+    row.tokens += e.input + e.output + e.cacheWrite5m + e.cacheWrite1h + e.cacheRead
+    out.set(e.model, row)
+  }
+  return [...out.values()].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens)
 }

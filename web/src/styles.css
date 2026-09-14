@@ -653,7 +653,7 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .sessCard.run .rs { color: var(--blue); }
 .sessCard.err .rs { color: var(--red); }
 .sessCard .me { font-family: var(--mono); font-size: 0.8846rem; color: var(--ash); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sessCard .act { display: inline-flex; align-items: center; gap: 5px; margin-top: 9px; font-size: 0.9231rem; color: var(--mute); transition: color 0.1s ease; }
+.sessCard .act { display: flex; align-items: center; gap: 5px; margin-top: 9px; font-size: 0.9231rem; color: var(--mute); transition: color 0.1s ease; }
 .sessCard .act svg { color: var(--stone); transition: color 0.1s ease; }
 .sessCard:hover .act { color: var(--ink); }
 .sessCard:hover .act svg { color: var(--mute); }
@@ -667,6 +667,50 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .tlRow .who { color: var(--ash); }
 .tlRow .why { color: var(--ash); display: block; }
 .asideEmpty { color: var(--stone); font-size: 0.9231rem; }
+
+/* per-item spend — a labelled section with a value, in the aside's own
+   vocabulary. Three lines on purpose: the model split and the cache share
+   are Usage-tab questions, and a chart in 320px answers neither well.
+   Variations that were considered: .docs/item-cost-variations.html */
+.costBlock {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 13px 15px; background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+}
+.costBlock .head { display: flex; align-items: baseline; gap: 8px; }
+.costBlock .head .lab {
+  font-size: 0.8462rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ash);
+}
+.costBlock .head .win { margin-left: auto; font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); }
+.costBlock .big {
+  font-size: 2.1538rem; line-height: 1.05; letter-spacing: -0.6px; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+/* a model with no price row: the tokens are counted, the dollars are a floor */
+.costBlock .big .approx { font-size: 1rem; color: var(--stone); margin-left: 1px; }
+.costBlock .sub { font-size: 0.9231rem; color: var(--stone); }
+
+/* the model split. Colour comes from the shared series palette in
+   web/src/usageFormat.ts — the same hues the Usage tab uses, so Opus is the
+   same blue on both surfaces. 2px surface gaps between segments; the legend
+   carries the value, so identity is never colour alone. */
+.costBlock .meter {
+  display: flex; gap: 2px; height: 6px; margin-top: 4px;
+  border-radius: var(--r-full); overflow: hidden; background: var(--hair-soft);
+}
+.costBlock .meter span { display: block; height: 100%; border-radius: 2px; min-width: 2px; }
+.costBlock .keys { display: flex; flex-wrap: wrap; gap: 3px 14px; font-size: 0.8846rem; color: var(--charcoal); }
+.costBlock .keys .key { display: inline-flex; align-items: center; gap: 6px; }
+.costBlock .keys .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.costBlock .keys .v { font-family: var(--mono); color: var(--mute); }
+.costBlock .foot { font-size: 0.8462rem; color: var(--stone); }
+
+/* the same number per session, on the card's bottom row — it displaces
+   nothing, and a live session's figure ticks as the transcript grows */
+.sessCard .act .spend {
+  margin-left: auto; font-family: var(--mono); font-size: 0.8846rem; color: var(--charcoal);
+  font-variant-numeric: tabular-nums;
+}
+.sessCard:hover .act .spend { color: var(--ink); }
+.sessCard.run .act .spend { color: var(--blue); }
 
 /* ---------- session view ---------- */
 #chatHeader {

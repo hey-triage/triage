@@ -438,6 +438,45 @@ export type UsageSummary = {
 
 export type UsageResponse = { ok: true; usage: UsageSummary } | { ok: false; error: string }
 
+// ---------------------------------------------------------------------------
+// Per-session spend (GET /api/usage/sessions?ids=…&days=…)
+//
+// What a work item cost: the same ledger the Usage tab reads, folded by
+// session instead of by day/model/project. The client asks about the sessions
+// it already knows are linked to the item, so the item→session join stays in
+// one place (ItemPage's `linkedSessions`) instead of being re-derived here.
+// ---------------------------------------------------------------------------
+
+export type SessionSpend = {
+  cost: number
+  tokens: number
+  messages: number
+  /** False when some of the spend came from a model with no price row. */
+  priced: boolean
+}
+
+/** One model's share of a spend total, for the split meter under it. */
+export type UsageModelSlice = {
+  model: string
+  cost: number
+  tokens: number
+  priced: boolean
+}
+
+export type SessionsUsage = {
+  /** The window the ledger was scanned over. */
+  days: number
+  /** Keyed by *triage* session id — ids with no transcript in the window are absent. */
+  bySession: Record<string, SessionSpend>
+  /** The same spend split by model, largest first. */
+  models: UsageModelSlice[]
+  totals: SessionSpend & { sessions: number }
+}
+
+export type SessionsUsageResponse =
+  | { ok: true; usage: SessionsUsage }
+  | { ok: false; error: string }
+
 /** The windows the Usage tab offers. */
 export const USAGE_WINDOWS = [7, 30, 90] as const
 

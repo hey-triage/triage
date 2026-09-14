@@ -111,6 +111,9 @@ import type {
   LogLevel,
   LogsResponse,
   UsageResponse,
+  SessionsUsageResponse,
+  SessionSpend,
+  UsageModelSlice,
   ManualItemInput,
   SystemResponse,
   SystemStatus,
@@ -143,7 +146,7 @@ import {
   safeWhen,
 } from '../core/sources/slack.js'
 import { scanUsage } from '../core/usage/ledger.js'
-import { summarize as summarizeUsage } from '../core/usage/summary.js'
+import { summarize as summarizeUsage, summarizeBySession, summarizeModels } from '../core/usage/summary.js'
 import { isDue } from '../core/watch/schedule.js'
 import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
 import { WATCH_CONNECTORS, WATCH_OUTPUTS, type NewWatch, type Watch, type WatchCadence, type WatchConnector, type WatchOutput, type WatchPreviewResult, type WatchPreviewRow, type WatchRunStatus } from '../core/watch/types.js'
@@ -3664,6 +3667,61 @@ const server = http.createServer(async (req, res) => {
       const usage = summarizeUsage(entries, since, now)
       usage.scan = { files, reread, ms: Date.now() - began }
       body = { ok: true, usage }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    json(body.ok ? 200 : 500, body)
+    return
+  }
+  // What a set of sessions cost — the item page's per-item spend readout. The
+  // caller names the sessions (it owns the item→session join); we map each to
+  // the Claude session id captured at init and fold the ledger by that.
+  if (url.pathname === '/api/usage/sessions' && req.method === 'GET') {
+    const ids = (url.searchParams.get('ids') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 200)
+    const asked = Number(url.searchParams.get('days'))
+    const days = USAGE_WINDOWS.includes(asked as (typeof USAGE_WINDOWS)[number]) ? asked : 30
+    const now = Date.now()
+    const start = new Date(now)
+    start.setHours(0, 0, 0, 0)
+    const since = start.getTime() - (days - 1) * 86_400_000
+
+    let body: SessionsUsageResponse
+    try {
+      const bySession: Record<string, SessionSpend> = {}
+      let models: UsageModelSlice[] = []
+      const totals = { cost: 0, tokens: 0, messages: 0, priced: true, sessions: 0 }
+      if (ids.length > 0) {
+        // Only the newest sdk_session_id survives a resume today, so a resumed
+        // session's earlier spend is not reachable from here. Whatever is on
+        // the row is what can be joined.
+        const stored = await rt.store.sessions.list()
+        const sdkIds = new Map<string, string>()
+        for (const sess of stored) {
+          if (ids.includes(sess.id) && sess.sdkSessionId) sdkIds.set(sess.id, sess.sdkSessionId)
+        }
+        if (sdkIds.size > 0) {
+          const { entries } = await scanUsage(claudeProjectRoots(), since)
+          const folded = summarizeBySession(entries)
+          // The model split is over these sessions only, not the machine.
+          const wanted = new Set(sdkIds.values())
+          models = summarizeModels(entries.filter((e) => wanted.has(e.sessionId)))
+          for (const [id, sdkId] of sdkIds) {
+            const row = folded.get(sdkId)
+            if (!row) continue
+            bySession[id] = row
+            totals.cost += row.cost
+            totals.tokens += row.tokens
+            totals.messages += row.messages
+            if (!row.priced) totals.priced = false
+            totals.sessions++
+          }
+        }
+      }
+      body = { ok: true, usage: { days, bySession, models, totals } }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }

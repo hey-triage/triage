@@ -9,44 +9,12 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { USAGE_WINDOWS, type UsageResponse, type UsageSummary } from '../../../shared/protocol.js'
-
-/**
- * Series colours: the first six slots of the validated dark categorical
- * palette (blue, orange, aqua, yellow, magenta, violet). Checked against this
- * surface for the lightness band, chroma floor, colour-blind separation and
- * contrast — do not swap one for a brighter app accent, which fails the band.
- * Models past the sixth fold into "Other" rather than inventing a hue.
- */
-const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9']
-const OTHER = '#6b6f76'
-/** The id the tail of the model list is drawn under, past the sixth hue. */
-const OTHER_KEY = '\u0000other'
-const MAX_SERIES = SERIES.length
+import { MAX_SERIES, OTHER, OTHER_KEY, SERIES, modelLabel, money, tokens } from '../usageFormat.js'
 
 type Metric = 'cost' | 'tokens'
 
-/** `claude-opus-4-8` → `Opus 4.8`; anything unexpected passes through. */
-function modelLabel(id: string): string {
-  if (id === OTHER_KEY) return 'Other'
-  const parts = id.replace(/^claude-/, '').split('-')
-  if (parts.length === 0) return id
-  const family = parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
-  const version = parts.slice(1).join('.')
-  return version ? `${family} ${version}` : family
-}
-
-const money = (n: number) =>
-  n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : n >= 0.01 || n === 0 ? `$${n.toFixed(2)}` : '<$0.01'
-
 const compactMoney = (n: number) =>
   n >= 1000 ? `$${Math.round(n / 100) / 10}k` : n >= 10 ? `$${Math.round(n)}` : `$${n.toFixed(1)}`
-
-function tokens(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`
-  if (n >= 1e3) return `${Math.round(n / 1e3)}k`
-  return String(n)
-}
 
 const count = (n: number) => n.toLocaleString()
 
