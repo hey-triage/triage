@@ -78,6 +78,9 @@ import type {
   BriefView,
   DispatchPreview,
   DispatchPreviewResponse,
+  ItemImage,
+  ItemImageEdit,
+  ItemImagesResponse,
   PlaybookResponse,
   PlaybooksResponse,
   SessionKind,
@@ -85,6 +88,7 @@ import type {
   WorkspaceSettings,
 } from '../shared/protocol.js'
 import {
+  MAX_IMAGES_PER_ITEM,
   MAX_IMAGES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
   MAX_INLINE_FILE_BYTES,
@@ -169,6 +173,7 @@ import {
   type WorkspaceMeta,
 } from './workspaces.js'
 import { TerminalManager } from './terminals.js'
+import { applyImageEdits, itemImageAttachments, readItemImage } from './itemImages.js'
 import { FileIndexes, resolveFileMention } from './files.js'
 import { ArtifactIndex, slug } from './artifacts.js'
 import {
@@ -364,6 +369,8 @@ class WorkspaceRuntime {
   /** playbooks and dispatch templates — the two prose-customisable stages, as files */
   readonly playbookDir: string
   readonly dispatchDir: string
+  /** screenshots attached to work items — bytes on disk, refs on the item */
+  readonly attachmentsDir: string
 
   // brief runs (.docs/next-version.md, phase 2): one at a time per workspace
   briefActive: string | null = null
@@ -384,6 +391,7 @@ class WorkspaceRuntime {
     void this.artifacts.ensure()
     this.playbookDir = path.join(workspaceDir(meta.id), 'playbooks')
     this.dispatchDir = path.join(workspaceDir(meta.id), 'dispatch')
+    this.attachmentsDir = path.join(workspaceDir(meta.id), 'attachments')
     this.triageMcp = makeTriageMcp(this)
     this.terminals = new TerminalManager(
       (msg) => broadcast(this, msg),
@@ -2115,12 +2123,17 @@ const CONTENT_TYPES: Record<string, string> = {
   '.webmanifest': 'application/manifest+json',
 }
 
-function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+/**
+ * A form's worth of JSON. Routes that carry base64 screenshots pass a bigger
+ * `limit` — a single macOS screenshot blows past 1MB once base64'd, and a
+ * body that dies mid-upload reads to the user as "the network broke".
+ */
+function readJsonBody(req: http.IncomingMessage, limit = 1_000_000): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = ''
     req.on('data', (chunk) => {
       data += chunk
-      if (data.length > 1_000_000) reject(new Error('body too large'))
+      if (data.length > limit) reject(new Error('body too large'))
     })
     req.on('end', () => {
       try {
@@ -2176,6 +2189,8 @@ const VALID_SOURCES = new Set(['github', 'slack', 'linear', 'web'])
 // upsert accepts only scanner sources; state/resolve accept manual items too.
 const ITEM_ID_RE = /^(github|slack|linear|web):\S+$/
 const ANY_ITEM_ID_RE = /^(github|slack|linear|web|manual):\S+$/
+/** Item saves carry images inline: the per-image cap, base64-inflated, times the per-item cap. */
+const MAX_ITEM_BODY_BYTES = Math.ceil(MAX_IMAGES_PER_ITEM * MAX_IMAGE_BYTES * 1.4) + 100_000
 
 type WatchPatch = Partial<NewWatch> & { enabled?: boolean }
 
@@ -2312,7 +2327,57 @@ async function manualItemFrom(rt: WorkspaceRuntime, raw: unknown, opts: { partia
     else if (typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 4) input.priority = p
     else throw new Error('priority must be 1–4')
   }
+  const images = itemImageEdits(r)
+  if (images) input.images = images
   return input
+}
+
+/**
+ * The `images` field of an item save: `{ id }` keeps an image the item already
+ * holds, anything else is a new base64 upload, judged by the same rules as a
+ * chat attachment. The list is the complete desired set — absent leaves the
+ * item's images alone, `[]` drops them all. Unlike the socket's
+ * `imageAttachments`, a bad entry is *refused*, not dropped: this is a form,
+ * and a screenshot that silently vanishes on save is worse than an error.
+ */
+function itemImageEdits(raw: Record<string, unknown>): ItemImageEdit[] | undefined {
+  const v = raw.images
+  if (v === undefined || v === null) return undefined
+  if (!Array.isArray(v)) throw new Error('images must be a list')
+  if (v.length > MAX_IMAGES_PER_ITEM) throw new Error(`up to ${MAX_IMAGES_PER_ITEM} images per item`)
+  const out: ItemImageEdit[] = []
+  for (const entry of v) {
+    if (typeof entry !== 'object' || entry === null) throw new Error('each image must be an object')
+    const e = entry as Record<string, unknown>
+    if (typeof e.id === 'string' && e.id) {
+      out.push({ id: e.id })
+      continue
+    }
+    if (!isImageMediaType(e.mediaType)) throw new Error('images must be PNG, JPEG, GIF or WebP')
+    if (typeof e.data !== 'string' || !e.data || !BASE64.test(e.data)) throw new Error('image data must be base64')
+    if (base64Bytes(e.data) > MAX_IMAGE_BYTES)
+      throw new Error(`each image must be under ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB`)
+    out.push({
+      mediaType: e.mediaType,
+      data: e.data,
+      ...(typeof e.name === 'string' && e.name ? { name: e.name.slice(0, 200) } : {}),
+    })
+  }
+  return out
+}
+
+/**
+ * Write the item's new image set to disk and record the refs. Works for any
+ * item, not just manual ones — a screenshot pasted onto a GitHub item's
+ * description is the same thing.
+ */
+async function setItemImagesOp(rt: WorkspaceRuntime, id: string, edits: ItemImageEdit[]): Promise<ItemImage[]> {
+  const item = await rt.store.items.get(id)
+  if (!item) throw new Error('no such work item')
+  const images = await applyImageEdits(rt.attachmentsDir, id, item.images ?? [], edits)
+  await rt.store.items.setImages(id, images)
+  rt.inboxCache = null
+  return images
 }
 
 // ---------------------------------------------------------------------------
@@ -2348,9 +2413,12 @@ async function resolveItemOp(rt: WorkspaceRuntime, rawId: unknown): Promise<void
 }
 
 async function createManualOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> {
-  const input = await manualItemFrom(rt, raw)
+  const { images, ...input } = await manualItemFrom(rt, raw)
   const id = `manual:${randomUUID()}`
   await rt.store.items.createManual({ id, ...input })
+  // The item has to exist before its images can hang off it — the folder is
+  // named after the id the line above minted.
+  if (images?.length) await setItemImagesOp(rt, id, images)
   rt.inboxCache = null
   log('info', 'inbox', `manual item created: ${input.title ?? id}`, { id, workspace: rt.meta.id })
   return id
@@ -2362,8 +2430,9 @@ async function createManualOp(rt: WorkspaceRuntime, raw: unknown): Promise<strin
 async function editManualOp(rt: WorkspaceRuntime, id: string, raw: unknown): Promise<void> {
   if (!id || !id.startsWith('manual:'))
     throw new Error('edit_work_item only edits manual items (id must start with "manual:")')
-  const patch = await manualItemFrom(rt, raw, { partial: true })
+  const { images, ...patch } = await manualItemFrom(rt, raw, { partial: true })
   await rt.store.items.updateManual(id, patch)
+  if (images) await setItemImagesOp(rt, id, images)
   rt.inboxCache = null
 }
 
@@ -2770,6 +2839,9 @@ async function startBriefRun(rt: WorkspaceRuntime, job: BriefJob): Promise<void>
   )
   const scored = rt.inboxCache?.items.find((i) => i.id === item.id)
   const iteration = !!reuse && !!job.note && !!existing
+  // Screenshots the human put on the item ride the first message as real
+  // image blocks — a brief about a broken UI needs to see it.
+  const images = await itemImageAttachments(rt.attachmentsDir, item.id, item.images)
   await live.sendUserMessage(
     composeBriefPrompt({
       item,
@@ -2779,7 +2851,9 @@ async function startBriefRun(rt: WorkspaceRuntime, job: BriefJob): Promise<void>
       note: job.note,
       existing: existing?.body ?? null,
       iteration,
+      imageCount: images?.length ?? 0,
     }),
+    images,
   )
   log('info', 'briefs', `run started: ${item.title}${iteration ? ' (iteration)' : ''}`, {
     jobId: job.id,
@@ -2864,8 +2938,12 @@ async function dispatchPreviewOp(rt: WorkspaceRuntime, itemId: string): Promise<
     brief: !!brief,
     source: item.source !== 'manual',
   })
+  // The item's screenshots are attached by the server when the draft is sent
+  // (they never ride in localStorage), so the text says they are coming.
+  const shots = item.images?.length ?? 0
+  const note = shots ? `\n\n${shots} screenshot${shots === 1 ? '' : 's'} from this item ${shots === 1 ? 'is' : 'are'} attached to this message.` : ''
   // The mention tokens must appear in the text — the composer attaches only what the text names.
-  const text = `${body}\n\n${mentions.map(mentionToken).join(' ')}`
+  const text = `${body}${note}\n\n${mentions.map(mentionToken).join(' ')}`
   return { title: item.title.slice(0, 80), cwd: project?.path ?? null, text, mentions }
 }
 
@@ -3778,11 +3856,11 @@ const server = http.createServer(async (req, res) => {
     let status = 200
     try {
       if (req.method === 'POST') {
-        await createManualOp(rt, await readJsonBody(req))
+        await createManualOp(rt, await readJsonBody(req, MAX_ITEM_BODY_BYTES))
       } else if (req.method === 'PUT') {
         const id = url.searchParams.get('id')
         if (!id) throw new Error('need a manual item id')
-        await editManualOp(rt, id, await readJsonBody(req))
+        await editManualOp(rt, id, await readJsonBody(req, MAX_ITEM_BODY_BYTES))
       } else if (req.method === 'DELETE') {
         // Never hard-delete (.docs/watches-v2.md): "delete" archives the item,
         // recorded, so it survives in the Archived tab.
@@ -3982,6 +4060,45 @@ const server = http.createServer(async (req, res) => {
       body = { ok: false, error: errText(err) }
     }
     json(body.ok ? 200 : 400, body)
+    return
+  }
+  // Screenshots on an item. The list sent is the complete desired set: refs
+  // to keep plus new base64 uploads, reconciled against what is on disk.
+  if (url.pathname === '/api/items/images' && req.method === 'POST') {
+    let body: ItemImagesResponse
+    try {
+      const parsed = (await readJsonBody(req, MAX_ITEM_BODY_BYTES)) as Record<string, unknown> | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need an item id')
+      body = { ok: true, images: await setItemImagesOp(rt, id, itemImageEdits(parsed ?? {}) ?? []) }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  // The bytes behind one ref (`itemImageUrl`). Ids are uuids and files are
+  // never rewritten in place, so this is safe to cache hard.
+  if (url.pathname === '/api/items/image' && req.method === 'GET') {
+    const itemId = url.searchParams.get('item') ?? ''
+    const imageId = url.searchParams.get('image') ?? ''
+    const item = ANY_ITEM_ID_RE.test(itemId) ? await rt.store.items.get(itemId).catch(() => null) : null
+    const image = item?.images?.find((i) => i.id === imageId)
+    if (!image) {
+      json(404, { ok: false, error: 'no such image' })
+      return
+    }
+    try {
+      const bytes = await readItemImage(rt.attachmentsDir, itemId, image)
+      res.writeHead(200, {
+        'content-type': image.mediaType,
+        'content-length': String(bytes.length),
+        'cache-control': 'private, max-age=31536000, immutable',
+      })
+      res.end(bytes)
+    } catch {
+      json(404, { ok: false, error: 'the image file is missing' })
+    }
     return
   }
   // --- artifacts + links (.docs/next-version.md, phase 1) ---------------------
@@ -4390,8 +4507,17 @@ wss.on('connection', (ws, req) => {
           if (msg.itemId) await linkSessionToItem(rt, row.id, msg.itemId, 'dispatch').catch(() => {})
           send(ws, { type: 'session_created', session: summarize(rt, row) })
           broadcastSessionList(rt)
-          if (msg.firstMessage?.trim() || msg.images?.length || msg.mentions?.length)
-            void rt.live.get(row.id)?.sendUserMessage(msg.firstMessage?.trim() ?? '', msg.images, msg.mentions)
+          // A dispatch opens with the item's screenshots attached — the draft
+          // composer never carries the bytes, the server reads them off disk.
+          const dispatched = msg.itemId ? await rt.store.items.get(msg.itemId).catch(() => null) : null
+          const fromItem = dispatched
+            ? await itemImageAttachments(rt.attachmentsDir, dispatched.id, dispatched.images)
+            : undefined
+          const images = [...(fromItem ?? []), ...(msg.images ?? [])].slice(0, MAX_IMAGES_PER_MESSAGE)
+          if (msg.firstMessage?.trim() || images.length || msg.mentions?.length)
+            void rt.live
+              .get(row.id)
+              ?.sendUserMessage(msg.firstMessage?.trim() ?? '', images.length ? images : undefined, msg.mentions)
           break
         }
         case 'set_model': {

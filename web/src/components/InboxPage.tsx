@@ -5,6 +5,8 @@ import {
   CheckSquare,
   ChevronRight,
   ExternalLink,
+  ImagePlus,
+  Link2,
   MoreHorizontal,
   Play,
   Sparkles,
@@ -23,6 +25,8 @@ import { RepoScopeEditor } from './RepoScope.js'
 import type {
   BriefJob,
   Group,
+  ItemImage,
+  ItemImageEdit,
   ItemListResponse,
   ItemStatus,
   ManualItemResponse,
@@ -32,6 +36,9 @@ import type {
   ScoredItem,
   WatchesResponse,
 } from '../../../shared/protocol.js'
+import { itemImageUrl } from '../../../shared/protocol.js'
+import { useAttachments } from '../attachments.js'
+import { AttachmentStrip } from './AttachmentStrip.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
 import { briefPill, briefStore, useBriefs } from '../briefStore.js'
 import { CreateBriefDialog } from './CreateBriefDialog.js'
@@ -840,7 +847,10 @@ function WorkRow({
 }
 
 // ---------------------------------------------------------------------------
-// Item composer: add or edit a manual work item (title, project, priority, note).
+// Item composer: add or edit a manual work item. Title, description, link,
+// project, priority — plus screenshots, which are the point: a brief or a
+// dispatched session reads the images the same way it reads the description,
+// so "here is what's broken" can be a paste rather than a paragraph.
 // ---------------------------------------------------------------------------
 
 function ItemComposer({
@@ -861,13 +871,20 @@ function ItemComposer({
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleInput = useRef<HTMLInputElement>(null)
+  const filePicker = useRef<HTMLInputElement>(null)
   const [title, setTitle] = useState('')
   const [projectId, setProjectId] = useState('')
   const [priority, setPriority] = useState(0)
-  const [note, setNote] = useState('')
+  const [description, setDescription] = useState('')
+  const [url, setUrl] = useState('')
+  const [linkOpen, setLinkOpen] = useState(false)
+  /** images the item already holds (edit only) — dropping one here deletes it on save */
+  const [kept, setKept] = useState<ItemImage[]>([])
+  const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [addMore, setAddMore] = useState(false)
+  const attach = useAttachments()
 
   useEffect(() => {
     const el = dialog.current
@@ -877,17 +894,44 @@ function ItemComposer({
       setTitle(editing?.title ?? '')
       setProjectId(editing?.projectId ?? '')
       setPriority(editing?.priority ?? 0)
-      setNote(editing?.why ?? '')
+      setDescription(editing?.description ?? editing?.note ?? '')
+      setUrl(editing?.url ?? '')
+      setLinkOpen(!!editing?.url)
+      setKept(editing?.images ?? [])
+      attach.clear()
       setError(null)
     }
     if (!open && el.open) el.close()
   }, [open, editing])
 
+  // One tray, two origins: what the item already holds and what is being
+  // pasted now. The strip does not care which is which; removal does.
+  const thumbs = [
+    ...kept.map((i) => ({ id: i.id, url: editing ? itemImageUrl(editing.id, i.id) : '', name: i.name })),
+    ...attach.images,
+  ]
+  const removeThumb = (id: string) => {
+    if (kept.some((i) => i.id === id)) setKept((prev) => prev.filter((i) => i.id !== id))
+    else attach.remove(id)
+  }
+
   async function save() {
     setSaving(true)
     setError(null)
     try {
-      const payload = { title, projectId: projectId || undefined, priority, note: note || undefined }
+      // The complete desired set: refs to keep, then the new pastes.
+      const images: ItemImageEdit[] = [
+        ...kept.map((i) => ({ id: i.id })),
+        ...(attach.payload() ?? []),
+      ]
+      const payload = {
+        title,
+        projectId: projectId || undefined,
+        priority,
+        description: description.trim() || undefined,
+        url: url.trim() || undefined,
+        images,
+      }
       const path = editing ? `/api/items/manual?id=${encodeURIComponent(editing.id)}` : '/api/items/manual'
       const res = await fetch(path, {
         method: editing ? 'PUT' : 'POST',
@@ -901,8 +945,11 @@ function ItemComposer({
         // keep the composer open for the next one; clear all but the project
         onSavedMore()
         setTitle('')
-        setNote('')
+        setDescription('')
+        setUrl('')
+        setLinkOpen(false)
         setPriority(0)
+        attach.clear()
         setError(null)
         titleInput.current?.focus()
       } else {
@@ -918,9 +965,33 @@ function ItemComposer({
   return (
     <dialog ref={dialog} className="itemComposer" onClose={onClose}>
       <form
+        className={dragging ? 'dragging' : undefined}
         onSubmit={(e) => {
           e.preventDefault()
           void save()
+        }}
+        // ⌘↵ saves from any field — the description is where you live, and
+        // reaching for the button to save a two-line to-do is a tax.
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && title.trim() && !saving) {
+            e.preventDefault()
+            void save()
+          }
+        }}
+        onPaste={attach.onPaste}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes('Files')) return
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.types.includes('Files')) return
+          e.preventDefault()
+          setDragging(false)
+          void attach.add(e.dataTransfer.files)
         }}
       >
         <div className="composerHead">
@@ -944,10 +1015,46 @@ function ItemComposer({
         />
         <textarea
           className="descInput"
-          rows={2}
-          placeholder="Add context, links, or acceptance criteria…"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
+          rows={4}
+          placeholder="Context, acceptance criteria, or a pasted screenshot — the brief reads all of it."
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+
+        {linkOpen && (
+          <label className="linkRow">
+            <Link2 size={13} aria-hidden="true" />
+            <input
+              type="url"
+              placeholder="https://…"
+              value={url}
+              autoFocus={!editing?.url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+          </label>
+        )}
+
+        <div className="composerAttachments">
+          <AttachmentStrip images={thumbs} error={attach.error} onRemove={removeThumb} />
+          {thumbs.length === 0 && !attach.error && (
+            <button type="button" className="dropHint" onClick={() => filePicker.current?.click()}>
+              <ImagePlus size={12} aria-hidden="true" />
+              Paste, drop, or click to attach a screenshot
+            </button>
+          )}
+        </div>
+
+        <input
+          ref={filePicker}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          hidden
+          onChange={(e) => {
+            if (e.target.files) void attach.add(e.target.files)
+            // Reset, so picking the same file twice in a row still fires.
+            e.target.value = ''
+          }}
         />
 
         <div className="pillRow">
@@ -972,6 +1079,21 @@ function ItemComposer({
               ))}
             </select>
           </label>
+          <button
+            type="button"
+            className={`pill add${thumbs.length ? ' set' : ''}`}
+            onClick={() => filePicker.current?.click()}
+            title="Attach screenshots — or just paste them"
+          >
+            <ImagePlus size={12} aria-hidden="true" />
+            {thumbs.length > 0 ? `${thumbs.length} image${thumbs.length === 1 ? '' : 's'}` : 'Image'}
+          </button>
+          {!linkOpen && (
+            <button type="button" className="pill add" onClick={() => setLinkOpen(true)} title="Add a link">
+              <Link2 size={12} aria-hidden="true" />
+              Link
+            </button>
+          )}
         </div>
 
         {error && <div className="msg error">{error}</div>}
@@ -985,6 +1107,7 @@ function ItemComposer({
             </label>
           )}
           <div className="footActions">
+            <span className="hint">⌘↵</span>
             <button type="button" className="cancel" onClick={onClose}>
               Cancel
             </button>

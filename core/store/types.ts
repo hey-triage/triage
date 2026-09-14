@@ -19,6 +19,7 @@ import type {
   BriefStatus,
   EffortLevel,
   InboxSnapshot,
+  ItemImage,
   Link,
   LinkKind,
   LinkRole,
@@ -207,6 +208,11 @@ export interface WorkItemStore {
   events(id: string): Promise<ItemEvent[]>
   /** Set (or clear, with null) the human's description on any item. Never touched by ingestion. */
   setDescription(id: string, description: string | null): Promise<void>
+  /**
+   * Replace the image refs on any item. The bytes are the caller's business
+   * (they live on disk); this only records what the item now holds.
+   */
+  setImages(id: string, images: ItemImage[]): Promise<void>
 }
 
 export type NewBriefJob = {

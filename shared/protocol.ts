@@ -573,6 +573,8 @@ export type ManualItemInput = {
   note?: string
   url?: string
   priority?: number
+  /** the complete desired image set — new base64 uploads and the refs to keep */
+  images?: ItemImageEdit[]
 }
 
 export type ManualItemResponse = { ok: true } | { ok: false; error: string }
@@ -641,6 +643,42 @@ export const isImageMediaType = (v: unknown): v is ImageMediaType =>
 /** Per-image ceiling on the decoded bytes, and how many ride one message. */
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGES_PER_MESSAGE = 8
+
+/**
+ * An image attached to a *work item* — a screenshot pasted into the composer
+ * or into the item's description. Unlike `ImageAttachment`, the bytes are NOT
+ * carried inline: an item's payload is rebroadcast to every client on every
+ * inbox sync, so the bytes live on disk in the workspace
+ * (`attachments/<item>/<id>.png`) and only this ref rides the wire. Fetch the
+ * bytes from `itemImageUrl()`.
+ */
+export type ItemImage = {
+  /** uuid; also the on-disk filename stem */
+  id: string
+  /** the original filename, when there was one */
+  name?: string
+  mediaType: ImageMediaType
+  /** decoded size on disk — what the UI shows and what the cap is measured against */
+  bytes: number
+}
+
+/**
+ * One entry of the `images` list a client sends when it saves an item: either
+ * "keep the image you already hold" (`{ id }`) or "here is a new one"
+ * (base64, like a chat attachment). The list is the complete desired set —
+ * anything the server holds and the list omits is deleted. Absent = untouched.
+ */
+export type ItemImageEdit = { id: string } | ImageAttachment
+
+export const MAX_IMAGES_PER_ITEM = 8
+
+/** Where an item image's raw bytes are served (the `triage_ws` cookie scopes it). */
+export const itemImageUrl = (itemId: string, imageId: string): string =>
+  `/api/items/image?item=${encodeURIComponent(itemId)}&image=${encodeURIComponent(imageId)}`
+
+/** POST /api/items/images — replace the image set on any item (manual or scanned). */
+export type ItemImagesInput = { id: string; images: ItemImageEdit[] }
+export type ItemImagesResponse = { ok: true; images: ItemImage[] } | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
 // Artifacts (GET/POST/PUT/DELETE /api/artifacts, GET/POST/DELETE /api/links) —

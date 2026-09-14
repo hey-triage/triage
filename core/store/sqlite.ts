@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import type { Artifact, BriefJob, BriefStatus, InboxSnapshot, Link, LinkKind, LinkRole, Project, SessionEvent } from '../../shared/protocol.js'
+import type { Artifact, BriefJob, BriefStatus, InboxSnapshot, ItemImage, Link, LinkKind, LinkRole, Project, SessionEvent } from '../../shared/protocol.js'
 import { isArtifactAuthor, isLinkKind, isLinkRole } from '../../shared/protocol.js'
 import type { Provenance, WorkItem } from '../work/types.js'
 import type { ItemEvent, ItemEventKind, ItemStatus, StatusChange } from '../work/state.js'
@@ -1065,6 +1065,15 @@ class SqliteWorkItems implements WorkItemStore {
     else delete next.description
     // A manual item's card quotes its description as the "why"; source items keep the scanner's.
     if (base.source === 'manual') next.why = description || undefined
+    this.db.prepare('UPDATE work_items SET payload = ?, updated_at = ? WHERE id = ?').run(payloadOf(next), Date.now(), id)
+  }
+
+  async setImages(id: string, images: ItemImage[]): Promise<void> {
+    const r = this.row(id)
+    if (!r) throw new Error('no such work item')
+    const next: WorkItem = { ...(JSON.parse(r.payload) as WorkItem) }
+    if (images.length > 0) next.images = images
+    else delete next.images
     this.db.prepare('UPDATE work_items SET payload = ?, updated_at = ? WHERE id = ?').run(payloadOf(next), Date.now(), id)
   }
 }

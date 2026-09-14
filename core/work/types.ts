@@ -88,6 +88,12 @@ export interface WorkItem {
   description?: string
   /** pre-0.7 name for `description` on manual items; read as a fallback, never written */
   note?: string
+  /**
+   * screenshots the human attached — refs only; the bytes live in the
+   * workspace's `attachments/` folder (see ItemImage) so an inbox sync stays
+   * small. Briefs and dispatched sessions get them as real image blocks.
+   */
+  images?: import('../../shared/protocol.js').ItemImage[]
 }
 
 export interface ScoredItem extends WorkItem {

@@ -1,10 +1,15 @@
 import { X } from 'lucide-react'
 import type { Mention } from '../../../shared/protocol.js'
-import type { PendingImage } from '../attachments.js'
 import { MentionChip } from './MentionPicker.js'
 
+/**
+ * Anything with a preview: a `PendingImage` being uploaded, or an image a work
+ * item already holds (`itemImageUrl`). The strip only needs a key and a src.
+ */
+export type StripImage = { id: string; url: string; name?: string }
+
 type Props = {
-  images: PendingImage[]
+  images: readonly StripImage[]
   mentions?: readonly Mention[]
   error: string | null
   onRemove: (id: string) => void

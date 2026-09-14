@@ -4,14 +4,17 @@
  * why it ranked, what has happened to it, and the sessions working on it.
  * The actions live in the right column so the left reads as a page, not a form.
  */
-import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Hash, Play, Sparkles, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Hash, ImagePlus, Play, Sparkles, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BriefJobsResponse,
   BriefResponse,
   BriefView,
   ItemEvent,
   ItemEventsResponse,
+  ItemImage,
+  ItemImageEdit,
+  ItemImagesResponse,
   ItemListResponse,
   ItemStatus,
   Link,
@@ -23,7 +26,10 @@ import type {
   SessionsUsageResponse,
   WatchesResponse,
 } from '../../../shared/protocol.js'
+import { itemImageUrl } from '../../../shared/protocol.js'
 import { MAX_SERIES, OTHER, OTHER_KEY, SERIES, modelLabel, money, tokens } from '../usageFormat.js'
+import { useAttachments } from '../attachments.js'
+import { AttachmentStrip } from './AttachmentStrip.js'
 import { useSessions } from '../hooks.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
 import { briefPill, useBriefs } from '../briefStore.js'
@@ -75,6 +81,10 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
   const [brief, setBrief] = useState<BriefView | null>(null)
   const [briefOpen, setBriefOpen] = useState(false)
   const [descDraft, setDescDraft] = useState<string | null>(null)
+  /** the images the editor is holding — parallel to `descDraft`, null when not editing */
+  const [imgDraft, setImgDraft] = useState<ItemImage[] | null>(null)
+  const attach = useAttachments()
+  const filePicker = useRef<HTMLInputElement>(null)
   const [feedback, setFeedback] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -254,9 +264,26 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
     }).catch(() => {})
   }
 
+  /** Enter the description editor with the item's current text and images. */
+  function editDescription() {
+    if (!item) return
+    setDescDraft(item.description ?? '')
+    setImgDraft(item.images ?? [])
+    attach.clear()
+  }
+
+  function cancelDescription() {
+    setDescDraft(null)
+    setImgDraft(null)
+    attach.clear()
+  }
+
   async function saveDescription() {
     if (!item || descDraft === null) return
     const description = descDraft.trim()
+    const held = imgDraft ?? []
+    // Two endpoints, one save: the text, then the images when they moved.
+    const imagesChanged = attach.images.length > 0 || held.length !== (item.images ?? []).length
     setBusy('desc')
     try {
       const res = await fetch('/api/items/description', {
@@ -269,10 +296,26 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
         setNotice(b.error ?? 'could not save')
         return
       }
-      const patch = (i: ScoredItem) => (i.id === item.id ? { ...i, description: description || undefined } : i)
+      let images = item.images
+      if (imagesChanged) {
+        const edits: ItemImageEdit[] = [...held.map((i) => ({ id: i.id })), ...(attach.payload() ?? [])]
+        const r = await fetch('/api/items/images', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: item.id, images: edits }),
+        })
+        const ib = (await r.json()) as ItemImagesResponse
+        if (!ib.ok) {
+          setNotice(ib.error)
+          return
+        }
+        images = ib.images.length > 0 ? ib.images : undefined
+      }
+      const patch = (i: ScoredItem) =>
+        i.id === item.id ? { ...i, description: description || undefined, images } : i
       inboxStore.patch((items) => items.map(patch))
       setOther((o) => (o?.item ? { ...o, item: patch(o.item) } : o))
-      setDescDraft(null)
+      cancelDescription()
     } finally {
       setBusy(null)
     }
@@ -373,7 +416,8 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
           )}
         </div>
 
-        {/* Description — the human's intent, in their words. Never written by a run. */}
+        {/* Description — the human's intent, in their words (and their
+            screenshots). Never written by a run; both go to the brief. */}
         <div className="descBlock">
           <div className="secLabel mute">Description</div>
           {descDraft !== null ? (
@@ -382,14 +426,46 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
                 autoFocus
                 value={descDraft}
                 onChange={(e) => setDescDraft(e.target.value)}
-                placeholder="Your intent, in your words. The brief and any dispatched session read this."
+                placeholder="Your intent, in your words — paste a screenshot and it goes with it. The brief and any dispatched session read both."
+                onPaste={attach.onPaste}
                 onKeyDown={(e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void saveDescription()
-                  if (e.key === 'Escape') setDescDraft(null)
+                  if (e.key === 'Escape') cancelDescription()
+                }}
+              />
+              <AttachmentStrip
+                images={[
+                  ...(imgDraft ?? []).map((i) => ({ id: i.id, url: itemImageUrl(item.id, i.id), name: i.name })),
+                  ...attach.images,
+                ]}
+                error={attach.error}
+                onRemove={(imgId) => {
+                  if ((imgDraft ?? []).some((i) => i.id === imgId)) setImgDraft((prev) => (prev ?? []).filter((i) => i.id !== imgId))
+                  else attach.remove(imgId)
                 }}
               />
               <div className="row">
-                <button type="button" className="btn xs ghost" onClick={() => setDescDraft(null)}>
+                <input
+                  ref={filePicker}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    if (e.target.files) void attach.add(e.target.files)
+                    e.target.value = ''
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn xs ghost"
+                  onClick={() => filePicker.current?.click()}
+                  title="Attach screenshots — or paste them into the box"
+                >
+                  <ImagePlus size={12} aria-hidden="true" /> Image
+                </button>
+                <span className="spacer" />
+                <button type="button" className="btn xs ghost" onClick={cancelDescription}>
                   Cancel
                 </button>
                 <button type="button" className="btn xs primary" disabled={busy === 'desc'} onClick={() => void saveDescription()}>
@@ -398,16 +474,34 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
               </div>
             </>
           ) : (
-            <div
-              className={`descText${item.description ? '' : ' empty'}`}
-              role="button"
-              tabIndex={0}
-              title="Click to edit"
-              onClick={() => setDescDraft(item.description ?? '')}
-              onKeyDown={(e) => e.key === 'Enter' && setDescDraft(item.description ?? '')}
-            >
-              {item.description ?? 'Add a description — your intent, in your words. The brief and dispatched sessions read it.'}
-            </div>
+            <>
+              <div
+                className={`descText${item.description ? '' : ' empty'}`}
+                role="button"
+                tabIndex={0}
+                title="Click to edit"
+                onClick={editDescription}
+                onKeyDown={(e) => e.key === 'Enter' && editDescription()}
+              >
+                {item.description ?? 'Add a description — your intent, in your words. The brief and dispatched sessions read it.'}
+              </div>
+              {item.images && item.images.length > 0 && (
+                <div className="descShots">
+                  {item.images.map((img) => (
+                    <a
+                      key={img.id}
+                      className="shot"
+                      href={itemImageUrl(item.id, img.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={img.name ?? 'Open full size'}
+                    >
+                      <img src={itemImageUrl(item.id, img.id)} alt={img.name ?? 'Attached screenshot'} />
+                    </a>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
 

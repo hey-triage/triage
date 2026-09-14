@@ -262,6 +262,8 @@ export type BriefPromptInput = {
   existing?: string | null
   /** true when this message continues the session that wrote `existing` */
   iteration: boolean
+  /** screenshots attached to the item, carried as image blocks on this message */
+  imageCount?: number
 }
 
 /** The first user message of a brief run: the variable material, in one message. */
@@ -292,6 +294,10 @@ export function composeBriefPrompt(input: BriefPromptInput): string {
   }
   parts.push(`# Work item\n\n${itemLines.join('\n')}`)
   if (item.description) parts.push(`# Description (the user's own words)\n\n${item.description.trim()}`)
+  if (input.imageCount)
+    parts.push(
+      `# Screenshots\n\n${input.imageCount} image${input.imageCount === 1 ? ' is' : 's are'} attached to this message — the user put ${input.imageCount === 1 ? 'it' : 'them'} on the work item as context. Read ${input.imageCount === 1 ? 'it' : 'them'} before you start.`,
+    )
   if (!input.iteration && input.note) parts.push(`# The user's note for this brief\n\n${input.note.trim()}`)
   if (input.existing) parts.push(`# The current brief (rewrite it whole)\n\n${input.existing.trim()}`)
   return parts.join('\n\n')
