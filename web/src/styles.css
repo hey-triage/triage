@@ -1372,6 +1372,11 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .shell.resizing .panel, .shell.resizing #main { transition: none; }
 .tab .t.draft { font-style: italic; color: var(--mute); }
 .tab.active .t.draft { color: var(--body); }
+/* The peek slot: open, but not committed to. Borrows the draft tab's
+   provisional voice because it means the same thing — the next document you
+   open takes this slot, so nothing accumulates from browsing. */
+.tab.preview .t { font-style: italic; color: var(--mute); }
+.tab.preview.active .t { color: var(--body); }
 .prow.draft > svg { color: var(--stone); }
 .prow.draft .t { font-style: italic; }
 

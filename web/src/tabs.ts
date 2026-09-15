@@ -9,53 +9,93 @@ import type { RailSection } from './components/Rail.js'
 
 const key = (workspaceId: string) => `triage.tabs.${workspaceId || 'default'}`
 
-function read(workspaceId: string): string[] {
+/**
+ * The peek slot: the one document you opened without committing to it. The
+ * title rides along so a cold load can label the tab before its store is
+ * back — `''` means "we never learned one", and the band shows a generic.
+ */
+export type Preview = { key: string; title: string }
+
+type Band = { tabs: string[]; preview: Preview | null }
+
+const EMPTY: Band = { tabs: [], preview: null }
+const isStr = (x: unknown): x is string => typeof x === 'string'
+const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter(isStr) : [])
+
+function read(workspaceId: string): Band {
   try {
     const raw = localStorage.getItem(key(workspaceId))
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    // Before the preview slot this was a bare array of tab keys.
+    if (Array.isArray(parsed)) return { tabs: strings(parsed), preview: null }
+    if (!parsed || typeof parsed !== 'object') return EMPTY
+    const o = parsed as Record<string, unknown>
+    const p = o.preview as Record<string, unknown> | null | undefined
+    return {
+      tabs: strings(o.tabs),
+      preview: p && isStr(p.key) ? { key: p.key, title: isStr(p.title) ? p.title : '' } : null,
+    }
   } catch {
-    return []
+    return EMPTY
   }
 }
 
 export function useOpenTabs(workspaceId: string) {
-  const [tabs, setTabs] = useState<string[]>(() => read(workspaceId))
+  const [band, setBand] = useState<Band>(() => read(workspaceId))
+  const { tabs, preview } = band
 
   // A workspace switch reloads the page, but stay correct if it ever doesn't.
   useEffect(() => {
-    setTabs(read(workspaceId))
+    setBand(read(workspaceId))
   }, [workspaceId])
 
   useEffect(() => {
     try {
-      localStorage.setItem(key(workspaceId), JSON.stringify(tabs))
+      localStorage.setItem(key(workspaceId), JSON.stringify(band))
     } catch {
       // storage full or blocked — tabs are a convenience, not state we need
     }
-  }, [tabs, workspaceId])
+  }, [band, workspaceId])
 
+  /** Pin a tab. Whatever was being peeked at has now been committed to. */
   const open = useCallback((id: string) => {
-    setTabs((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    setBand((b) => {
+      const tabs = b.tabs.includes(id) ? b.tabs : [...b.tabs, id]
+      return { tabs, preview: b.preview?.key === id ? null : b.preview }
+    })
   }, [])
 
+  /** Closes a pinned tab or the preview — a key only ever lives in one of them. */
   const close = useCallback((id: string) => {
-    setTabs((prev) => prev.filter((t) => t !== id))
+    setBand((b) => ({ tabs: b.tabs.filter((t) => t !== id), preview: b.preview?.key === id ? null : b.preview }))
   }, [])
 
   /** A draft tab becoming a session tab: same slot, new key. */
   const replace = useCallback((from: string, to: string) => {
-    setTabs((prev) => {
-      const without = prev.filter((t) => t !== to)
+    setBand((b) => {
+      const without = b.tabs.filter((t) => t !== to)
       const i = without.indexOf(from)
-      if (i === -1) return without.includes(to) ? without : [...without, to]
-      const next = [...without]
-      next[i] = to
-      return next
+      const tabs = i === -1 ? (without.includes(to) ? without : [...without, to]) : without.with(i, to)
+      return { tabs, preview: b.preview?.key === to ? null : b.preview }
     })
   }, [])
 
-  return { tabs, open, close, replace }
+  /**
+   * Peek at a document. One slot: opening another replaces it, so browsing
+   * never leaves tabs behind. A `null` title means "no better name yet" and
+   * keeps the one we already had — the store may still be loading.
+   */
+  const setPreview = useCallback((key: string, title: string | null) => {
+    setBand((b) => {
+      if (b.tabs.includes(key)) return b.preview ? { ...b, preview: null } : b
+      const same = b.preview?.key === key
+      const next = title ?? (same ? (b.preview as Preview).title : '')
+      if (same && (b.preview as Preview).title === next) return b
+      return { ...b, preview: { key, title: next } }
+    })
+  }, [])
+
+  return { tabs, preview, open, close, replace, setPreview }
 }
 
 /**

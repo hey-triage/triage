@@ -12,6 +12,7 @@ import type { DispatchPreviewResponse,
   ScoredItem,
   SessionStatus,
   TerminalSummary,
+  WatchesResponse,
 } from '../../shared/protocol.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import { Composer } from './components/Composer.js'
@@ -23,7 +24,7 @@ import { NewSessionComposer, type NewSession } from './components/NewSessionComp
 import { Rail, type RailSection } from './components/Rail.js'
 import { SettingsModal } from './components/SettingsModal.js'
 import { SystemModal, type SystemTab } from './components/SystemModal.js'
-import { TabBand, type OpenTab, type PageTab } from './components/TabBand.js'
+import { TabBand, type OpenTab, type PageTab, type TabKind } from './components/TabBand.js'
 import { dispatchPrompt, dispatchTitle } from './dispatch.js'
 import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
@@ -70,6 +71,92 @@ const PAGE_TABS: Record<'watches' | 'terminals' | 'artifacts', PageTab> = {
   terminals: { key: 'page:terminals', label: 'Terminals', icon: TerminalIcon },
   artifacts: { key: 'page:artifacts', label: 'Artifacts', icon: FileText },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
+}
+
+const termKey = (id: string) => `term:${id}`
+const draftKey = (id: string) => `draft:${id}`
+const draftRoute = (id: string) => `/new/${id}`
+
+/**
+ * The tab-band key for a route, or null when the route is not a tab at all
+ * (`home` redirects, `settings` is a modal). Sessions keep the bare id they
+ * have always had; everything else is `<kind>:<id>`.
+ */
+function tabKeyOf(route: Route): string | null {
+  switch (route.page) {
+    case 'inbox':
+      return 'inbox'
+    case 'session':
+      return route.id
+    case 'draft':
+      return draftKey(route.id)
+    case 'terminal':
+      return termKey(route.id)
+    case 'item':
+      return `item:${route.id}`
+    case 'artifact':
+      return `artifact:${route.id}`
+    case 'watch':
+      return `watch:${route.id}`
+    case 'watch-form':
+      return `watch-form:${route.id ?? 'new'}`
+    case 'artifacts':
+    case 'watches':
+    case 'terminals':
+      return PAGE_TABS[route.page].key
+    case 'home':
+    case 'settings':
+      return null
+  }
+}
+
+/** The route a tab key points back at — the inverse of `tabKeyOf`. */
+function routeOfKey(key: string): string {
+  const cut = key.indexOf(':')
+  const id = cut === -1 ? '' : key.slice(cut + 1)
+  switch (cut === -1 ? '' : key.slice(0, cut)) {
+    case 'term':
+      return `/terminal/${id}`
+    case 'draft':
+      return draftRoute(id)
+    case 'item':
+      return itemHash(id)
+    case 'artifact':
+      return `/artifact/${id}`
+    case 'watch':
+      return `/watches/${encodeURIComponent(id)}`
+    case 'watch-form':
+      return id === 'new' ? '/watches/new' : `/watches/${encodeURIComponent(id)}/edit`
+    case 'page':
+      return `/${id}`
+    default:
+      // a bare session id, or the pinned inbox
+      return key === 'inbox' ? '/inbox' : key
+  }
+}
+
+/** Documents are peeked at; processes are pinned. */
+const DOC_KINDS: readonly TabKind[] = ['item', 'artifact', 'watch', 'watch-form']
+
+function kindOfKey(key: string): TabKind | null {
+  const cut = key.indexOf(':')
+  // A session is the one key with no prefix; the pinned inbox is not a kind.
+  if (cut === -1) return key === 'inbox' ? null : 'session'
+  const p = key.slice(0, cut)
+  if (p === 'term') return 'terminal'
+  if (p === 'draft') return 'draft'
+  return DOC_KINDS.includes(p as TabKind) ? (p as TabKind) : null
+}
+
+/** What a document tab is called before its store has caught up. */
+const GENERIC: Record<TabKind, string> = {
+  session: 'Session',
+  terminal: 'Terminal',
+  draft: 'Draft',
+  item: 'Work item',
+  artifact: 'Artifact',
+  watch: 'Watch',
+  'watch-form': 'Watch',
 }
 
 /**
@@ -122,7 +209,7 @@ export function App() {
   const onboarded = useOnboarded()
   const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
-  const { tabs, open: openTab, close: closeTab, replace: replaceTab } = useOpenTabs(workspaceId)
+  const { tabs, preview, open: openTab, close: closeTab, replace: replaceTab, setPreview } = useOpenTabs(workspaceId)
   const { lastRoutes, record: recordRoute } = useLastRoutes(workspaceId)
   const panelSize = usePanelWidth()
 
@@ -140,9 +227,6 @@ export function App() {
   const current = sessions.find((s) => s.id === currentId) ?? null
   const currentTerminal = terminals.find((t) => t.id === currentTerminalId) ?? null
   const currentDraft = drafts.find((d) => d.id === currentDraftId) ?? null
-  const termKey = (id: string) => `term:${id}`
-  const draftKey = (id: string) => `draft:${id}`
-  const draftRoute = (id: string) => `/new/${id}`
   // Drafts are per workspace; bind before anything reads them.
   useEffect(() => draftStore.bind(workspaceId), [workspaceId])
   // The old home route: the inbox is the product's home now.
@@ -162,6 +246,42 @@ export function App() {
     }
   }, [route, navigate])
 
+  // Watches have no client store; the band needs their titles, so fetch the
+  // (small) list once the first watch is in play and keep it.
+  const [watchTitles, setWatchTitles] = useState<Map<string, string>>(new Map())
+  const wantWatchTitles = sectionOf(route) === 'watches' || (preview?.key.startsWith('watch') ?? false)
+  useEffect(() => {
+    if (conn !== 'connected' || !wantWatchTitles) return
+    void fetch('/api/watches')
+      .then((r) => r.json() as Promise<WatchesResponse>)
+      .then((b) => {
+        if (b.ok) setWatchTitles(new Map(b.watches.map((w) => [w.id, w.title])))
+      })
+      .catch(() => {})
+  }, [conn, wantWatchTitles])
+
+  /** The live name for a document tab, or null while its store is still cold. */
+  const liveTitle = useCallback(
+    (key: string): string | null => {
+      const id = key.slice(key.indexOf(':') + 1)
+      if (key.startsWith('item:')) return inbox.items.find((i) => i.id === id)?.title ?? null
+      if (key.startsWith('artifact:')) return artifacts.artifacts.find((a) => a.id === id)?.title ?? null
+      if (key.startsWith('watch:')) return watchTitles.get(id) ?? null
+      if (key.startsWith('watch-form:')) return id === 'new' ? 'New watch' : watchTitles.get(id) ?? null
+      return null
+    },
+    [inbox.items, artifacts.artifacts, watchTitles],
+  )
+
+  // The peek slot: opening a document parks it in the band so it survives you
+  // looking at a session, and upgrades its title when the store catches up.
+  useEffect(() => {
+    const key = tabKeyOf(route)
+    const kind = key ? kindOfKey(key) : null
+    if (!key || !kind || !DOC_KINDS.includes(kind)) return
+    setPreview(key, liveTitle(key))
+  }, [route, setPreview, liveTitle])
+
   // Rail memory: remember where you were in each section, so leaving and
   // coming back lands on what you were reading rather than the section root.
   useEffect(() => {
@@ -177,8 +297,9 @@ export function App() {
   }, [conn])
   // The Artifacts panel lists from the index; load it when that world is in front.
   useEffect(() => {
-    if (conn === 'connected' && (route.page === 'artifacts' || route.page === 'artifact')) void artifactStore.refresh()
-  }, [conn, route.page])
+    const wanted = route.page === 'artifacts' || route.page === 'artifact' || (preview?.key.startsWith('artifact:') ?? false)
+    if (conn === 'connected' && wanted) void artifactStore.refresh()
+  }, [conn, route.page, preview?.key])
 
   // A session created from this tab becomes the selected one — and when it
   // came from a draft tab, it takes that tab's slot.
@@ -355,30 +476,14 @@ export function App() {
 
   // Closing the tab you are on lands you on its neighbour, else the inbox.
   // A terminal tab closing does not kill the shell — that is the panel's menu.
-  const activeTabKey =
-    route.page === 'inbox' || route.page === 'item'
-      ? 'inbox'
-      : route.page === 'session'
-        ? route.id
-        : route.page === 'terminal'
-          ? termKey(route.id)
-          : route.page === 'draft'
-            ? draftKey(route.id)
-            : route.page === 'home' || route.page === 'settings'
-              ? 'home'
-              : route.page === 'artifact'
-                ? PAGE_TABS.artifacts.key
-                : route.page === 'watch-form' || route.page === 'watch'
-                  ? PAGE_TABS.watches.key
-                  : PAGE_TABS[route.page].key
-  const tabRoute = (key: string) =>
-    key.startsWith('term:') ? `/terminal/${key.slice(5)}` : key.startsWith('draft:') ? draftRoute(key.slice(6)) : key
+  const activeTabKey = tabKeyOf(route) ?? 'home'
   const closeOpenTab = useCallback(
     (key: string) => {
       if (key === activeTabKey) {
+        // A pinned tab hands over to its neighbour; the preview has none.
         const i = tabs.indexOf(key)
-        const next = tabs[i + 1] ?? tabs[i - 1]
-        navigate(next ? tabRoute(next) : '/inbox')
+        const next = i === -1 ? undefined : tabs[i + 1] ?? tabs[i - 1]
+        navigate(next ? routeOfKey(next) : '/inbox')
       }
       // Closing a draft tab discards the draft — there is nowhere else it lives.
       if (key.startsWith('draft:')) draftStore.remove(key.slice(6))
@@ -523,14 +628,24 @@ export function App() {
     [tabs, sessions, terminals, drafts],
   )
 
+  // Only the rail *indexes* get a transient page tab now: an artifact, watch
+  // or item in front is a document, and gets a real tab of its own.
   const pageTab =
-    route.page === 'watches' || route.page === 'terminals' || route.page === 'artifacts'
-      ? PAGE_TABS[route.page]
-      : route.page === 'artifact'
-        ? PAGE_TABS.artifacts
-        : route.page === 'watch-form' || route.page === 'watch'
-          ? PAGE_TABS.watches
-          : null
+    route.page === 'watches' || route.page === 'terminals' || route.page === 'artifacts' ? PAGE_TABS[route.page] : null
+
+  const previewTab = useMemo<OpenTab | null>(() => {
+    if (!preview) return null
+    const kind = kindOfKey(preview.key)
+    if (!kind) return null
+    return {
+      key: preview.key,
+      kind,
+      title: (liveTitle(preview.key) ?? preview.title) || GENERIC[kind],
+      color: 'var(--stone)',
+      running: false,
+      preview: true,
+    }
+  }, [preview, liveTitle])
 
   // Brief runs are sessions too, but they belong to their item: the Sessions
   // panel and the palette list only chats.
@@ -632,9 +747,10 @@ export function App() {
           <TabBand
             activeKey={activeTabKey}
             tabs={openTabs}
+            preview={previewTab}
             pageTab={pageTab}
             onInbox={() => navigate('/inbox')}
-            onSelect={(key) => navigate(tabRoute(key))}
+            onSelect={(key) => navigate(routeOfKey(key))}
             onClose={closeOpenTab}
             onNew={newSession}
             onNewTerminal={newTerminal}
