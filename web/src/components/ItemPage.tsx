@@ -836,7 +836,7 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
         <div className="secLabel mute">Linked</div>
         {item.linked && item.linked.length > 0 ? (
           item.linked.map((l) => (
-            <div key={l.url} className="linkedRow">
+            <div key={l.id} className="linkedRow">
               <Hash size={13} aria-hidden="true" />
               <span>
                 <span className="src">
@@ -844,7 +844,7 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
                 </span>
                 <br />
                 <a href={l.url} target="_blank" rel="noreferrer">
-                  {l.url.replace(/^https?:\/\//, '')}
+                  {l.title || l.url.replace(/^https?:\/\//, '')}
                 </a>
               </span>
             </div>

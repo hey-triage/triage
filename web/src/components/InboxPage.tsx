@@ -794,7 +794,7 @@ function WorkRow({
               </MenuItem>
             )}
             {item.linked?.map((l) => (
-              <MenuItem key={l.url} onSelect={() => window.open(l.url, '_blank', 'noopener')}>
+              <MenuItem key={l.id} onSelect={() => window.open(l.url, '_blank', 'noopener')}>
                 <ExternalLink size={13} aria-hidden="true" /> Also in {l.source} · {l.repo}
               </MenuItem>
             ))}

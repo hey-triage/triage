@@ -116,6 +116,8 @@ import type {
   ResolvedMention,
   InboxResponse,
   InboxSnapshot,
+  ItemDetail,
+  ItemDetailResponse,
   ItemEventsResponse,
   ItemListResponse,
   ItemStateResponse,
@@ -133,6 +135,8 @@ import type {
   Project,
   ProjectsResponse,
   ReposResponse,
+  SessionContext,
+  SessionContextResponse,
   UpsertResponse,
   WatchDraftResponse,
   WatchPreviewStartResponse,
@@ -184,6 +188,7 @@ import { TerminalManager } from './terminals.js'
 import { applyImageEdits, itemImageAttachments, readItemImage } from './itemImages.js'
 import { FileIndexes, resolveFileMention } from './files.js'
 import { ArtifactIndex, slug } from './artifacts.js'
+import { TRIAGE_MCP_INSTRUCTIONS, triageSessionAppend } from '../shared/triageContext.js'
 import {
   BRIEF_SYSTEM_APPEND,
   briefRelPath,
@@ -271,7 +276,13 @@ const sessionScoped = (u: PermissionUpdate): PermissionUpdate => ({ ...u, destin
 /** Built-in tools whose only effect is reading. */
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch'])
 /** Our own MCP tools that only read (the inbox, the artifacts index) — never prompt for these. */
-const TRIAGE_READ_TOOLS = new Set(['mcp__triage__list_work_items', 'mcp__triage__list_artifacts', 'mcp__triage__read_artifact'])
+const TRIAGE_READ_TOOLS = new Set([
+  'mcp__triage__list_work_items',
+  'mcp__triage__get_work_item',
+  'mcp__triage__get_session_context',
+  'mcp__triage__list_artifacts',
+  'mcp__triage__read_artifact',
+])
 
 // Verb tokens that mark a connector call's intent. Written as word sets and
 // matched against the tokens of a tool's leaf name, so both `slack_read_channel`
@@ -2623,12 +2634,128 @@ async function setItemImagesOp(rt: WorkspaceRuntime, id: string, edits: ItemImag
 // identically no matter who calls them. Validation stays in workItemFrom/
 // manualItemFrom — the single source of truth, never duplicated per transport.
 // ---------------------------------------------------------------------------
-async function listItemsOp(rt: WorkspaceRuntime, filter: { source?: string; kind?: string } = {}): Promise<InboxSnapshot['items']> {
-  const snap = await getInbox(rt, false)
-  let items = snap.items
+async function listItemsOp(
+  rt: WorkspaceRuntime,
+  filter: { source?: string; kind?: string; status?: string } = {},
+): Promise<InboxSnapshot['items']> {
+  // 'open' is the live inbox (scanned + ranked + cached); any other status is
+  // read straight from the durable store, same as the status tabs.
+  const status = filter.status && filter.status !== 'open' ? filter.status : null
+  if (status && !ITEM_STATUSES.has(status as ItemStatus)) throw new Error(`unknown status: ${status}`)
+  let items = status ? await listItemsByStatus(rt, status as ItemStatus) : (await getInbox(rt, false)).items
   if (filter.source) items = items.filter((i) => i.source === filter.source)
   if (filter.kind) items = items.filter((i) => i.kind === filter.kind)
   return items
+}
+
+/**
+ * One work item, whole. The counterpart to listItemsOp: that one answers "what
+ * should I do next" and is therefore open-only and repo-scoped, this one
+ * answers "tell me about this one" and filters nothing. Every neighbour it
+ * returns carries an id and a title, so a reader handed an id — by a `linked`
+ * sibling, by an old link, by the user — can always follow it one more hop.
+ */
+async function itemDetailOp(rt: WorkspaceRuntime, rawId: unknown): Promise<ItemDetail> {
+  const id = typeof rawId === 'string' ? rawId.trim() : ''
+  if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
+  const item = await rt.store.items.get(id)
+  if (!item) throw new Error('no such work item')
+
+  const [all, links] = await Promise.all([rt.store.items.listAll(), rt.store.links.forTarget('item', id)])
+
+  // Ref-siblings, transitively — the same component the inbox folds into one
+  // card (core/work/link.ts), so detail and card never disagree about who is
+  // related to whom. Unlike the card, this reaches items of any status.
+  const byId = new Map(all.map((i) => [i.id, i]))
+  const refsOf = (i: WorkItem) => [i.id, ...(i.refs ?? [])]
+  const owners = new Map<string, string[]>()
+  for (const i of all) {
+    for (const ref of refsOf(i)) {
+      const list = owners.get(ref)
+      if (list) list.push(i.id)
+      else owners.set(ref, [i.id])
+    }
+  }
+  const seen = new Set([id])
+  const queue = [id]
+  while (queue.length) {
+    const cur = byId.get(queue.shift()!)
+    if (!cur) continue
+    for (const ref of refsOf(cur)) {
+      for (const other of owners.get(ref) ?? []) {
+        if (seen.has(other)) continue
+        seen.add(other)
+        queue.push(other)
+      }
+    }
+  }
+  const linked = [...seen]
+    .filter((sid) => sid !== id)
+    .map((sid) => byId.get(sid)!)
+    .map((i) => ({ id: i.id, title: i.title, source: i.source as string, url: i.url, repo: i.repo, status: i.status ?? 'open' }))
+
+  const [artifacts, sessions] = await Promise.all([linkedArtifacts(rt, links), linkedSessions(rt, links)])
+
+  // Ranked only when it happens to be in the cached open inbox: ranking means
+  // a scan, and reading one item must never pay for one.
+  const scored = rt.inboxCache?.items.find((i) => i.id === id)
+  return {
+    item,
+    rank: scored ? { score: scored.score, group: scored.group, reason: scored.reason } : null,
+    linked,
+    artifacts,
+    sessions,
+  }
+}
+
+/** The artifacts among a set of incoming links, resolved to id/title/author/path. */
+async function linkedArtifacts(rt: WorkspaceRuntime, links: Link[]): Promise<ItemDetail['artifacts']> {
+  const rows = await Promise.all(
+    links
+      .filter((l) => l.fromKind === 'artifact')
+      .map(async (l) => {
+        const a = await rt.store.artifacts.get(l.fromId)
+        return a ? { id: a.id, title: a.title, role: l.role, author: a.author, path: a.path } : null
+      }),
+  )
+  return rows.filter((a): a is NonNullable<typeof a> => a !== null)
+}
+
+/** The sessions among a set of incoming links, resolved to id/title/kind. */
+async function linkedSessions(rt: WorkspaceRuntime, links: Link[]): Promise<ItemDetail['sessions']> {
+  const rows = await Promise.all(
+    links
+      .filter((l) => l.fromKind === 'session')
+      .map(async (l) => {
+        const row = rt.rows.get(l.fromId) ?? (await rt.store.sessions.get(l.fromId))
+        return row ? { id: row.id, title: row.title, role: l.role, kind: row.kind, updatedAt: row.updatedAt } : null
+      }),
+  )
+  return rows.filter((s): s is NonNullable<typeof s> => s !== null)
+}
+
+/**
+ * What a session is allowed to know about itself. A session is spawned before
+ * `create_session` links it to a work item, so its system prompt cannot name
+ * the item — it can only point here (shared/triageContext.ts).
+ */
+async function sessionContextOp(rt: WorkspaceRuntime, rawId: unknown): Promise<SessionContext> {
+  const id = typeof rawId === 'string' ? rawId.trim() : ''
+  if (!id) throw new Error('need a session id')
+  const row = rt.rows.get(id) ?? (await rt.store.sessions.get(id))
+  if (!row) throw new Error('no such session')
+  const [out, incoming] = await Promise.all([rt.store.links.forSource('session', id), rt.store.links.forTarget('session', id)])
+  const itemLink = out.find((l) => l.toKind === 'item')
+  const [item, artifacts] = await Promise.all([
+    itemLink ? itemDetailOp(rt, itemLink.toId).catch(() => null) : Promise.resolve(null),
+    linkedArtifacts(rt, incoming),
+  ])
+  return {
+    workspace: { id: rt.meta.id, name: rt.meta.name, artifactsRoot: rt.artifacts.root },
+    session: { id: row.id, title: row.title, kind: row.kind, cwd: row.cwd },
+    item,
+    artifacts,
+  }
 }
 
 async function upsertItemOp(rt: WorkspaceRuntime, raw: unknown): Promise<UpsertOutcome> {
@@ -2902,12 +3029,27 @@ async function briefViewFor(rt: WorkspaceRuntime, itemId: string): Promise<Brief
 
 const broadcastBrief = (rt: WorkspaceRuntime, job: BriefJob) => broadcast(rt, { type: 'brief_status', job })
 
-/** Spawn-time extras by session kind; brief sessions get the headless contract and their write tool. */
+/**
+ * Spawn-time extras by session kind. Every session gets the same thing first —
+ * who it is inside triage (shared/triageContext.ts): the workspace, its own
+ * triage session id, the artifacts folder. That is the layer that is knowable
+ * at spawn and true for the session's whole life; what *exists* right now is a
+ * tool call, never a prompt. Brief sessions get the headless contract and their
+ * write tool on top.
+ */
 function extrasFor(rt: WorkspaceRuntime, row: StoredSession): SessionExtras {
-  if (row.kind !== 'brief') return {}
+  const identity = triageSessionAppend(row.kind, {
+    sessionId: row.id,
+    workspaceId: rt.meta.id,
+    workspaceName: rt.meta.name,
+    artifactsRoot: rt.artifacts.root,
+  })
+  if (row.kind !== 'brief') return { systemAppend: identity }
   let e = rt.briefExtras.get(row.id)
   if (!e) {
-    e = { systemAppend: BRIEF_SYSTEM_APPEND, mcp: { brief: makeBriefMcp(rt, row.id) } }
+    // Identity first: the headless contract's "change nothing" must be the last
+    // word a brief run reads, not something the identity block then softens.
+    e = { systemAppend: `${identity}\n${BRIEF_SYSTEM_APPEND}`, mcp: { brief: makeBriefMcp(rt, row.id) } }
     rt.briefExtras.set(row.id, e)
   }
   return e
@@ -3189,20 +3331,50 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
   return createSdkMcpServer({
     name: 'triage',
     version: VERSION,
+    // What triage is, in the one place the SDK will show a model before it
+    // picks a tool. Static by construction (shared/triageContext.ts) so it
+    // caches, and shared verbatim with the stdio shim — one contract, two
+    // transports, one explanation of it.
+    instructions: TRIAGE_MCP_INSTRUCTIONS,
     tools: [
       tool(
         'list_work_items',
-        'Read the ranked triage queue: every open work item with its score, group, and reason. Optional filters narrow by source or kind.',
+        'Read the ranked triage queue: work items with their score, group, and reason. Open items by default — pass status to read the done, snoozed or archived lists instead. Optional filters narrow by source or kind.',
         {
+          status: z.enum(['open', 'snoozed', 'done', 'archived']).optional().describe('which list to read (default "open")'),
           source: z.enum(['github', 'slack', 'linear', 'manual']).optional().describe('only items from this source'),
           kind: z.string().optional().describe('only items of this kind, e.g. "watch-hit"'),
         },
         async (args) => {
           try {
-            const items = await listItemsOp(rt, { source: args.source, kind: args.kind })
+            const items = await listItemsOp(rt, { source: args.source, kind: args.kind, status: args.status })
             return okResult(JSON.stringify(items, null, 2))
           } catch (err) {
             return errResult(err instanceof Error ? err.message : String(err))
+          }
+        },
+      ),
+      tool(
+        'get_work_item',
+        'Everything about one work item by id, at any status: the item, its rank if it is in the open inbox, the items sharing a ref with it, the artifacts linked to it (its brief and any context notes) and the sessions that worked it. Use this to follow an id from list_work_items, from a linked sibling, or from get_session_context.',
+        { id: z.string().describe('a work-item id, e.g. "github:owner/repo#12" or "manual:<uuid>"') },
+        async (args) => {
+          try {
+            return okResult(JSON.stringify(await itemDetailOp(rt, args.id), null, 2))
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+      tool(
+        'get_session_context',
+        'What this session is: its workspace, the work item it was opened for (with that item\'s brief and notes), and the artifacts attached to it. Your own triage session id is in your system prompt. Call this before writing a note "here" — the ids it returns are what write_artifact\'s `links` needs.',
+        { sessionId: z.string().describe('a triage session id — yours is named in your system prompt') },
+        async (args) => {
+          try {
+            return okResult(JSON.stringify(await sessionContextOp(rt, args.sessionId), null, 2))
+          } catch (err) {
+            return errResult(errText(err))
           }
         },
       ),
@@ -3882,6 +4054,29 @@ const server = http.createServer(async (req, res) => {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     json(body.ok ? 200 : 502, body)
+    return
+  }
+  // One item, whole and unfiltered — what the MCP tool get_work_item reads,
+  // and what the stdio shim reaches for over HTTP.
+  if (url.pathname === '/api/items/detail' && req.method === 'GET') {
+    let body: ItemDetailResponse
+    try {
+      body = { ok: true, detail: await itemDetailOp(rt, url.searchParams.get('id') ?? '') }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  // What a session may know about itself: its workspace, its work item, its notes.
+  if (url.pathname === '/api/sessions/context' && req.method === 'GET') {
+    let body: SessionContextResponse
+    try {
+      body = { ok: true, context: await sessionContextOp(rt, url.searchParams.get('id') ?? '') }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
     return
   }
   // The append-only transition log for one item (its timeline).

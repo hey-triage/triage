@@ -290,6 +290,44 @@ export type ItemListResponse =
   | { ok: true; items: import('../core/work/types.js').ScoredItem[] }
   | { ok: false; error: string }
 
+/**
+ * Everything about one work item, at any status (GET /api/items/detail?id=…).
+ *
+ * The list endpoints answer "what should I do next" and only ever show open,
+ * repo-scoped items; this answers "tell me about this one" and never filters.
+ * Its shape is what a model needs to keep walking — every neighbour carries an
+ * id and a title, so each one is a next call rather than a dead end.
+ */
+export type ItemDetail = {
+  item: import('../core/work/types.js').WorkItem
+  /** ranking, when the item is in the open inbox right now; null otherwise */
+  rank: { score: number; group: import('../core/work/types.js').Group; reason: string } | null
+  /** items sharing a canonical ref, at any status */
+  linked: { id: string; title: string; source: string; url: string; repo: string; status: string }[]
+  /** artifacts linked to this item — its brief and any context notes */
+  artifacts: { id: string; title: string; role: LinkRole; author: ArtifactAuthor; path: string }[]
+  /** sessions that were dispatched for it or briefed it */
+  sessions: { id: string; title: string; role: LinkRole; kind: SessionKind; updatedAt: number }[]
+}
+
+export type ItemDetailResponse = { ok: true; detail: ItemDetail } | { ok: false; error: string }
+
+/**
+ * What a triage session can learn about itself (GET /api/sessions/context?id=…).
+ * A session is spawned before it is linked to a work item, so this is the only
+ * honest way for one to know what it was opened for — a lookup, not a prompt.
+ */
+export type SessionContext = {
+  workspace: { id: string; name: string; artifactsRoot: string }
+  session: { id: string; title: string; kind: SessionKind; cwd: string }
+  /** the work item this session was dispatched for or briefs, with its detail */
+  item: ItemDetail | null
+  /** artifacts attached directly to this session */
+  artifacts: { id: string; title: string; role: LinkRole; author: ArtifactAuthor; path: string }[]
+}
+
+export type SessionContextResponse = { ok: true; context: SessionContext } | { ok: false; error: string }
+
 // The append-only transition log for one item (GET /api/items/events?id=…).
 export type { ItemEvent, ItemEventKind } from '../core/work/state.js'
 

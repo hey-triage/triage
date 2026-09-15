@@ -18,6 +18,7 @@
  *   ambiguous workspace.
  */
 import readline from 'node:readline'
+import { TRIAGE_MCP_INSTRUCTIONS } from '../shared/triageContext.js'
 
 const BASE_URL = (process.env.TRIAGE_URL || 'http://localhost:5178').replace(/\/$/, '')
 const WORKSPACE = process.env.TRIAGE_WORKSPACE || ''
@@ -29,13 +30,38 @@ const TOOLS = [
   {
     name: 'list_work_items',
     description:
-      'Read the ranked triage queue: every open work item with its deterministic score, group, and reason. Optional filter narrows by source or kind.',
+      'Read the ranked triage queue: work items with their deterministic score, group, and reason. Open items by default — pass status to read the done, snoozed or archived lists instead. Optional filters narrow by source or kind.',
     inputSchema: {
       type: 'object',
       properties: {
+        status: {
+          type: 'string',
+          enum: ['open', 'snoozed', 'done', 'archived'],
+          description: 'which list to read (default "open")',
+        },
         source: { type: 'string', enum: ['github', 'slack', 'linear'], description: 'only items from this source' },
         kind: { type: 'string', description: 'only items of this kind, e.g. "watch-hit"' },
       },
+    },
+  },
+  {
+    name: 'get_work_item',
+    description:
+      'Everything about one work item by id, at any status: the item, its rank if it is in the open inbox, the items sharing a ref with it, the artifacts linked to it (its brief and any context notes) and the sessions that worked it. Use this to follow an id from list_work_items or from a linked sibling.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'e.g. "github:owner/repo#12" or "manual:<uuid>"' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get_session_context',
+    description:
+      "What a triage session is: its workspace, the work item it was opened for (with that item's brief and notes), and the artifacts attached to it. The ids it returns are what write_artifact's `links` needs.",
+    inputSchema: {
+      type: 'object',
+      properties: { sessionId: { type: 'string', description: 'a triage session id' } },
+      required: ['sessionId'],
     },
   },
   {
@@ -189,12 +215,43 @@ async function api(path: string, body?: unknown, method?: string): Promise<unkno
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
   if (name === 'list_work_items') {
-    const body = (await api('/api/inbox')) as { ok: boolean; items?: { source: string; kind: string }[]; error?: string }
-    if (!body.ok) return { text: `inbox sync failed: ${body.error}`, isError: true }
+    // 'open' is the live inbox (a scan); every other status is a plain read of
+    // the durable store — the same split the server makes internally. The
+    // status is checked here rather than left to /api/items, which falls back
+    // to 'open' for anything it does not recognise: a caller that asked for
+    // 'archived' must not be handed the open queue and told nothing.
+    const status = typeof args.status === 'string' ? args.status : 'open'
+    if (!['open', 'snoozed', 'done', 'archived'].includes(status))
+      return { text: `rejected: unknown status "${status}"`, isError: true }
+    const path = status === 'open' ? '/api/inbox' : `/api/items?status=${encodeURIComponent(status)}`
+    const body = (await api(path)) as { ok: boolean; items?: { source: string; kind: string }[]; error?: string }
+    if (!body.ok) return { text: `inbox read failed: ${body.error}`, isError: true }
     let items = body.items ?? []
     if (typeof args.source === 'string') items = items.filter((i) => i.source === args.source)
     if (typeof args.kind === 'string') items = items.filter((i) => i.kind === args.kind)
     return { text: JSON.stringify(items, null, 2), isError: false }
+  }
+  if (name === 'get_work_item') {
+    if (typeof args.id !== 'string' || !args.id) return { text: 'rejected: need a work-item id', isError: true }
+    const body = (await api(`/api/items/detail?id=${encodeURIComponent(args.id)}`)) as {
+      ok: boolean
+      detail?: unknown
+      error?: string
+    }
+    return body.ok
+      ? { text: JSON.stringify(body.detail, null, 2), isError: false }
+      : { text: `failed: ${body.error}`, isError: true }
+  }
+  if (name === 'get_session_context') {
+    if (typeof args.sessionId !== 'string' || !args.sessionId) return { text: 'rejected: need a session id', isError: true }
+    const body = (await api(`/api/sessions/context?id=${encodeURIComponent(args.sessionId)}`)) as {
+      ok: boolean
+      context?: unknown
+      error?: string
+    }
+    return body.ok
+      ? { text: JSON.stringify(body.context, null, 2), isError: false }
+      : { text: `failed: ${body.error}`, isError: true }
   }
   if (name === 'upsert_work_item') {
     const body = (await api('/api/items/upsert', args)) as { ok: boolean; outcome?: string; error?: string }
@@ -303,6 +360,10 @@ rl.on('line', (line) => {
             protocolVersion: PROTOCOL_VERSION,
             capabilities: { tools: {} },
             serverInfo: { name: 'triage', version: '0.2.0' },
+            // The same self-description the in-process server carries — an
+            // external Claude Code session should learn what triage is from
+            // the same string a web chat does (shared/triageContext.ts).
+            instructions: TRIAGE_MCP_INSTRUCTIONS,
           })
           break
         case 'ping':

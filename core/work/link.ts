@@ -101,7 +101,7 @@ export function linkByRefs(items: ScoredItem[]): ScoredItem[] {
     out.push({
       ...primary,
       score: Math.round((primary.score + 10) * 10) / 10,
-      linked: rest.map((i) => ({ source: i.source, url: i.url, repo: i.repo })),
+      linked: rest.map((i) => ({ id: i.id, title: i.title, source: i.source, url: i.url, repo: i.repo })),
     })
   }
   return out.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))

@@ -101,6 +101,10 @@ export interface ScoredItem extends WorkItem {
   group: Group
   /** one human-readable line: why this ranked where it did */
   reason: string
-  /** items sharing a canonical ref, folded into this card (linked, not merged) */
-  linked?: { source: WorkSource; url: string; repo: string }[]
+  /**
+   * items sharing a canonical ref, folded into this card (linked, not merged).
+   * Carries id and title, not just the URL, so a reader — a person or a model
+   * with get_work_item — can actually follow one.
+   */
+  linked?: { id: string; title: string; source: WorkSource; url: string; repo: string }[]
 }
