@@ -76,13 +76,14 @@ triage logs        # tail the server log
 
 > Early software. Expect rough edges and breaking changes between minor versions.
 
-## What's new in 0.7
+## What's new in 0.8
 
-- Watches name the **integrations** they may use (Web, Slack, Linear, GitHub) instead of one Slack channel, with an optional project and a pinned model.
-- **Digest** output: one rolling item per watch with a markdown report that is rewritten each run.
-- **Two-step create** with a streamed dry run: watch the transcript, see what would be filed, then create.
-- Each watch has a page: health, cost in dollars, a spend chart, and every run's transcript in place.
-- Watches list is a table with the last seven outcomes per row.
+- Type **`/`** in the composer for the commands and skills this folder actually has — Claude Code's own, yours, the project's, and every plugin's.
+- The `/` list narrows as you type, and a name that **resolves lights up** in the box, so a typo doesn't slip through to the model as prose.
+- A **changes drawer** per session: git snapshots around every turn, so you can see what each one touched.
+- Diff **hunks inline** in the transcript, at the tool call that made them.
+- Sessions **know what triage is** — shared context and their own identity ride in the system prompt.
+- `get_work_item` and `get_session_context` let a chat look up the item it was dispatched for.
 
 ## What feeds it
 
