@@ -148,6 +148,12 @@ function kindOfKey(key: string): TabKind | null {
   return DOC_KINDS.includes(p as TabKind) ? (p as TabKind) : null
 }
 
+/** A document is peeked at by default; a process is pinned from the start. */
+function isDocKey(key: string): boolean {
+  const kind = kindOfKey(key)
+  return !!kind && DOC_KINDS.includes(kind)
+}
+
 /** What a document tab is called before its store has caught up. */
 const GENERIC: Record<TabKind, string> = {
   session: 'Session',
@@ -209,7 +215,14 @@ export function App() {
   const onboarded = useOnboarded()
   const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
-  const { tabs, preview, open: openTab, close: closeTab, replace: replaceTab, setPreview } = useOpenTabs(workspaceId)
+  const { tabs, preview, titles, open: openTab, close: closeTab, replace: replaceTab, setPreview, remember } =
+    useOpenTabs(workspaceId)
+
+  /** Every document the band is holding — pinned or peeked. */
+  const docKeys = useMemo(
+    () => [...tabs, ...(preview ? [preview] : [])].filter((k) => isDocKey(k)),
+    [tabs, preview],
+  )
   const { lastRoutes, record: recordRoute } = useLastRoutes(workspaceId)
   const panelSize = usePanelWidth()
 
@@ -249,7 +262,7 @@ export function App() {
   // Watches have no client store; the band needs their titles, so fetch the
   // (small) list once the first watch is in play and keep it.
   const [watchTitles, setWatchTitles] = useState<Map<string, string>>(new Map())
-  const wantWatchTitles = sectionOf(route) === 'watches' || (preview?.key.startsWith('watch') ?? false)
+  const wantWatchTitles = sectionOf(route) === 'watches' || docKeys.some((k) => k.startsWith('watch'))
   useEffect(() => {
     if (conn !== 'connected' || !wantWatchTitles) return
     void fetch('/api/watches')
@@ -273,14 +286,48 @@ export function App() {
     [inbox.items, artifacts.artifacts, watchTitles],
   )
 
+  /** A document tab: its best known name, no project dot, nothing running. */
+  const docTab = useCallback(
+    (key: string): OpenTab | null => {
+      const kind = kindOfKey(key)
+      if (!kind) return null
+      return { key, kind, title: (liveTitle(key) ?? titles[key]) || GENERIC[kind], color: 'var(--stone)', running: false }
+    },
+    [liveTitle, titles],
+  )
+
+  /** Commit a peeked document to a real tab — it stops being replaceable. */
+  const pin = useCallback(
+    (key: string, title?: string) => {
+      if (title) remember({ [key]: title })
+      openTab(key)
+    },
+    [openTab, remember],
+  )
+
+  /** Editing what you were only peeking at makes it yours: keep the tab. */
+  const pinCurrent = useCallback(() => {
+    const key = tabKeyOf(route)
+    if (key && isDocKey(key)) openTab(key)
+  }, [route, openTab])
+
   // The peek slot: opening a document parks it in the band so it survives you
-  // looking at a session, and upgrades its title when the store catches up.
+  // looking at a session.
   useEffect(() => {
     const key = tabKeyOf(route)
-    const kind = key ? kindOfKey(key) : null
-    if (!key || !kind || !DOC_KINDS.includes(kind)) return
-    setPreview(key, liveTitle(key))
-  }, [route, setPreview, liveTitle])
+    if (key && isDocKey(key)) setPreview(key)
+  }, [route, setPreview])
+
+  // Names arrive after the tab does — stores load, things get renamed. Teach
+  // the band every name it can currently resolve.
+  useEffect(() => {
+    const patch: Record<string, string> = {}
+    for (const k of docKeys) {
+      const t = liveTitle(k)
+      if (t) patch[k] = t
+    }
+    if (Object.keys(patch).length) remember(patch)
+  }, [docKeys, liveTitle, remember])
 
   // Rail memory: remember where you were in each section, so leaving and
   // coming back lands on what you were reading rather than the section root.
@@ -297,9 +344,9 @@ export function App() {
   }, [conn])
   // The Artifacts panel lists from the index; load it when that world is in front.
   useEffect(() => {
-    const wanted = route.page === 'artifacts' || route.page === 'artifact' || (preview?.key.startsWith('artifact:') ?? false)
+    const wanted = route.page === 'artifacts' || route.page === 'artifact' || docKeys.some((k) => k.startsWith('artifact:'))
     if (conn === 'connected' && wanted) void artifactStore.refresh()
-  }, [conn, route.page, preview?.key])
+  }, [conn, route.page, docKeys])
 
   // A session created from this tab becomes the selected one — and when it
   // came from a draft tab, it takes that tab's slot.
@@ -620,12 +667,16 @@ export function App() {
           const t: TerminalSummary | undefined = terminals.find((x) => x.id === key.slice(5))
           return t ? [{ key, kind: 'terminal', title: t.title, color: projectColor(t.cwd), running: t.status === 'running' }] : []
         }
+        if (isDocKey(key)) {
+          const t = docTab(key)
+          return t ? [t] : []
+        }
         const s = sessions.find((x) => x.id === key)
         return s
           ? [{ key, kind: 'session', title: s.title, color: projectColor(s.cwd), running: s.status === 'running' || s.status === 'starting' }]
           : []
       }),
-    [tabs, sessions, terminals, drafts],
+    [tabs, sessions, terminals, drafts, docTab],
   )
 
   // Only the rail *indexes* get a transient page tab now: an artifact, watch
@@ -634,18 +685,9 @@ export function App() {
     route.page === 'watches' || route.page === 'terminals' || route.page === 'artifacts' ? PAGE_TABS[route.page] : null
 
   const previewTab = useMemo<OpenTab | null>(() => {
-    if (!preview) return null
-    const kind = kindOfKey(preview.key)
-    if (!kind) return null
-    return {
-      key: preview.key,
-      kind,
-      title: (liveTitle(preview.key) ?? preview.title) || GENERIC[kind],
-      color: 'var(--stone)',
-      running: false,
-      preview: true,
-    }
-  }, [preview, liveTitle])
+    const t = preview ? docTab(preview) : null
+    return t ? { ...t, preview: true } : null
+  }, [preview, docTab])
 
   // Brief runs are sessions too, but they belong to their item: the Sessions
   // panel and the palette list only chats.
@@ -671,6 +713,7 @@ export function App() {
         loaded={artifacts.loaded}
         currentId={route.page === 'artifact' ? route.id : null}
         onOpen={(id) => navigate(`/artifact/${id}`)}
+        onPin={(id, title) => pin(`artifact:${id}`, title)}
         onNew={() => navigate('/artifact/new')}
         onRefresh={() => void fetch('/api/artifacts/reindex', { method: 'POST' }).then(() => artifactStore.refresh())}
         onSearch={() => setPaletteOpen(true)}
@@ -681,6 +724,7 @@ export function App() {
         loaded={inbox.loaded}
         selectedId={route.page === 'item' ? route.id : null}
         onOpenItem={openItem}
+        onPinItem={(id, title) => pin(`item:${id}`, title)}
         onAdd={() => {
           setComposeSignal((n) => n + 1)
           if (route.page !== 'inbox') navigate('/inbox')
@@ -748,6 +792,7 @@ export function App() {
             activeKey={activeTabKey}
             tabs={openTabs}
             preview={previewTab}
+            onPin={pin}
             pageTab={pageTab}
             onInbox={() => navigate('/inbox')}
             onSelect={(key) => navigate(routeOfKey(key))}
@@ -763,10 +808,11 @@ export function App() {
                 onDispatch={dispatch}
                 onRefineWatch={refineWatch}
                 onOpenItem={openItem}
+                onPinItem={(id, title) => pin(`item:${id}`, title)}
                 composeSignal={composeSignal}
               />
             ) : route.page === 'item' ? (
-              <ItemPage key={route.id} id={route.id} onDispatch={dispatch} onNavigate={navigate} />
+              <ItemPage key={route.id} id={route.id} onDispatch={dispatch} onNavigate={navigate} onDirty={pinCurrent} />
             ) : route.page === 'terminal' ? (
               currentTerminal ? (
                 <TerminalPage
@@ -792,11 +838,11 @@ export function App() {
                 </div>
               </div>
             ) : route.page === 'artifacts' ? (
-              <ArtifactsPage onOpen={(id) => navigate(`/artifact/${id}`)} />
+              <ArtifactsPage onOpen={(id) => navigate(`/artifact/${id}`)} onPin={(id, title) => pin(`artifact:${id}`, title)} />
             ) : route.page === 'artifact' ? (
-              <ArtifactPage key={route.id} id={route.id} onNavigate={navigate} />
+              <ArtifactPage key={route.id} id={route.id} onNavigate={navigate} onDirty={pinCurrent} />
             ) : route.page === 'watches' ? (
-              <WatchesPage onNavigate={navigate} />
+              <WatchesPage onNavigate={navigate} onPin={(id, title) => pin(`watch:${id}`, title)} />
             ) : route.page === 'watch' ? (
               <WatchPage key={route.id} id={route.id} onNavigate={navigate} />
             ) : route.page === 'watch-form' ? (

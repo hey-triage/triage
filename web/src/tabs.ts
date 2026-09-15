@@ -4,45 +4,68 @@
  * are, not a property of the session — so it lives in localStorage, not the
  * server.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type MouseEvent } from 'react'
 import type { RailSection } from './components/Rail.js'
 
 const key = (workspaceId: string) => `triage.tabs.${workspaceId || 'default'}`
 
 /**
- * The peek slot: the one document you opened without committing to it. The
- * title rides along so a cold load can label the tab before its store is
- * back — `''` means "we never learned one", and the band shows a generic.
+ * What the band holds: tabs you pinned, the one document you are peeking at,
+ * and the names of any documents among them. Sessions and shells are always
+ * in memory so they never need a remembered name; an artifact or work item
+ * does, or a cold load would show a band of "Artifact", "Artifact".
  */
-export type Preview = { key: string; title: string }
+type Band = { tabs: string[]; preview: string | null; titles: Record<string, string> }
 
-type Band = { tabs: string[]; preview: Preview | null }
-
-const EMPTY: Band = { tabs: [], preview: null }
+const EMPTY: Band = { tabs: [], preview: null, titles: {} }
 const isStr = (x: unknown): x is string => typeof x === 'string'
 const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter(isStr) : [])
+
+function readTitles(x: unknown): Record<string, string> {
+  if (!x || typeof x !== 'object') return {}
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(x as Record<string, unknown>)) if (isStr(v)) out[k] = v
+  return out
+}
 
 function read(workspaceId: string): Band {
   try {
     const raw = localStorage.getItem(key(workspaceId))
     const parsed: unknown = raw ? JSON.parse(raw) : null
-    // Before the preview slot this was a bare array of tab keys.
-    if (Array.isArray(parsed)) return { tabs: strings(parsed), preview: null }
+    // v1 was a bare array of tab keys.
+    if (Array.isArray(parsed)) return { ...EMPTY, tabs: strings(parsed) }
     if (!parsed || typeof parsed !== 'object') return EMPTY
     const o = parsed as Record<string, unknown>
-    const p = o.preview as Record<string, unknown> | null | undefined
-    return {
-      tabs: strings(o.tabs),
-      preview: p && isStr(p.key) ? { key: p.key, title: isStr(p.title) ? p.title : '' } : null,
+    const titles = readTitles(o.titles)
+    // v2 carried the title inside the preview; it lives in `titles` now.
+    const p = o.preview
+    let preview: string | null = null
+    if (isStr(p)) preview = p
+    else if (p && typeof p === 'object') {
+      const pk = (p as Record<string, unknown>).key
+      const pt = (p as Record<string, unknown>).title
+      if (isStr(pk)) {
+        preview = pk
+        if (isStr(pt) && pt && !titles[pk]) titles[pk] = pt
+      }
     }
+    return { tabs: strings(o.tabs), preview, titles }
   } catch {
     return EMPTY
   }
 }
 
+/** Forget names for keys the band no longer holds, so storage cannot creep. */
+function prune(b: Band): Band {
+  const live = new Set([...b.tabs, ...(b.preview ? [b.preview] : [])])
+  const kept = Object.keys(b.titles).filter((k) => live.has(k))
+  if (kept.length === Object.keys(b.titles).length) return b
+  return { ...b, titles: Object.fromEntries(kept.map((k) => [k, b.titles[k]])) }
+}
+
 export function useOpenTabs(workspaceId: string) {
   const [band, setBand] = useState<Band>(() => read(workspaceId))
-  const { tabs, preview } = band
+  const { tabs, preview, titles } = band
 
   // A workspace switch reloads the page, but stay correct if it ever doesn't.
   useEffect(() => {
@@ -60,14 +83,14 @@ export function useOpenTabs(workspaceId: string) {
   /** Pin a tab. Whatever was being peeked at has now been committed to. */
   const open = useCallback((id: string) => {
     setBand((b) => {
-      const tabs = b.tabs.includes(id) ? b.tabs : [...b.tabs, id]
-      return { tabs, preview: b.preview?.key === id ? null : b.preview }
+      if (b.tabs.includes(id)) return b.preview === id ? { ...b, preview: null } : b
+      return { ...b, tabs: [...b.tabs, id], preview: b.preview === id ? null : b.preview }
     })
   }, [])
 
   /** Closes a pinned tab or the preview — a key only ever lives in one of them. */
   const close = useCallback((id: string) => {
-    setBand((b) => ({ tabs: b.tabs.filter((t) => t !== id), preview: b.preview?.key === id ? null : b.preview }))
+    setBand((b) => prune({ ...b, tabs: b.tabs.filter((t) => t !== id), preview: b.preview === id ? null : b.preview }))
   }, [])
 
   /** A draft tab becoming a session tab: same slot, new key. */
@@ -75,27 +98,53 @@ export function useOpenTabs(workspaceId: string) {
     setBand((b) => {
       const without = b.tabs.filter((t) => t !== to)
       const i = without.indexOf(from)
-      const tabs = i === -1 ? (without.includes(to) ? without : [...without, to]) : without.with(i, to)
-      return { tabs, preview: b.preview?.key === to ? null : b.preview }
+      const next = i === -1 ? (without.includes(to) ? without : [...without, to]) : without.with(i, to)
+      return prune({ ...b, tabs: next, preview: b.preview === to ? null : b.preview })
     })
   }, [])
 
   /**
    * Peek at a document. One slot: opening another replaces it, so browsing
-   * never leaves tabs behind. A `null` title means "no better name yet" and
-   * keeps the one we already had — the store may still be loading.
+   * never leaves tabs behind. Already-pinned keys are left alone.
    */
-  const setPreview = useCallback((key: string, title: string | null) => {
+  const setPreview = useCallback((id: string) => {
+    setBand((b) => (b.preview === id || b.tabs.includes(id) ? b : prune({ ...b, preview: id })))
+  }, [])
+
+  /** Learn (or improve) the names of document tabs. */
+  const remember = useCallback((patch: Record<string, string>) => {
     setBand((b) => {
-      if (b.tabs.includes(key)) return b.preview ? { ...b, preview: null } : b
-      const same = b.preview?.key === key
-      const next = title ?? (same ? (b.preview as Preview).title : '')
-      if (same && (b.preview as Preview).title === next) return b
-      return { ...b, preview: { key, title: next } }
+      const changed = Object.entries(patch).some(([k, v]) => b.titles[k] !== v)
+      return changed ? { ...b, titles: { ...b.titles, ...patch } } : b
     })
   }, [])
 
-  return { tabs, preview, open, close, replace, setPreview }
+  return { tabs, preview, titles, open, close, replace, setPreview, remember }
+}
+
+/**
+ * Browser-style open gestures for a list row. A plain click peeks — the tab
+ * is provisional and the next document replaces it. ⌘/ctrl-click and
+ * middle-click keep it *without* leaving where you are; double-click opens it
+ * and keeps it.
+ */
+export function rowOpen(open: () => void, pin: () => void) {
+  return {
+    onClick: (e: MouseEvent) => {
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault()
+        pin()
+        return
+      }
+      open()
+    },
+    onDoubleClick: () => pin(),
+    onAuxClick: (e: MouseEvent) => {
+      if (e.button !== 1) return
+      e.preventDefault()
+      pin()
+    },
+  }
 }
 
 /**

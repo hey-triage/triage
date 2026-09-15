@@ -40,6 +40,7 @@ import { itemImageUrl } from '../../../shared/protocol.js'
 import { useAttachments } from '../attachments.js'
 import { AttachmentStrip } from './AttachmentStrip.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
+import { rowOpen } from '../tabs.js'
 import { briefPill, briefStore, useBriefs } from '../briefStore.js'
 import { CreateBriefDialog } from './CreateBriefDialog.js'
 import {
@@ -77,11 +78,13 @@ type Props = {
   onDispatch: (item: ScoredItem) => void
   onRefineWatch: (item: ScoredItem) => void
   onOpenItem: (id: string) => void
+  /** Keep it in the band without leaving the inbox (⌘-click, middle-click). */
+  onPinItem: (id: string, title: string) => void
   /** Bumped by the shell (Queue panel "+") to open the new-item composer. */
   composeSignal?: number
 }
 
-export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal = 0 }: Props) {
+export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, composeSignal = 0 }: Props) {
   const [tab, setTab] = useState<Tab>('open')
   // The open tab reads the shared snapshot (the Queue panel shows the same
   // list); the other tabs are loaded here on demand.
@@ -355,6 +358,7 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, composeSignal
     projectName,
     onSelect: (id) => setSel(ordered.findIndex((i) => i.id === id)),
     onOpen: onOpenItem,
+    onPin: onPinItem,
     onDispatch,
     onDone: (i) => void setItemState(i, 'done'),
     onSnooze: snooze1d,
@@ -588,6 +592,7 @@ type RowActions = {
   projectName: (id?: string) => string | undefined
   onSelect: (id: string) => void
   onOpen: (id: string) => void
+  onPin: (id: string, title: string) => void
   onDispatch: (item: ScoredItem) => void
   onDone: (item: ScoredItem) => void
   onSnooze: (item: ScoredItem) => void
@@ -643,6 +648,7 @@ function WorkRow({
   projectName,
   onSelect,
   onOpen,
+  onPin,
   onDispatch,
   onDone,
   onSnooze,
@@ -702,7 +708,15 @@ function WorkRow({
       <span className="glyph">
         <Icon size={14} aria-hidden="true" />
       </span>
-      <button type="button" className="t" title={item.title} onClick={() => onOpen(item.id)}>
+      <button
+        type="button"
+        className="t"
+        title={item.title}
+        {...rowOpen(
+          () => onOpen(item.id),
+          () => onPin(item.id, item.title),
+        )}
+      >
         {item.returned && (
           <span className="returned" title="Was done — the source updated since">
             ↩

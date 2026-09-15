@@ -12,6 +12,7 @@
  * content swallows click/keydown: picking "Delete" must not also select the
  * row. Item actions run through `onSelect`, which Radix fires itself.
  */
+import * as ContextMenu from '@radix-ui/react-context-menu'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import type { ComponentPropsWithoutRef } from 'react'
 
@@ -94,4 +95,46 @@ export function MenuSubContent({
 
 export function MenuSeparator(props: ComponentPropsWithoutRef<typeof DropdownMenu.Separator>) {
   return <DropdownMenu.Separator className="uiMenuSep" {...props} />
+}
+
+/**
+ * The same menu, opened by right-click instead of a trigger button. Radix
+ * gives us cursor positioning and the long-press gesture; the pixels are the
+ * `uiMenu*` classes above, so a context menu looks like every other menu.
+ */
+export const CtxMenu = ContextMenu.Root
+export const CtxMenuTrigger = ContextMenu.Trigger
+
+export function CtxMenuContent({
+  className,
+  collisionPadding = 8,
+  onClick,
+  onKeyDown,
+  ...props
+}: ComponentPropsWithoutRef<typeof ContextMenu.Content>) {
+  return (
+    <ContextMenu.Portal>
+      <ContextMenu.Content
+        className={cx('uiMenu', className)}
+        collisionPadding={collisionPadding}
+        onClick={(e) => {
+          onClick?.(e)
+          e.stopPropagation()
+        }}
+        onKeyDown={(e) => {
+          onKeyDown?.(e)
+          e.stopPropagation()
+        }}
+        {...props}
+      />
+    </ContextMenu.Portal>
+  )
+}
+
+export function CtxMenuItem({ className, ...props }: ComponentPropsWithoutRef<typeof ContextMenu.Item>) {
+  return <ContextMenu.Item className={cx('uiMenuItem', className)} {...props} />
+}
+
+export function CtxMenuSeparator(props: ComponentPropsWithoutRef<typeof ContextMenu.Separator>) {
+  return <ContextMenu.Separator className="uiMenuSep" {...props} />
 }

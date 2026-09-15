@@ -27,6 +27,7 @@ import type { ArtifactWithLinks, Project, ProjectsResponse, ScoredItem, SessionS
 import { draftTitle, type Draft } from '../drafts.js'
 import { GROUP_ORDER, GROUP_SHORT, itemTone, kindIcon } from '../itemUi.js'
 import { MOD_LABEL } from '../keys.js'
+import { rowOpen } from '../tabs.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
 
 export function PanelSearch({ onSearch, placeholder }: { onSearch: () => void; placeholder: string }) {
@@ -50,12 +51,14 @@ type QueueProps = {
   loaded: boolean
   selectedId: string | null
   onOpenItem: (id: string) => void
+  /** Keep it in the band without leaving where you are (⌘-click, middle-click). */
+  onPinItem: (id: string, title: string) => void
   onAdd: () => void
   onRefresh: () => void
   onSearch: () => void
 }
 
-export function QueuePanel({ items, loaded, selectedId, onOpenItem, onAdd, onRefresh, onSearch }: QueueProps) {
+export function QueuePanel({ items, loaded, selectedId, onOpenItem, onPinItem, onAdd, onRefresh, onSearch }: QueueProps) {
   return (
     <aside className="panel" aria-label="Queue">
       <PanelSearch onSearch={onSearch} placeholder="Search items, sessions…" />
@@ -91,7 +94,10 @@ export function QueuePanel({ items, loaded, selectedId, onOpenItem, onAdd, onRef
                     type="button"
                     className={`prow${item.id === selectedId ? ' sel' : ''}`}
                     title={item.title}
-                    onClick={() => onOpenItem(item.id)}
+                    {...rowOpen(
+                      () => onOpenItem(item.id),
+                      () => onPinItem(item.id, item.title),
+                    )}
                   >
                     <Icon size={13} aria-hidden="true" />
                     <span className="t">{item.title}</span>
@@ -122,6 +128,7 @@ type ArtifactsProps = {
   loaded: boolean
   currentId: string | null
   onOpen: (id: string) => void
+  onPin: (id: string, title: string) => void
   onNew: () => void
   onRefresh: () => void
   onSearch: () => void
@@ -136,7 +143,7 @@ function ago(ms: number): string {
 }
 
 /** Notes you wrote, then briefs the model wrote — two groups, each newest first. */
-export function ArtifactsPanel({ artifacts, loaded, currentId, onOpen, onNew, onRefresh, onSearch }: ArtifactsProps) {
+export function ArtifactsPanel({ artifacts, loaded, currentId, onOpen, onPin, onNew, onRefresh, onSearch }: ArtifactsProps) {
   const visible = artifacts.filter((a) => !a.hidden)
   const groups: Array<[string, ArtifactWithLinks[]]> = [
     ['Notes', visible.filter((a) => a.author === 'human')],
@@ -172,7 +179,10 @@ export function ArtifactsPanel({ artifacts, loaded, currentId, onOpen, onNew, on
                   type="button"
                   className={`prow${a.id === currentId ? ' sel' : ''}`}
                   title={`${a.title} — ${a.path}`}
-                  onClick={() => onOpen(a.id)}
+                  {...rowOpen(
+                    () => onOpen(a.id),
+                    () => onPin(a.id, a.title),
+                  )}
                 >
                   <FileText size={13} aria-hidden="true" />
                   <span className="t">{a.title}</span>

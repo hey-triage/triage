@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { FileText, Plus, RefreshCw } from 'lucide-react'
 import type { ArtifactWithLinks } from '../../../shared/protocol.js'
+import { rowOpen } from '../tabs.js'
 import { artifactStore, useArtifacts } from '../artifactStore.js'
 
 type Filter = 'all' | 'human' | 'model'
@@ -20,7 +21,7 @@ function when(ms: number): string {
  * artifacts folder, straight from the index. A list, not a tree — the folder is
  * shallow by design (notes/, briefs/). Briefs of finished items hide by default.
  */
-export function ArtifactsPage({ onOpen }: { onOpen: (id: string) => void }) {
+export function ArtifactsPage({ onOpen, onPin }: { onOpen: (id: string) => void; onPin: (id: string, title: string) => void }) {
   const snap = useArtifacts()
   const [filter, setFilter] = useState<Filter>('all')
   const [showFinished, setShowFinished] = useState(false)
@@ -98,7 +99,7 @@ export function ArtifactsPage({ onOpen }: { onOpen: (id: string) => void }) {
           (rows.length > 0 ? (
             <div className="list artList">
               {rows.map((a) => (
-                <ArtifactRow key={a.id} a={a} onOpen={() => onOpen(a.id)} />
+                <ArtifactRow key={a.id} a={a} onOpen={() => onOpen(a.id)} onPin={() => onPin(a.id, a.title)} />
               ))}
             </div>
           ) : (
@@ -114,10 +115,10 @@ export function ArtifactsPage({ onOpen }: { onOpen: (id: string) => void }) {
   )
 }
 
-function ArtifactRow({ a, onOpen }: { a: ArtifactWithLinks; onOpen: () => void }) {
+function ArtifactRow({ a, onOpen, onPin }: { a: ArtifactWithLinks; onOpen: () => void; onPin: () => void }) {
   const n = a.links.length
   return (
-    <button type="button" className="listRow artRow" onClick={onOpen} title={a.title}>
+    <button type="button" className="listRow artRow" {...rowOpen(onOpen, onPin)} title={a.title}>
       <FileText size={14} aria-hidden="true" />
       <span className="artTitle">{a.title}</span>
       <span className={`pill ${a.author === 'model' ? 'blue' : 'mute'}`}>{a.author === 'model' ? 'model' : 'you'}</span>

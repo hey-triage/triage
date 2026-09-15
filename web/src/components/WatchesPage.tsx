@@ -8,6 +8,7 @@ import * as Switch from '@radix-ui/react-switch'
 import { Ellipsis, Pencil, Play, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ActivityResponse, ActivityRun, SettingsResponse, Watch, WatchesResponse } from '../../../shared/protocol.js'
+import { rowOpen } from '../tabs.js'
 import { describeCron } from '../../../core/watch/cron.js'
 import { relTime } from '../itemUi.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
@@ -29,7 +30,14 @@ const WEEK_MS = 7 * 86_400_000
 
 const fmtTokens = (n: number) => (n === 0 ? '0' : n < 1000 ? String(n) : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`)
 
-export function WatchesPage({ onNavigate }: { onNavigate: (hash: string) => void }) {
+export function WatchesPage({
+  onNavigate,
+  onPin,
+}: {
+  onNavigate: (hash: string) => void
+  /** Keep a watch in the band without leaving the list (⌘-click, middle-click). */
+  onPin: (id: string, title: string) => void
+}) {
   const [state, setState] = useState<LoadState>({ phase: 'loading' })
   const [runs, setRuns] = useState<ActivityRun[]>([])
   const [tab, setTab] = useState<Tab>('active')
@@ -200,7 +208,15 @@ export function WatchesPage({ onNavigate }: { onNavigate: (hash: string) => void
                           </Switch.Root>
                         </td>
                         <td className="nm">
-                          <button type="button" className="t" title={w.instruction} onClick={() => open(w)}>
+                          <button
+                            type="button"
+                            className="t"
+                            title={w.instruction}
+                            {...rowOpen(
+                              () => open(w),
+                              () => onPin(w.id, w.title),
+                            )}
+                          >
                             {w.title}
                           </button>
                         </td>

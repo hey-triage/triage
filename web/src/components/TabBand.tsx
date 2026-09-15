@@ -8,6 +8,7 @@ import {
   Inbox,
   MessagesSquare,
   PenLine,
+  Pin,
   Plus,
   Terminal,
   X,
@@ -15,7 +16,21 @@ import {
 } from 'lucide-react'
 import { useEffect, useState, type ComponentType, type MouseEvent } from 'react'
 import type { Project, ProjectsResponse } from '../../../shared/protocol.js'
-import { Menu, MenuContent, MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger, MenuTrigger } from '../ui/Menu.js'
+import {
+  CtxMenu,
+  CtxMenuContent,
+  CtxMenuItem,
+  CtxMenuSeparator,
+  CtxMenuTrigger,
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  MenuSub,
+  MenuSubContent,
+  MenuSubTrigger,
+  MenuTrigger,
+} from '../ui/Menu.js'
 
 const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 
@@ -61,6 +76,8 @@ type Props = {
   onInbox: () => void
   onSelect: (key: string) => void
   onClose: (key: string) => void
+  /** Promote the peeked document to a tab of its own. */
+  onPin: (key: string) => void
   onNew: () => void
   /** Open a shell — in `cwd`, or the daemon's default (home) when undefined. */
   onNewTerminal: (cwd?: string) => void
@@ -69,7 +86,19 @@ type Props = {
 }
 
 /** The tab band: Inbox pinned, one closable tab per open session or terminal, + for a new session. */
-export function TabBand({ activeKey, tabs, preview, pageTab, onInbox, onSelect, onClose, onNew, onNewTerminal, terminalCwd }: Props) {
+export function TabBand({
+  activeKey,
+  tabs,
+  preview,
+  pageTab,
+  onInbox,
+  onSelect,
+  onClose,
+  onPin,
+  onNew,
+  onNewTerminal,
+  terminalCwd,
+}: Props) {
   return (
     <div className="tabband" role="tablist">
       <button
@@ -84,10 +113,12 @@ export function TabBand({ activeKey, tabs, preview, pageTab, onInbox, onSelect, 
       </button>
 
       {tabs.map((t) => (
-        <Tab key={t.key} tab={t} active={activeKey === t.key} onSelect={onSelect} onClose={onClose} />
+        <Tab key={t.key} tab={t} active={activeKey === t.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
       ))}
 
-      {preview && <Tab tab={preview} active={activeKey === preview.key} onSelect={onSelect} onClose={onClose} />}
+      {preview && (
+        <Tab tab={preview} active={activeKey === preview.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
+      )}
 
       {pageTab && (
         <button type="button" role="tab" aria-selected className="tab active">
@@ -101,17 +132,23 @@ export function TabBand({ activeKey, tabs, preview, pageTab, onInbox, onSelect, 
   )
 }
 
-/** One tab. A session or shell carries its project dot; a document does not. */
+/**
+ * One tab. A session or shell carries its project dot; a document does not.
+ * A peeked document is provisional: double-click keeps it, the way a preview
+ * editor works everywhere else.
+ */
 function Tab({
   tab,
   active,
   onSelect,
   onClose,
+  onPin,
 }: {
   tab: OpenTab
   active: boolean
   onSelect: (key: string) => void
   onClose: (key: string) => void
+  onPin: (key: string) => void
 }) {
   const close = (e: MouseEvent) => {
     e.stopPropagation()
@@ -120,24 +157,49 @@ function Tab({
   const Icon = ICON[tab.kind]
   const dotted = tab.kind === 'session' || tab.kind === 'terminal'
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      className={`tab${active ? ' active' : ''}${tab.preview ? ' preview' : ''}`}
-      title={tab.title}
-      onClick={() => onSelect(tab.key)}
-      onAuxClick={(e) => e.button === 1 && close(e)}
-    >
-      <Icon size={13} aria-hidden="true" />
-      <span className={`t${tab.kind === 'draft' ? ' draft' : ''}`}>
-        {dotted && <span className={`pdot${tab.running ? ' live' : ''}`} style={{ background: tab.color }} aria-hidden="true" />}
-        {tab.title}
-      </span>
-      <span className="cl" role="button" aria-label={`Close ${tab.title}`} tabIndex={-1} onClick={close}>
-        <X size={11} aria-hidden="true" />
-      </span>
-    </button>
+    <CtxMenu>
+      <CtxMenuTrigger asChild>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={active}
+          className={`tab${active ? ' active' : ''}${tab.preview ? ' preview' : ''}`}
+          title={tab.preview ? `${tab.title} — double-click to keep open` : tab.title}
+          onClick={() => onSelect(tab.key)}
+          onDoubleClick={() => tab.preview && onPin(tab.key)}
+          onAuxClick={(e) => e.button === 1 && close(e)}
+        >
+          <Icon size={13} aria-hidden="true" />
+          <span className={`t${tab.kind === 'draft' ? ' draft' : ''}`}>
+            {dotted && (
+              <span className={`pdot${tab.running ? ' live' : ''}`} style={{ background: tab.color }} aria-hidden="true" />
+            )}
+            {tab.title}
+          </span>
+          <span className="cl" role="button" aria-label={`Close ${tab.title}`} tabIndex={-1} onClick={close}>
+            <X size={11} aria-hidden="true" />
+          </span>
+        </button>
+      </CtxMenuTrigger>
+      <CtxMenuContent>
+        {tab.preview && (
+          <>
+            <CtxMenuItem onSelect={() => onPin(tab.key)}>
+              <Pin size={14} aria-hidden="true" />
+              <span className="text">
+                <span className="name">Keep open</span>
+                <span className="desc">Stop the next document replacing it</span>
+              </span>
+            </CtxMenuItem>
+            <CtxMenuSeparator />
+          </>
+        )}
+        <CtxMenuItem onSelect={() => onClose(tab.key)}>
+          <X size={14} aria-hidden="true" />
+          <span className="name">Close</span>
+        </CtxMenuItem>
+      </CtxMenuContent>
+    </CtxMenu>
   )
 }
 

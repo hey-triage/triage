@@ -21,9 +21,18 @@ const tilde = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
  * ArtifactEditor — long notes need the room — and the page follows the file
  * when it changes on disk.
  */
-export function ArtifactPage({ id, onNavigate }: { id: string; onNavigate: (hash: string) => void }) {
+export function ArtifactPage({
+  id,
+  onNavigate,
+  onDirty,
+}: {
+  id: string
+  onNavigate: (hash: string) => void
+  /** Editing here means the tab must survive: promote it out of the peek slot. */
+  onDirty: () => void
+}) {
   if (id === 'new') return <NewArtifactPage onNavigate={onNavigate} />
-  return <ExistingArtifactPage id={id} onNavigate={onNavigate} />
+  return <ExistingArtifactPage id={id} onNavigate={onNavigate} onDirty={onDirty} />
 }
 
 /** `#/artifact/new` — a fresh full-page editor; saving lands on the new artifact's page. */
@@ -54,9 +63,13 @@ function NewArtifactPage({ onNavigate }: { onNavigate: (hash: string) => void })
   )
 }
 
-function ExistingArtifactPage({ id, onNavigate }: { id: string; onNavigate: (hash: string) => void }) {
+function ExistingArtifactPage({ id, onNavigate, onDirty }: { id: string; onNavigate: (hash: string) => void; onDirty: () => void }) {
   const [state, setState] = useState<State>({ phase: 'loading' })
   const [editing, setEditing] = useState(false)
+  // Opening the editor commits you to this note: keep its tab.
+  useEffect(() => {
+    if (editing) onDirty()
+  }, [editing, onDirty])
   const [busy, setBusy] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)

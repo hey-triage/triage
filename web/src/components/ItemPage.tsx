@@ -43,6 +43,8 @@ type Props = {
   id: string
   onDispatch: (item: ScoredItem) => void
   onNavigate: (hash: string) => void
+  /** Editing here means the tab must survive: promote it out of the peek slot. */
+  onDirty: () => void
 }
 
 const EVENT_LABEL: Record<string, string> = {
@@ -65,7 +67,7 @@ function actorLabel(actor: string): string {
 
 const OTHER_STATUSES: ItemStatus[] = ['snoozed', 'done', 'archived']
 
-export function ItemPage({ id, onDispatch, onNavigate }: Props) {
+export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
   const snap = useInbox()
   const sessions = useSessions()
   const briefs = useBriefs()
@@ -91,6 +93,13 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
   const [spend, setSpend] = useState<SessionsUsage | null>(null)
   /** the readout is optional — a ledger that can't be read hides it rather than sitting on a skeleton */
   const [spendFailed, setSpendFailed] = useState(false)
+
+  // Anything unsaved on this page would be lost if the peek slot handed the
+  // tab to the next document — so the first keystroke keeps it.
+  const dirty = descDraft !== null || imgDraft !== null || feedback.trim() !== ''
+  useEffect(() => {
+    if (dirty) onDirty()
+  }, [dirty, onDirty])
 
   useEffect(() => {
     if (!snap.loaded && !snap.loading) void inboxStore.refresh()
