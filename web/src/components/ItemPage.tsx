@@ -187,7 +187,7 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
     return out
   }, [sessions, links, item])
 
-  // What the item cost: the ledger, folded by the sessions above. Refetched
+  // What the item cost: the ledger, folded by the item's linked sessions. Refetched
   // when the set changes and when a live one settles — a running session's
   // transcript is still growing, so its figure is a floor, not a total.
   const spendKey = linkedSessions.map(({ s }) => `${s.id}:${s.status}`).join(',')
@@ -723,6 +723,49 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
           )}
         </div>
 
+        <div className="secLabel mute">
+          Sessions <span className="n">{linkedSessions.length}</span>
+        </div>
+        {linkedSessions.length === 0 ? (
+          <div className="asideEmpty">None yet — Dispatch opens one in the matching project; a brief run is one too.</div>
+        ) : (
+          linkedSessions.map(({ s, role }) => {
+            const live = s.status === 'running' || s.status === 'starting'
+            const err = s.status === 'error'
+            return (
+              <a
+                key={s.id}
+                href={`#${s.id}`}
+                className={`card sessCard${live ? ' run' : err ? ' err' : ''}`}
+                onClick={(e) => {
+                  e.preventDefault()
+                  onNavigate(s.id)
+                }}
+              >
+                <div className="top">
+                  <span className="ti">{s.title}</span>
+                  <span className="rs">
+                    <span className="role">{role} ·</span> {s.status}
+                  </span>
+                </div>
+                <div className="me">
+                  {s.cwd.split('/').pop()}
+                  {s.branch ? ` · ${s.branch}` : ''}
+                  {s.model ? ` · ${s.model}` : ''}
+                </div>
+                <span className="act">
+                  {role === 'brief' ? 'Open the run' : 'Re-enter session'} <ChevronRight size={12} aria-hidden="true" />
+                  {spend?.bySession[s.id] && (
+                    <span className="spend" title={`${tokens(spend.bySession[s.id].tokens)} tokens over ${spend.bySession[s.id].messages} messages`}>
+                      {money(spend.bySession[s.id].cost)}
+                    </span>
+                  )}
+                </span>
+              </a>
+            )
+          })
+        )}
+
         {/* What the item cost: the ledger, folded over this item's sessions.
             Deliberately small — the cache share, the daily series and the
             per-project view stay on Usage. Placements considered:
@@ -779,49 +822,6 @@ export function ItemPage({ id, onDispatch, onNavigate }: Props) {
               <div className="asideEmpty">Reading transcripts…</div>
             )}
           </div>
-        )}
-
-        <div className="secLabel mute">
-          Sessions <span className="n">{linkedSessions.length}</span>
-        </div>
-        {linkedSessions.length === 0 ? (
-          <div className="asideEmpty">None yet — Dispatch opens one in the matching project; a brief run is one too.</div>
-        ) : (
-          linkedSessions.map(({ s, role }) => {
-            const live = s.status === 'running' || s.status === 'starting'
-            const err = s.status === 'error'
-            return (
-              <a
-                key={s.id}
-                href={`#${s.id}`}
-                className={`card sessCard${live ? ' run' : err ? ' err' : ''}`}
-                onClick={(e) => {
-                  e.preventDefault()
-                  onNavigate(s.id)
-                }}
-              >
-                <div className="top">
-                  <span className="ti">{s.title}</span>
-                  <span className="rs">
-                    <span className="role">{role} ·</span> {s.status}
-                  </span>
-                </div>
-                <div className="me">
-                  {s.cwd.split('/').pop()}
-                  {s.branch ? ` · ${s.branch}` : ''}
-                  {s.model ? ` · ${s.model}` : ''}
-                </div>
-                <span className="act">
-                  {role === 'brief' ? 'Open the run' : 'Re-enter session'} <ChevronRight size={12} aria-hidden="true" />
-                  {spend?.bySession[s.id] && (
-                    <span className="spend" title={`${tokens(spend.bySession[s.id].tokens)} tokens over ${spend.bySession[s.id].messages} messages`}>
-                      {money(spend.bySession[s.id].cost)}
-                    </span>
-                  )}
-                </span>
-              </a>
-            )
-          })
         )}
 
         <div className="secLabel mute">Linked</div>
