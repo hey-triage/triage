@@ -11,6 +11,7 @@ import {
   type PermissionMode,
 } from '../../../shared/protocol.js'
 import { useAttachments } from '../attachments.js'
+import { activeCommand, insertCommand, useCommandSearch, useCommands, type CommandHit } from '../commands.js'
 import {
   MENTION_TABS,
   activeMention,
@@ -24,6 +25,8 @@ import { nextMode } from '../permissionModes.js'
 import { AttachmentStrip } from './AttachmentStrip.js'
 import { FastModeToggle } from './FastModeToggle.js'
 import { MentionPicker, flatHits } from './MentionPicker.js'
+import { CommandPill } from './CommandPill.js'
+import { SlashPicker } from './SlashPicker.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 
@@ -66,6 +69,12 @@ type Props = {
  * artifacts, work items, sessions — one query across all of them, narrowed by
  * the picker's tabs. The picker never takes focus; the box's key handler moves
  * the selection and the tabs while the keystrokes keep narrowing the query.
+ *
+ * Typing `/` as the first character opens the command picker the same way,
+ * over the commands and skills this folder's Claude Code actually has. Picking
+ * one only writes text — the CLI expands `/name args` itself when the message
+ * lands — so unlike a mention there is nothing to attach and nothing to
+ * resolve.
  */
 export function PromptBox({
   head,
@@ -110,6 +119,29 @@ export function PromptBox({
     if (active === null) setDismissedAt(null)
   }, [active])
 
+  // --- the `/` picker ------------------------------------------------------
+  // A command is only ever the whole start of a message, so a `/` name and an
+  // `@` token can never both be under the caret — the two pickers are mutually
+  // exclusive by construction rather than by a rule kept in step here.
+  const cmdActive = useMemo(() => activeCommand(text, caret), [text, caret])
+  // The folder's list is fetched the first time a `/` is typed against it
+  // rather than on mount: a composer nobody runs a command in costs nothing,
+  // and on a folder with no live session the list costs a subprocess.
+  const [everSlashed, setEverSlashed] = useState(false)
+  const [cmdDismissed, setCmdDismissed] = useState(false)
+  const [cmdSel, setCmdSel] = useState(0)
+  const { commands, loading: cmdLoading } = useCommands(cwd, everSlashed)
+  const cmdOpen = cmdActive !== null && !cmdDismissed
+  const cmdHits = useCommandSearch(cmdOpen ? cmdActive : null, commands)
+
+  useEffect(() => setCmdSel(0), [cmdActive?.query])
+  useEffect(() => {
+    if (cmdActive) setEverSlashed(true)
+    // Escape closes the menu for the command being typed; clearing the `/`
+    // is what re-arms it, exactly as the `@` picker treats its own token.
+    else setCmdDismissed(false)
+  }, [cmdActive])
+
   const syncCaret = useCallback(() => {
     const el = box.current
     if (el) setCaret(el.selectionStart ?? el.value.length)
@@ -137,6 +169,15 @@ export function PromptBox({
       rewrite(insertMention(text, active, h))
     },
     [active, text, mentions, rewrite],
+  )
+
+  /** Picking a command only writes text — there is nothing to attach. */
+  const pickCommand = useCallback(
+    (c: CommandHit) => {
+      if (!cmdActive) return
+      rewrite(insertCommand(text, cmdActive, c))
+    },
+    [cmdActive, text, rewrite],
   )
 
   /** A tab in the picker: retarget the token at one kind, keeping the query. */
@@ -242,65 +283,102 @@ export function PromptBox({
           onHover={setSel}
           onPick={pick}
         >
-          <textarea
-            id="box"
-            ref={box}
-            autoFocus
-            rows={1}
-            value={text}
-            placeholder={placeholder}
-            onPaste={attach.onPaste}
-            onChange={(e) => {
-              onTextChange(e.target.value)
-              setCaret(e.target.selectionStart ?? e.target.value.length)
-            }}
-            onSelect={syncCaret}
-            onClick={syncCaret}
-            onKeyUp={(e) => {
-              if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') syncCaret()
-            }}
-            onKeyDown={(e) => {
-              if (pickerOpen) {
-                if (e.key === 'ArrowDown' && hits.length) {
-                  e.preventDefault()
-                  setSel((s) => (s + 1) % hits.length)
-                  return
-                }
-                if (e.key === 'ArrowUp' && hits.length) {
-                  e.preventDefault()
-                  setSel((s) => (s - 1 + hits.length) % hits.length)
-                  return
-                }
-                if (e.key === 'Enter' && hits.length) {
-                  e.preventDefault()
-                  pick(hits[Math.min(sel, hits.length - 1)])
-                  return
-                }
-                // Tab walks the kind tabs rather than attaching — Enter already
-                // attaches, and the tabs are otherwise mouse-only.
-                if (e.key === 'Tab') {
-                  e.preventDefault()
-                  cycleKind(e.shiftKey ? -1 : 1)
-                  return
-                }
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setDismissedAt(active?.start ?? null)
-                  return
-                }
-              }
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                submit()
-              } else if (e.key === 'Tab' && e.shiftKey) {
-                // Claude Code's own gesture, and the composer is where the
-                // hands already are — so it lives here rather than in the
-                // global map, which ignores keys typed into a text field.
-                e.preventDefault()
-                onPermissionModeChange(nextMode(permissionMode))
-              }
-            }}
-          />
+          <SlashPicker
+            open={cmdOpen}
+            hits={cmdHits}
+            loading={cmdLoading}
+            selected={cmdSel}
+            onHover={setCmdSel}
+            onPick={pickCommand}
+          >
+            <div className="boxWrap">
+              <CommandPill text={text} commands={commands} boxRef={box} />
+              <textarea
+                id="box"
+                ref={box}
+                autoFocus
+                rows={1}
+                value={text}
+                placeholder={placeholder}
+                onPaste={attach.onPaste}
+                onChange={(e) => {
+                  onTextChange(e.target.value)
+                  setCaret(e.target.selectionStart ?? e.target.value.length)
+                }}
+                onSelect={syncCaret}
+                onClick={syncCaret}
+                onKeyUp={(e) => {
+                  if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') syncCaret()
+                }}
+                onKeyDown={(e) => {
+                  if (cmdOpen) {
+                    if (e.key === 'ArrowDown' && cmdHits.length) {
+                      e.preventDefault()
+                      setCmdSel((s) => (s + 1) % cmdHits.length)
+                      return
+                    }
+                    if (e.key === 'ArrowUp' && cmdHits.length) {
+                      e.preventDefault()
+                      setCmdSel((s) => (s - 1 + cmdHits.length) % cmdHits.length)
+                      return
+                    }
+                    // Enter and Tab both take the selection: Enter because it is
+                    // the key everyone tries, Tab because completing a name is
+                    // what Tab does everywhere else a name is being typed.
+                    if ((e.key === 'Enter' || e.key === 'Tab') && cmdHits.length) {
+                      e.preventDefault()
+                      pickCommand(cmdHits[Math.min(cmdSel, cmdHits.length - 1)])
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setCmdDismissed(true)
+                      return
+                    }
+                  }
+                  if (pickerOpen) {
+                    if (e.key === 'ArrowDown' && hits.length) {
+                      e.preventDefault()
+                      setSel((s) => (s + 1) % hits.length)
+                      return
+                    }
+                    if (e.key === 'ArrowUp' && hits.length) {
+                      e.preventDefault()
+                      setSel((s) => (s - 1 + hits.length) % hits.length)
+                      return
+                    }
+                    if (e.key === 'Enter' && hits.length) {
+                      e.preventDefault()
+                      pick(hits[Math.min(sel, hits.length - 1)])
+                      return
+                    }
+                    // Tab walks the kind tabs rather than attaching — Enter already
+                    // attaches, and the tabs are otherwise mouse-only.
+                    if (e.key === 'Tab') {
+                      e.preventDefault()
+                      cycleKind(e.shiftKey ? -1 : 1)
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setDismissedAt(active?.start ?? null)
+                      return
+                    }
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    submit()
+                  } else if (e.key === 'Tab' && e.shiftKey) {
+                    // Claude Code's own gesture, and the composer is where the
+                    // hands already are — so it lives here rather than in the
+                    // global map, which ignores keys typed into a text field.
+                    e.preventDefault()
+                    onPermissionModeChange(nextMode(permissionMode))
+                  }
+                }}
+              />
+            </div>
+          </SlashPicker>
         </MentionPicker>
 
         <div className="statusline">
@@ -319,7 +397,7 @@ export function PromptBox({
           <button
             className="chip attachBtn"
             onClick={() => filePicker.current?.click()}
-            title="Attach images (or paste / drop them) · type @ to attach files, work items, sessions"
+            title="Attach images (or paste / drop them) · type @ to attach files, work items, sessions · type / for commands"
             aria-label="Attach images"
           >
             <ImagePlus aria-hidden="true" />

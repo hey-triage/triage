@@ -160,6 +160,10 @@ const Item = memo(function Item({
           )}
         </div>
       )
+    case 'command':
+      // Local command output is plain text the CLI already formatted (often
+      // with its own alignment), so it is shown as-is rather than as markdown.
+      return <pre className="msg commandOut">{item.text}</pre>
     case 'init':
       return <InitCard item={item} />
     case 'tool':

@@ -1556,6 +1556,39 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .mchip .x:hover { color: var(--ink); }
 .msg.user .mtok { color: var(--ink); font-family: var(--mono); font-size: 0.9615rem; background: var(--wash-2); border-radius: var(--r-xs); padding: 1px 5px; }
 
+/* ---------- / commands: the picker, and what a local command printed ---------- */
+/* Narrower than the @ picker: one line per command, no tabs, no groups. */
+.slPop { width: 560px; }
+.slOpt { gap: 8px; }
+.slOpt .n { font-family: var(--mono); font-size: 0.9231rem; color: var(--ink); max-width: none; }
+.slOpt .args { font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); flex: none; }
+/* The alias that matched, so a hit on /cost explains why /usage is the row. */
+.slOpt .via { font-family: var(--mono); font-size: 0.8077rem; color: var(--ash); flex: none; }
+.slOpt .plug {
+  flex: none; padding: 0 6px; height: 17px; line-height: 17px; border-radius: var(--r-full);
+  background: var(--wash-2); color: var(--stone); font-size: 0.7692rem; letter-spacing: 0.3px;
+}
+.slOpt .desc { margin-left: auto; color: var(--ash); font-size: 0.8846rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.slOpt.sel .desc { color: var(--mute); }
+
+/* The lit pill behind a recognized /command. Sits under a transparent-
+   background textarea, so the command's own glyphs read straight through it —
+   nothing is drawn twice and the caret is never occluded. */
+.boxWrap { position: relative; display: flex; flex-direction: column; }
+.cmdPill {
+  position: absolute; pointer-events: none; z-index: 0; border-radius: var(--r-xs);
+  background: var(--wash-3); box-shadow: inset 0 0 0 1px var(--hair);
+}
+.boxWrap #box { position: relative; z-index: 1; }
+
+/* Output a command produced locally — already formatted by the CLI, so it is
+   shown verbatim rather than re-flowed as markdown. */
+.msg.commandOut {
+  align-self: stretch; margin: 0; padding: 12px 14px; background: var(--wash-2); border: 1px solid var(--hair);
+  border-radius: var(--r-sm); font-family: var(--mono); font-size: 0.9231rem; line-height: 1.6; color: var(--body);
+  white-space: pre-wrap; overflow-x: auto;
+}
+
 /* ---------- artifacts (.docs/next-version.md, phase 1) ---------- */
 .artTools { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
 .artTools .root { font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

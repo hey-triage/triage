@@ -30,6 +30,8 @@ export type TranscriptItem =
   | { key: string; kind: 'error'; text: string }
   | { key: string; kind: 'meta'; text: string; /** 1-based turn this marker ends, for the changeset line */ turn?: number }
   | { key: string; kind: 'init'; model?: string; toolCount: number; servers: McpServerInfo[] }
+  /** What a local command (`/usage`, `/context`) printed — not the model talking. */
+  | { key: string; kind: 'command'; text: string }
   | {
       key: string
       kind: 'tool'
@@ -110,6 +112,11 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
               servers: m.mcp_servers ?? [],
             })
           }
+        } else if (m.type === 'system' && m.subtype === 'local_command_output') {
+          // A command the CLI answers by itself — `/usage`, `/context`. Without
+          // this the message would send and visibly do nothing, which is
+          // exactly what someone tries a command picker on first.
+          if (m.content?.trim()) items.push({ key: `lc${i}`, kind: 'command', text: m.content })
         } else if (m.type === 'assistant') {
           for (const [j, b] of (m.message?.content ?? []).entries()) {
             if (isTextBlock(b) && b.text.trim()) {

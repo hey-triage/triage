@@ -15,6 +15,7 @@ import type { BriefJob,
   ServerMessage,
   SessionEvent,
   SessionSummary,
+  SlashCommandInfo,
   TerminalSummary,
   Workspace,
   WorkspacesResponse,
@@ -193,6 +194,7 @@ export class Store {
   readonly #changesListeners = new Set<(sessionId: string) => void>()
   /** Who follows brief jobs (the brief store) — one frame per transition. */
   readonly #briefListeners = new Set<(job: BriefJob) => void>()
+  readonly #commandsListeners = new Set<(cwd: string, commands: SlashCommandInfo[]) => void>()
 
   #handle(msg: ServerMessage) {
     switch (msg.type) {
@@ -271,6 +273,9 @@ export class Store {
       case 'brief_status':
         for (const fn of this.#briefListeners) fn(msg.job)
         break
+      case 'commands_changed':
+        for (const fn of this.#commandsListeners) fn(msg.cwd, msg.commands)
+        break
       case 'error':
         // Server-level failure, not scoped to a session.
         console.error('[triage] server error:', msg.message)
@@ -295,6 +300,14 @@ export class Store {
     this.#artifactsListeners.add(fn)
     return () => {
       this.#artifactsListeners.delete(fn)
+    }
+  }
+
+  /** Fires when a folder's `/` command list changed, with the whole new list. */
+  onCommandsChanged(fn: (cwd: string, commands: SlashCommandInfo[]) => void): () => void {
+    this.#commandsListeners.add(fn)
+    return () => {
+      this.#commandsListeners.delete(fn)
     }
   }
 

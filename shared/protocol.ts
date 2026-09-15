@@ -268,6 +268,34 @@ export type ModelsResponse =
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
+// Slash commands (GET /api/commands?cwd=…)
+//
+// What `/` offers in a composer: Claude Code's own commands plus whatever the
+// user, the project and its plugins define. Asked of the SDK
+// (supportedCommands()) for the same reason the model catalog is — it moves
+// under us — but keyed by *folder* rather than by workspace, because a
+// project's .claude/commands and .claude/skills only exist under that project.
+// ---------------------------------------------------------------------------
+
+export type SlashCommandInfo = {
+  /** the name without the leading slash — `review`, or `novus:ux-review` */
+  name: string
+  /** the one line under the name in the picker */
+  description: string
+  /** what it takes after the name, e.g. `<file>`; empty when it takes nothing */
+  argumentHint: string
+  /** other names that resolve here (`/cost` and `/stats` both mean `/usage`) */
+  aliases?: string[]
+}
+
+export type CommandsResponse =
+  /** `cwd` is the folder the server resolved the query to — `~` expanded, path
+   *  made absolute. It is what `commands_changed` frames are keyed by, so a
+   *  client holds on to it rather than to the folder it asked about. */
+  | { ok: true; cwd: string; probedAt: number; commands: SlashCommandInfo[] }
+  | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------
 // Inbox (GET /api/inbox)
 //
 // Ranked work items. The domain types live in core/work/types.ts (fat core);
@@ -719,6 +747,12 @@ export type SdkMessage = {
   /** Carried on init and result messages; the session's fast-mode reality. */
   fast_mode_state?: FastModeState
   fast_mode_disabled_reason?: FastModeDisabledReason
+  /** init only: the `/` commands whose UX needs a real terminal — we hide them. */
+  terminal_slash_commands?: string[]
+  /** `commands_changed` only: the replacement list, to be swapped in whole. */
+  commands?: SlashCommandInfo[]
+  /** `local_command_output` only: what a command like /usage printed. */
+  content?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,6 +1172,12 @@ export type ServerMessage =
   | { type: 'terminal_closed'; terminalId: string }
   /** The artifacts index changed (a write, a delete, or a re-index found edits) — refetch. */
   | { type: 'artifacts_changed' }
+  /**
+   * A folder's `/` command list changed — a session's subprocess discovered
+   * skills mid-run, or a probe just finished. Carries the whole list because
+   * the SDK's own contract is replace-don't-merge, and it is small.
+   */
+  | { type: 'commands_changed'; cwd: string; commands: SlashCommandInfo[] }
   /** A session's turn ended (or its repo moved) — the changes view should refetch. */
   | { type: 'session_changed'; sessionId: string }
   /** A brief job moved (queued → running → ready | failed); the item page and inbox row follow. */

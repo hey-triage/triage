@@ -51,6 +51,8 @@ import type {
   FastModeState,
   ModelOption,
   ModelsResponse,
+  SlashCommandInfo,
+  CommandsResponse,
   PermissionBehavior,
   PermissionMode,
   QuestionAnswers,
@@ -340,6 +342,7 @@ const sdkMode = (m: PermissionMode | null | undefined): SdkPermissionMode | unde
 // ---------------------------------------------------------------------------
 type ConnectorProbe = { probedAt: number; connectors: Connector[] }
 type ModelProbe = { probedAt: number; models: ModelOption[] }
+type CommandProbe = { probedAt: number; commands: SlashCommandInfo[] }
 
 const registry = loadRegistry()
 
@@ -375,6 +378,11 @@ class WorkspaceRuntime {
   connectorInFlight: Promise<ConnectorProbe> | null = null
   modelCache: ModelProbe | null = null
   modelInFlight: Promise<ModelProbe> | null = null
+  /** `/` command lists, keyed by folder — a project's own commands live under it */
+  readonly commandCache = new Map<string, CommandProbe>()
+  readonly commandInFlight = new Map<string, Promise<CommandProbe>>()
+  /** commands this CLI binds to a real terminal; learned from a session's init */
+  terminalCommands: string[] | null = null
   affiliatedCache: { at: number; repos: string[] } | null = null
 
   /** the in-process triage MCP server every chat session in this workspace gets */
@@ -609,7 +617,19 @@ class LiveSession {
             this.row.sdkSessionId = m.session_id
             void this.rt.store.sessions.setSdkSessionId(this.row.id, m.session_id)
           }
+          // What this CLI won't drive from a browser. Cwd-independent, so it
+          // is kept on the workspace: the first session to start teaches the
+          // draft tabs too. Set before the list is asked for, which reads it.
+          if (m.terminal_slash_commands) this.rt.terminalCommands = m.terminal_slash_commands
+          // The subprocess already knows what `/` offers in this folder —
+          // take it rather than make the composer pay for its own probe.
+          void this.refreshCommands()
           this.setStatus('idle')
+        }
+        // Skills can be discovered mid-run (the agent walks into a subdirectory
+        // with its own). The SDK's contract is replace-don't-merge.
+        if (m.type === 'system' && m.subtype === 'commands_changed' && m.commands) {
+          noteCommands(this.rt, this.row.cwd, m.commands.map(toCommandInfo))
         }
         if (m.type === 'assistant' || m.type === 'user') this.setStatus('running')
         this.noteToolPaths(m)
@@ -662,6 +682,15 @@ class LiveSession {
     this.fastModeState = undefined
     this.fastModeDisabledReason = undefined
     await this.q.applyFlagSettings({ fastMode: on ? true : null })
+  }
+
+  /** Ask this session's subprocess what `/` offers in its folder. */
+  private async refreshCommands() {
+    try {
+      noteCommands(this.rt, this.row.cwd, (await this.q.supportedCommands()).map(toCommandInfo))
+    } catch (err) {
+      log('warn', 'commands', `supportedCommands failed: ${errText(err)}`, { session: this.row.id })
+    }
   }
 
   /** Record the subprocess's own fast-mode verdict, broadcasting on a change. */
@@ -2235,6 +2264,112 @@ function probeModels(rt: WorkspaceRuntime): Promise<ModelProbe> {
     }
   })()
   return rt.modelInFlight
+}
+
+// ---------------------------------------------------------------------------
+// Slash commands: what `/` offers in the composer. Asked of the SDK
+// (supportedCommands()) like the model catalog, but keyed by *folder* rather
+// than by workspace — a project's .claude/commands, .claude/skills and its
+// plugins' skills only exist under that project.
+//
+// Two fill paths, and the cheap one covers the common case: a live session's
+// subprocess already knows the list, so it hands it over at init for free and
+// pushes a fresh one when skills are discovered mid-run. Only a draft tab —
+// which has no subprocess yet — pays for a throwaway probe, and only on the
+// first `/` typed against that folder.
+// ---------------------------------------------------------------------------
+
+/**
+ * Commands whose UX is bound to a real terminal. The SDK tags these per
+ * session (`terminal_slash_commands` on the init message) and tells remote
+ * hosts to hide them — but the tag rides the message stream, so a probe with
+ * no turn never sees it. Until this workspace has run one session, this list
+ * stands in; the first init replaces it wholesale rather than merging, so a
+ * stale guess here can only ever be wrong until a session starts.
+ */
+const TERMINAL_ONLY_FALLBACK = [
+  'exit',
+  'quit',
+  'statusline',
+  'vim',
+  'ide',
+  'terminal-setup',
+  'install-github-app',
+  'upgrade',
+  'login',
+  'logout',
+]
+
+/** The SDK's command shape is our wire shape; drop the empty optional. */
+const toCommandInfo = (c: {
+  name: string
+  description: string
+  argumentHint: string
+  aliases?: string[]
+}): SlashCommandInfo => ({
+  name: c.name,
+  description: c.description,
+  argumentHint: c.argumentHint,
+  ...(c.aliases?.length ? { aliases: c.aliases } : {}),
+})
+
+/** Hide what a browser can't drive, and give the picker a stable order. */
+function usableCommands(rt: WorkspaceRuntime, commands: SlashCommandInfo[]): SlashCommandInfo[] {
+  const hidden = new Set(rt.terminalCommands ?? TERMINAL_ONLY_FALLBACK)
+  return commands.filter((c) => !hidden.has(c.name)).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * Record what a subprocess reported for a folder and tell every composer
+ * pointed at it. Replace, never merge: the SDK's `commands_changed` contract
+ * is that the payload is the whole truth, and a command can be deleted.
+ */
+function noteCommands(rt: WorkspaceRuntime, cwd: string, commands: SlashCommandInfo[]): CommandProbe {
+  // Keyed by the resolved folder, so a session's absolute cwd and a draft
+  // tab's `~/Code/thing` are one entry rather than two.
+  const key = expandHome(cwd)
+  // The cache holds the subprocess's answer verbatim and `usableCommands`
+  // runs on the way out, so the terminal set learned by a session starting
+  // later still applies to a folder probed before it.
+  const probe: CommandProbe = { probedAt: Date.now(), commands }
+  rt.commandCache.set(key, probe)
+  broadcast(rt, { type: 'commands_changed', cwd: key, commands: usableCommands(rt, commands) })
+  return probe
+}
+
+/**
+ * The list for a folder with no live session — one throwaway subprocess, the
+ * same shape as the model probe, cached for the life of the process. Shared
+ * per folder while in flight so a fast typist can't spawn two.
+ */
+function probeCommands(rt: WorkspaceRuntime, cwd: string): Promise<CommandProbe> {
+  const running = rt.commandInFlight.get(cwd)  // callers pass the resolved folder
+  if (running) return running
+  const job = (async () => {
+    const input = new AsyncQueue<SDKUserMessage>()
+    const q = query({
+      prompt: input,
+      options: {
+        cwd,
+        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        // The same sources a real session gets, or the probe would miss
+        // exactly the project-local commands it is being asked about.
+        settingSources: ['user', 'project', 'local'],
+        ...(rt.env ? { env: rt.env } : {}),
+      },
+    })
+    try {
+      const probe = noteCommands(rt, cwd, (await q.supportedCommands()).map(toCommandInfo))
+      log('info', 'commands', `probed ${probe.commands.length} command(s)`, { workspace: rt.meta.id })
+      return probe
+    } finally {
+      input.close()
+      void q.return(undefined).catch(() => {}) // dispose the subprocess
+      rt.commandInFlight.delete(cwd)
+    }
+  })()
+  rt.commandInFlight.set(cwd, job)
+  return job
 }
 
 /**
@@ -4373,6 +4508,19 @@ const server = http.createServer(async (req, res) => {
       const probe =
         rt.modelCache && url.searchParams.get('refresh') !== '1' ? rt.modelCache : await probeModels(rt)
       body = { ok: true, probedAt: probe.probedAt, models: probe.models }
+    } catch (err) {
+      body = { ok: false, error: String(err) }
+    }
+    json(body.ok ? 200 : 502, body)
+    return
+  }
+  if (url.pathname === '/api/commands') {
+    let body: CommandsResponse
+    try {
+      const cwd = expandHome(url.searchParams.get('cwd') ?? os.homedir())
+      const cached = url.searchParams.get('refresh') === '1' ? null : rt.commandCache.get(cwd)
+      const probe = cached ?? (await probeCommands(rt, cwd))
+      body = { ok: true, cwd, probedAt: probe.probedAt, commands: usableCommands(rt, probe.commands) }
     } catch (err) {
       body = { ok: false, error: String(err) }
     }
