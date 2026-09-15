@@ -24,6 +24,7 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "clear-port": "./clear-port.sh",
     "smoke": "node scripts/smoke.mjs",
     "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
     "dev:server": "tsx server/index.ts",
