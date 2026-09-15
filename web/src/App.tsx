@@ -45,6 +45,7 @@ import {
   useTerminals,
   useWorkspaceId,
   useWorkspaces,
+  type Route,
 } from './hooks.js'
 import { inboxStore, useInbox } from './inboxStore.js'
 import { artifactStore, useArtifacts } from './artifactStore.js'
@@ -53,7 +54,7 @@ import { EFFORT_LABEL, findModel, useModels } from './models.js'
 import { openSettings } from './settings.js'
 import { store } from './store.js'
 import { usePanelWidth } from './panelWidth.js'
-import { projectColor, useOpenTabs } from './tabs.js'
+import { projectColor, useLastRoutes, useOpenTabs } from './tabs.js'
 
 /** `/Users/you/Code/x` → `~/Code/x` — display only. */
 const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
@@ -69,6 +70,34 @@ const PAGE_TABS: Record<'watches' | 'terminals' | 'artifacts', PageTab> = {
   terminals: { key: 'page:terminals', label: 'Terminals', icon: TerminalIcon },
   artifacts: { key: 'page:artifacts', label: 'Artifacts', icon: FileText },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
+}
+
+/**
+ * Which rail section a route belongs to: the rail's highlight, and the key
+ * rail memory is filed under.
+ */
+function sectionOf(route: Route): RailSection | null {
+  switch (route.page) {
+    case 'inbox':
+    case 'item':
+      return 'inbox'
+    case 'home':
+    case 'session':
+    case 'draft':
+      return 'sessions'
+    case 'terminal':
+    case 'terminals':
+      return 'terminals'
+    case 'artifact':
+    case 'artifacts':
+      return 'artifacts'
+    case 'watch':
+    case 'watch-form':
+    case 'watches':
+      return 'watches'
+    case 'settings':
+      return null
+  }
 }
 
 export function App() {
@@ -94,6 +123,7 @@ export function App() {
   const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
   const { tabs, open: openTab, close: closeTab, replace: replaceTab } = useOpenTabs(workspaceId)
+  const { lastRoutes, record: recordRoute } = useLastRoutes(workspaceId)
   const panelSize = usePanelWidth()
 
   // First run: the workspace modal doubles as onboarding — introduce the
@@ -131,6 +161,15 @@ export function App() {
       lastPageHash.current = location.hash.slice(1) || '/inbox'
     }
   }, [route, navigate])
+
+  // Rail memory: remember where you were in each section, so leaving and
+  // coming back lands on what you were reading rather than the section root.
+  useEffect(() => {
+    const section = sectionOf(route)
+    // `home` redirects to the inbox above; `settings` is a modal, not a place.
+    if (!section || route.page === 'home') return
+    recordRoute(section, location.hash.slice(1) || '/inbox')
+  }, [route, recordRoute])
 
   // The open inbox feeds the rail badge and the Queue panel from the start.
   useEffect(() => {
@@ -285,20 +324,33 @@ export function App() {
   // Where "+" opens a shell: the folder of whatever tab is in front.
   const terminalCwd = current?.cwd ?? currentTerminal?.cwd ?? currentDraft?.cwd
 
+  // Back to a section lands on what you were last doing there; clicking the
+  // section you are already in pops to its root (Inbox, Artifacts, Watches).
+  // Sessions and Terminals have no index page — their list *is* the panel — so
+  // they keep their own "take me to the live one" fallback chain instead.
   const goTo = useCallback(
     (section: RailSection) => {
-      if (section === 'inbox') navigate('/inbox')
-      else if (section === 'sessions') {
-        // The session in front, else the last session tab, else a fresh draft.
-        const last = currentId ?? [...tabs].reverse().find((k) => sessions.some((s) => s.id === k))
+      const back = sectionOf(route) === section ? undefined : lastRoutes[section]
+      if (section === 'sessions') {
+        // A remembered session that has since been deleted is no memory at all.
+        const alive = back?.startsWith('/new/')
+          ? drafts.some((d) => d.id === back.slice('/new/'.length))
+          : !!back && sessions.some((s) => s.id === back)
+        // The remembered one, else the session in front, else the last session
+        // tab, else a fresh draft.
+        const last = (alive ? back : undefined) ?? currentId ?? [...tabs].reverse().find((k) => sessions.some((s) => s.id === k))
         if (last) navigate(last)
         else newSession()
       } else if (section === 'terminals') {
-        const last = currentTerminalId ?? terminals[terminals.length - 1]?.id
-        navigate(last ? `/terminal/${last}` : '/terminals')
-      } else navigate(`/${section}`)
+        const id = back?.startsWith('/terminal/') ? back.slice('/terminal/'.length) : undefined
+        if (id && terminals.some((t) => t.id === id)) navigate(`/terminal/${id}`)
+        else {
+          const last = currentTerminalId ?? terminals[terminals.length - 1]?.id
+          navigate(last ? `/terminal/${last}` : '/terminals')
+        }
+      } else navigate(back ?? (section === 'inbox' ? '/inbox' : `/${section}`))
     },
-    [navigate, currentId, currentTerminalId, terminals, tabs, sessions, newSession],
+    [navigate, route, lastRoutes, currentId, currentTerminalId, terminals, tabs, sessions, drafts, newSession],
   )
 
   // Closing the tab you are on lands you on its neighbour, else the inbox.
@@ -357,12 +409,12 @@ export function App() {
       if (goPrefix.current !== undefined) {
         clearTimeout(goPrefix.current)
         goPrefix.current = undefined
-        if (e.key === 'i') return navigate('/inbox')
+        if (e.key === 'i') return goTo('inbox')
         if (e.key === 's') return goTo('sessions')
         if (e.key === 't') return goTo('terminals')
         if (e.key === 'c') return openSettings('connectors')
         if (e.key === 'p') return openSettings('projects')
-        if (e.key === 'w') return navigate('/watches')
+        if (e.key === 'w') return goTo('watches')
         return // unknown sequence — swallow
       }
       if (e.key === 'g') {
@@ -450,20 +502,7 @@ export function App() {
 
   // --- derived shell state -------------------------------------------------
 
-  const railActive: RailSection | null =
-    route.page === 'inbox' || route.page === 'item'
-      ? 'inbox'
-      : route.page === 'home' || route.page === 'session' || route.page === 'draft'
-        ? 'sessions'
-        : route.page === 'terminal'
-          ? 'terminals'
-          : route.page === 'settings'
-            ? null
-            : route.page === 'artifact'
-              ? 'artifacts'
-              : route.page === 'watch-form' || route.page === 'watch'
-                ? 'watches'
-                : route.page
+  const railActive: RailSection | null = sectionOf(route)
 
   const openTabs = useMemo<OpenTab[]>(
     () =>

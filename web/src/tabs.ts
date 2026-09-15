@@ -5,6 +5,7 @@
  * server.
  */
 import { useCallback, useEffect, useState } from 'react'
+import type { RailSection } from './components/Rail.js'
 
 const key = (workspaceId: string) => `triage.tabs.${workspaceId || 'default'}`
 
@@ -55,6 +56,53 @@ export function useOpenTabs(workspaceId: string) {
   }, [])
 
   return { tabs, open, close, replace }
+}
+
+/**
+ * The last route you were on in each rail section. The rail is *section*
+ * navigation: leaving Artifacts for a session and coming back should land on
+ * the artifact you were reading, not the grid. Per workspace, per browser —
+ * where *you* were, so the same reasoning (and storage) as the tabs above.
+ */
+const routeKey = (workspaceId: string) => `triage.lastRoute.${workspaceId || 'default'}`
+
+export type LastRoutes = Partial<Record<RailSection, string>>
+
+function readRoutes(workspaceId: string): LastRoutes {
+  try {
+    const raw = localStorage.getItem(routeKey(workspaceId))
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: LastRoutes = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k as RailSection] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+export function useLastRoutes(workspaceId: string) {
+  const [lastRoutes, setLastRoutes] = useState<LastRoutes>(() => readRoutes(workspaceId))
+
+  useEffect(() => {
+    setLastRoutes(readRoutes(workspaceId))
+  }, [workspaceId])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(routeKey(workspaceId), JSON.stringify(lastRoutes))
+    } catch {
+      // storage full or blocked — rail memory is a convenience, not state we need
+    }
+  }, [lastRoutes, workspaceId])
+
+  const record = useCallback((section: RailSection, hash: string) => {
+    setLastRoutes((prev) => (prev[section] === hash ? prev : { ...prev, [section]: hash }))
+  }, [])
+
+  return { lastRoutes, record }
 }
 
 /**
