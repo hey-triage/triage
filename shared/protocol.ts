@@ -517,6 +517,74 @@ export type ProjectsResponse =
 // draft composer's header (a session derives its own once it exists).
 export type BranchResponse = { ok: true; branch: string | null } | { ok: false; error: string }
 
+// ---------------------------------------------------------------------------
+// Session changes — what a session's own turns did to the repo it runs in
+// ---------------------------------------------------------------------------
+
+/** git's own letters, plus untracked-at-snapshot files, which read as added. */
+export type ChangeStatus = 'modified' | 'added' | 'deleted'
+
+/**
+ * How sure we are that *this* session made a change. Sessions share a working
+ * tree, so this is inferred, not definitional (worktree-per-session would make
+ * it definitional — roadmap v0.3):
+ *  - `exact`     — it moved inside one of this session's turn windows and no
+ *                  other session's turn was running in the same repo then.
+ *  - `shared`    — another session's turns changed this file too.
+ *  - `ambiguous` — it moved during a turn that overlapped another session's,
+ *                  and none of our own tools named it.
+ */
+export type ChangeConfidence = 'exact' | 'shared' | 'ambiguous'
+
+export type ChangedFile = {
+  /** repo-relative, `/`-joined */
+  path: string
+  status: ChangeStatus
+  insertions: number
+  deletions: number
+  isBinary: boolean
+  /** an Edit/Write/MultiEdit/NotebookEdit of this session named the path */
+  touched: boolean
+  confidence: ChangeConfidence
+  /** titles of other sessions whose own turns also changed this file */
+  alsoChangedBy: string[]
+  /** which of this session's turns (1-based) changed it */
+  turns: number[]
+}
+
+/** One turn of this session, as the changes view counts it. */
+export type SessionTurnSummary = {
+  seq: number
+  files: number
+  insertions: number
+  deletions: number
+  startedAt: number
+  /** null while the turn is still running */
+  endedAt: number | null
+  /** titles of other sessions whose turns overlapped this one in this repo */
+  overlapped: string[]
+}
+
+export type SessionChanges = {
+  /** the repo root; null when the session's folder is not in a git repo */
+  root: string | null
+  /** set when there is nothing to show and the reason is worth saying */
+  unavailable?: string
+  files: ChangedFile[]
+  turns: SessionTurnSummary[]
+  insertions: number
+  deletions: number
+}
+
+export type SessionChangesResponse =
+  | { ok: true; changes: SessionChanges }
+  | { ok: false; error: string }
+
+/** GET /api/sessions/:id/diff?path=… — one file, as unified-diff text. */
+export type SessionDiffResponse =
+  | { ok: true; path: string; patch: string; isBinary: boolean; truncated: boolean }
+  | { ok: false; error: string }
+
 // POST /api/pick-folder — opens the OS's native folder chooser on the machine
 // running the server (which is the user's own machine) and returns the picked
 // absolute path. `cancelled` is the user dismissing the dialog, not an error.
@@ -1032,6 +1100,8 @@ export type ServerMessage =
   | { type: 'terminal_closed'; terminalId: string }
   /** The artifacts index changed (a write, a delete, or a re-index found edits) — refetch. */
   | { type: 'artifacts_changed' }
+  /** A session's turn ended (or its repo moved) — the changes view should refetch. */
+  | { type: 'session_changed'; sessionId: string }
   /** A brief job moved (queued → running → ready | failed); the item page and inbox row follow. */
   | { type: 'brief_status'; job: BriefJob }
   | { type: 'error'; message: string }

@@ -15,6 +15,8 @@ import type { DispatchPreviewResponse,
   WatchesResponse,
 } from '../../shared/protocol.js'
 import { CommandPalette } from './components/CommandPalette.js'
+import { useSessionChanges } from './useSessionChanges.js'
+import { ChangesDrawer } from './components/ChangesDrawer.js'
 import { Composer } from './components/Composer.js'
 import { ArtifactsPanel, NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
@@ -207,6 +209,11 @@ export function App() {
   const currentDraftId = route.page === 'draft' ? route.id : null
   const events = useEvents(currentId)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // A diff selection quoted into the composer; the nonce makes a repeat land.
+  const [quote, setQuote] = useState({ text: '', nonce: 0 })
+  // Fetched once per session and shared by the transcript's turn markers and
+  // the changes drawer.
+  const sessionChanges = useSessionChanges(currentId)
   const [helpOpen, setHelpOpen] = useState(false)
   const [system, setSystem] = useState<{ open: boolean; tab: SystemTab }>({ open: false, tab: 'status' })
   const [composeSignal, setComposeSignal] = useState(0)
@@ -889,9 +896,22 @@ export function App() {
                     {STATUS_LABEL[current.status]}
                   </span>
                 </div>
-                <Transcript key={current.id} sessionId={current.id} events={events} onRespond={respond} />
+                <Transcript
+                  key={current.id}
+                  sessionId={current.id}
+                  events={events}
+                  turns={sessionChanges?.turns}
+                  onRespond={respond}
+                />
+                <ChangesDrawer
+                  key={`changes-${current.id}`}
+                  sessionId={current.id}
+                  changes={sessionChanges}
+                  onQuote={(text) => setQuote((q) => ({ text, nonce: q.nonce + 1 }))}
+                />
                 <Composer
                   key={`composer-${current.id}`}
+                  quote={quote}
                   status={current.status}
                   cwd={current.cwd}
                   branch={current.branch}

@@ -35,6 +35,8 @@ import type {
   Store,
   StoredEvent,
   StoredSession,
+  StoredTurn,
+  TurnStore,
   UpsertResult,
   WatchRunRecord,
   WatchStore,
@@ -255,6 +257,18 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE watches ADD COLUMN model TEXT;`,
   // 19: what a run produces — many items (default) or one rolling digest.
   `ALTER TABLE watches ADD COLUMN output TEXT;`,
+  `CREATE TABLE IF NOT EXISTS session_turns (
+     session_id TEXT NOT NULL,
+     seq        INTEGER NOT NULL,
+     root       TEXT NOT NULL,
+     pre_tree   TEXT NOT NULL,
+     post_tree  TEXT,
+     started_at INTEGER NOT NULL,
+     ended_at   INTEGER,
+     touched    TEXT NOT NULL DEFAULT '[]',
+     PRIMARY KEY (session_id, seq)
+   );
+   CREATE INDEX IF NOT EXISTS session_turns_root ON session_turns(root);`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -268,6 +282,7 @@ export function openSqliteStore(file: string): Store {
   return {
     sessions: new SqliteSessions(db),
     events: new SqliteEvents(db),
+    turns: new SqliteTurns(db),
     inbox: new SqliteInbox(db),
     config: new SqliteConfig(db),
     projects: new SqliteProjects(db),
@@ -539,6 +554,7 @@ class SqliteSessions implements SessionStore {
    */
   async remove(id: string): Promise<void> {
     this.db.prepare('DELETE FROM session_events WHERE session_id = ?').run(id)
+    this.db.prepare('DELETE FROM session_turns WHERE session_id = ?').run(id)
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
   }
 
@@ -550,6 +566,87 @@ class SqliteSessions implements SessionStore {
     this.db
       .prepare('UPDATE sessions SET run_status = ?, run_matches = ?, run_tokens = ?, run_cost_usd = ?, run_error = ?, updated_at = ? WHERE id = ?')
       .run(run.status, run.matches, run.tokens, run.costUsd ?? null, run.error ?? null, Date.now(), id)
+  }
+}
+
+type TurnRow = {
+  session_id: string
+  seq: number
+  root: string
+  pre_tree: string
+  post_tree: string | null
+  started_at: number
+  ended_at: number | null
+  touched: string
+}
+
+const turnFrom = (r: TurnRow): StoredTurn => ({
+  sessionId: r.session_id,
+  seq: r.seq,
+  root: r.root,
+  preTree: r.pre_tree,
+  postTree: r.post_tree,
+  startedAt: r.started_at,
+  endedAt: r.ended_at,
+  touched: parseJsonArray(r.touched),
+})
+
+function parseJsonArray(s: string): string[] {
+  try {
+    const v = JSON.parse(s)
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+class SqliteTurns implements TurnStore {
+  constructor(private db: DatabaseSync) {}
+
+  async begin(t: { sessionId: string; seq: number; root: string; preTree: string; startedAt: number }): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO session_turns (session_id, seq, root, pre_tree, started_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(session_id, seq) DO UPDATE SET root = excluded.root, pre_tree = excluded.pre_tree,
+           started_at = excluded.started_at, post_tree = NULL, ended_at = NULL`,
+      )
+      .run(t.sessionId, t.seq, t.root, t.preTree, t.startedAt)
+  }
+
+  async end(
+    sessionId: string,
+    seq: number,
+    post: { postTree: string | null; endedAt: number; touched: string[] },
+  ): Promise<void> {
+    this.db
+      .prepare('UPDATE session_turns SET post_tree = ?, ended_at = ?, touched = ? WHERE session_id = ? AND seq = ?')
+      .run(post.postTree, post.endedAt, JSON.stringify(post.touched), sessionId, seq)
+  }
+
+  async list(sessionId: string): Promise<StoredTurn[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM session_turns WHERE session_id = ? ORDER BY seq')
+      .all(sessionId) as TurnRow[]
+    return rows.map(turnFrom)
+  }
+
+  async othersInRoot(root: string, exceptSessionId: string): Promise<StoredTurn[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM session_turns WHERE root = ? AND session_id != ? ORDER BY started_at')
+      .all(root, exceptSessionId) as TurnRow[]
+    return rows.map(turnFrom)
+  }
+
+  async lastSeq(sessionId: string): Promise<number> {
+    const r = this.db
+      .prepare('SELECT COALESCE(MAX(seq), 0) AS n FROM session_turns WHERE session_id = ?')
+      .get(sessionId) as { n: number }
+    return r.n
+  }
+
+  async removeFor(sessionId: string): Promise<void> {
+    this.db.prepare('DELETE FROM session_turns WHERE session_id = ?').run(sessionId)
   }
 }
 

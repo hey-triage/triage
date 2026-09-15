@@ -6,6 +6,7 @@ import {
   type QuestionAnswers,
   type ResolvedMention,
   type SessionEvent,
+  type SessionTurnSummary,
 } from '../../../shared/protocol.js'
 import { parseQuestions } from '../askQuestions.js'
 import { useLiveText } from '../hooks.js'
@@ -21,10 +22,12 @@ import { ToolCard } from './ToolCard.js'
 type Props = {
   sessionId: string
   events: readonly SessionEvent[]
+  /** per-turn file counts, so a turn marker can say what that turn changed */
+  turns?: readonly SessionTurnSummary[]
   onRespond: (requestId: string, behavior: PermissionBehavior, answers?: QuestionAnswers) => void
 }
 
-export function Transcript({ sessionId, events, onRespond }: Props) {
+export function Transcript({ sessionId, events, turns, onRespond }: Props) {
   const items = useMemo(() => buildTranscript(events), [events])
   const { ref, scrollToBottom } = useStickToBottom()
 
@@ -36,7 +39,12 @@ export function Transcript({ sessionId, events, onRespond }: Props) {
     <div id="transcript" ref={ref}>
       <div className="inner">
         {items.map((item) => (
-          <Item key={item.key} item={item} onRespond={onRespond} />
+          <Item
+            key={item.key}
+            item={item}
+            turn={item.kind === 'meta' && item.turn ? turns?.find((t) => t.seq === item.turn) : undefined}
+            onRespond={onRespond}
+          />
         ))}
         <LiveLine sessionId={sessionId} onGrow={scrollToBottom} />
       </div>
@@ -78,9 +86,11 @@ function withMentionLabels(text: string, mentions?: readonly ResolvedMention[]):
 
 const Item = memo(function Item({
   item,
+  turn,
   onRespond,
 }: {
   item: TranscriptItem
+  turn?: SessionTurnSummary
   onRespond: Props['onRespond']
 }) {
   switch (item.kind) {
@@ -131,7 +141,25 @@ const Item = memo(function Item({
     case 'error':
       return <ErrorCard text={item.text} />
     case 'meta':
-      return <div className="meta">{item.text}</div>
+      // A turn that changed files says so here, where it happened — the drawer
+      // below answers "in total", this answers "in this turn".
+      return (
+        <div className="meta">
+          {item.text}
+          {turn && turn.files > 0 && (
+            <span className="turnChange">
+              {turn.files} {turn.files === 1 ? 'file' : 'files'} <span className="pl">+{turn.insertions}</span>{' '}
+              <span className="mn">−{turn.deletions}</span>
+              {turn.overlapped.length > 0 && (
+                <span className="warn" title={`Ran at the same time as ${turn.overlapped.join(', ')}`}>
+                  {' '}
+                  · concurrent with {turn.overlapped.join(', ')}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+      )
     case 'init':
       return <InitCard item={item} />
     case 'tool':

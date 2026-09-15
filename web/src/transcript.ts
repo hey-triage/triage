@@ -28,7 +28,7 @@ export type TranscriptItem =
   | { key: string; kind: 'assistant'; text: string }
   | { key: string; kind: 'thinking'; text: string }
   | { key: string; kind: 'error'; text: string }
-  | { key: string; kind: 'meta'; text: string }
+  | { key: string; kind: 'meta'; text: string; /** 1-based turn this marker ends, for the changeset line */ turn?: number }
   | { key: string; kind: 'init'; model?: string; toolCount: number; servers: McpServerInfo[] }
   | {
       key: string
@@ -56,6 +56,9 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
   // A second init in one log means the subprocess was restarted (`resume`) —
   // render those as a one-line marker instead of repeating the full card.
   let initSeen = false
+  // Turns are counted the way the server counts them: one per `result`, so a
+  // marker can be matched to the snapshot pair that bracketed it.
+  let turnSeq = 0
   // Items are rebuilt on every append, so late-arriving results and permission
   // verdicts are patched onto the item objects created earlier in this pass.
   const toolsById = new Map<string, Extract<TranscriptItem, { kind: 'tool' }>>()
@@ -133,9 +136,11 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
         } else if (m.type === 'result') {
           const cost = m.total_cost_usd != null ? ` · $${m.total_cost_usd.toFixed(4)}` : ''
           const secs = ((m.duration_ms ?? 0) / 1000).toFixed(1)
+          turnSeq += 1
           items.push({
             key: `r${i}`,
             kind: 'meta',
+            turn: turnSeq,
             text: `— turn done · ${secs}s · ${m.num_turns ?? 0} turns${cost} —`,
           })
         }

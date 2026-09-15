@@ -41,6 +41,7 @@ import {
   type PermissionUpdate,
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
+import { filePatch, repoRoot, snapshotTree, treeDiff, type TreeChange } from './git.js'
 import type {
   ClientMessage,
   Connector,
@@ -86,6 +87,11 @@ import type {
   SessionKind,
   SettingsResponse,
   WorkspaceSettings,
+  ChangedFile,
+  SessionChanges,
+  SessionChangesResponse,
+  SessionDiffResponse,
+  SessionTurnSummary,
 } from '../shared/protocol.js'
 import {
   MAX_IMAGES_PER_ITEM,
@@ -100,6 +106,7 @@ import {
   isLinkKind,
   isLinkRole,
   isMentionKind,
+  isToolUseBlock,
   mentionToken,
 } from '../shared/protocol.js'
 import type {
@@ -136,6 +143,7 @@ import type {
   WorkspacesResponse,
   WorkspaceVerifyResponse,
 } from '../shared/protocol.js'
+import type { StoredTurn } from '../core/store/types.js'
 import { openSqliteStore } from '../core/store/sqlite.js'
 import type { Store, StoredSession, UpsertOutcome } from '../core/store/types.js'
 import { buildInbox } from '../core/work/inbox.js'
@@ -382,6 +390,16 @@ class WorkspaceRuntime {
   /** session id → the work item it was dispatched for or briefs (mirrors `links`) */
   readonly sessionItem = new Map<string, string>()
 
+  // Session changes (.docs/session-diff-variations.md): sessions in one folder
+  // share a working tree, so "what did *this* session change" is reconstructed
+  // from the git trees either side of each of its turns.
+  /** session id → its repo root, or null when its folder is not a repo (cached) */
+  readonly repoRoots = new Map<string, string | null>()
+  /** session id → the turn currently running, for the pre-tree and tool paths */
+  readonly openTurns = new Map<string, OpenTurn>()
+  /** `<sessionId>:<seq>` → that turn's file delta. Finished turns are immutable. */
+  readonly turnDeltas = new Map<string, TreeChange[]>()
+
   constructor(public meta: WorkspaceMeta) {
     this.store = openSqliteStore(dbFileFor(meta.id, registry.defaultId))
     this.env = spawnEnvFor(meta)
@@ -516,6 +534,55 @@ class LiveSession {
     void this.pump()
   }
 
+  /**
+   * Photograph the repo before this turn starts, so everything the turn does
+   * lands between two trees we own. Best-effort: a folder that is not a repo,
+   * or a git that fails, simply records nothing and the changes view says so.
+   */
+  private async beginTurn() {
+    if (this.row.kind !== 'chat') return
+    const root = await sessionRepoRoot(this.rt, this.row)
+    if (!root) return
+    // A turn already open means the user sent again mid-turn; the SDK folds
+    // that into the running turn, so keep the original pre-tree.
+    if (this.rt.openTurns.has(this.row.id)) return
+    const preTree = await snapshotTree(root)
+    if (!preTree) return
+    const seq = (await this.rt.store.turns.lastSeq(this.row.id)) + 1
+    const startedAt = Date.now()
+    this.rt.openTurns.set(this.row.id, { seq, root, startedAt, touched: new Set() })
+    await this.rt.store.turns.begin({ sessionId: this.row.id, seq, root, preTree, startedAt })
+  }
+
+  /** Close the open turn with the post-turn tree. Never throws into the pump. */
+  private async endTurn() {
+    const open = this.rt.openTurns.get(this.row.id)
+    if (!open) return
+    this.rt.openTurns.delete(this.row.id)
+    try {
+      const postTree = await snapshotTree(open.root)
+      await this.rt.store.turns.end(this.row.id, open.seq, {
+        postTree,
+        endedAt: Date.now(),
+        touched: [...open.touched],
+      })
+      broadcast(this.rt, { type: 'session_changed', sessionId: this.row.id })
+    } catch (err) {
+      log('warn', 'git', `snapshot after turn failed: ${errText(err)}`, { session: this.row.id })
+    }
+  }
+
+  /** Remember which paths this turn's file-editing tools named. */
+  private noteToolPaths(m: SdkMessage) {
+    const open = this.rt.openTurns.get(this.row.id)
+    if (!open || m.type !== 'assistant') return
+    for (const b of m.message?.content ?? []) {
+      if (!isToolUseBlock(b) || !EDIT_TOOLS.has(b.name)) continue
+      const fp = (b.input as { file_path?: unknown })?.file_path
+      if (typeof fp === 'string' && fp) open.touched.add(path.resolve(open.root, fp))
+    }
+  }
+
   private async pump() {
     try {
       for await (const msg of this.q) {
@@ -534,11 +601,13 @@ class LiveSession {
           this.setStatus('idle')
         }
         if (m.type === 'assistant' || m.type === 'user') this.setStatus('running')
+        this.noteToolPaths(m)
         // stream deltas are broadcast live but not persisted (recoverable
         // from the committed assistant message, and the only high-volume thing)
         this.emit({ kind: 'sdk', message: m }, m.type !== 'stream_event')
         if (m.type === 'result') {
           this.setStatus('idle')
+          void this.endTurn()
           void this.rt.store.sessions.touch(this.row.id)
           void refreshBranch(this.rt, this.row)
           // The turn may have created files — the next `@` search relists.
@@ -598,6 +667,8 @@ class LiveSession {
     // Mentions are resolved now, against this session's folder, so the event
     // log records what the model was actually given (and why a file wasn't).
     const attached = mentions?.length ? await resolveMentions(this.rt, this.row.cwd, mentions) : null
+    // Before the agent can touch anything: the tree this turn starts from.
+    await this.beginTurn()
     this.emit({ kind: 'local_user', text, images, mentions: attached?.resolved }, true)
     this.setStatus('running')
     void this.rt.store.sessions.touch(this.row.id)
@@ -833,6 +904,170 @@ async function refreshBranch(rt: WorkspaceRuntime, row: StoredSession) {
   } catch {
     // not a git repo — no chip
   }
+}
+
+// ---------------------------------------------------------------------------
+// Session changes — reconstructing what one session did to a shared worktree
+// ---------------------------------------------------------------------------
+
+type OpenTurn = { seq: number; root: string; startedAt: number; touched: Set<string> }
+
+/** Tools whose `file_path` counts as this session naming a file itself. */
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+/** A session's repo root, resolved once per session and cached. */
+async function sessionRepoRoot(rt: WorkspaceRuntime, row: StoredSession): Promise<string | null> {
+  const hit = rt.repoRoots.get(row.id)
+  if (hit !== undefined) return hit
+  const root = await repoRoot(row.cwd)
+  rt.repoRoots.set(row.id, root)
+  return root
+}
+
+/** Working-tree snapshots are ~100 ms; a burst of requests shares one. */
+const nowTrees = new Map<string, { at: number; tree: Promise<string | null> }>()
+function currentTree(root: string): Promise<string | null> {
+  const hit = nowTrees.get(root)
+  if (hit && Date.now() - hit.at < 1500) return hit.tree
+  const tree = snapshotTree(root)
+  nowTrees.set(root, { at: Date.now(), tree })
+  return tree
+}
+
+/** A turn's delta, memoised — the trees either side of a finished turn never move. */
+async function turnDelta(
+  rt: WorkspaceRuntime,
+  root: string,
+  t: StoredTurn,
+  to: string | null,
+  live: boolean,
+): Promise<TreeChange[]> {
+  if (!to) return []
+  const key = `${t.sessionId}:${t.seq}`
+  if (!live) {
+    const hit = rt.turnDeltas.get(key)
+    if (hit) return hit
+  }
+  const delta = await treeDiff(root, t.preTree, to)
+  if (!live) rt.turnDeltas.set(key, delta)
+  return delta
+}
+
+/** Do two turn windows overlap in time? An unfinished turn runs until now. */
+const overlaps = (a: StoredTurn, b: StoredTurn): boolean =>
+  a.startedAt <= (b.endedAt ?? Date.now()) && b.startedAt <= (a.endedAt ?? Date.now())
+
+/**
+ * What this session changed, and how sure we are about each file.
+ *
+ * Sessions share a working tree, so `git status` cannot answer this. Each of a
+ * session's turns is bracketed by two trees, and the agent only edits while
+ * its own turn runs — so the union of the per-turn deltas is this session's
+ * file set, and anything another session moved outside those windows is simply
+ * not in it. Within a window we can still be fooled by a *concurrent* session,
+ * which is what `confidence` reports rather than hides.
+ */
+async function computeSessionChanges(rt: WorkspaceRuntime, row: StoredSession): Promise<SessionChanges> {
+  const empty = { files: [], turns: [], insertions: 0, deletions: 0 }
+  const root = await sessionRepoRoot(rt, row)
+  if (!root) return { root: null, unavailable: 'This session is not running inside a git repository.', ...empty }
+
+  const turns = await rt.store.turns.list(row.id)
+  if (!turns.length) return { root, unavailable: 'No turns have run in this session yet.', ...empty }
+
+  const now = await currentTree(root)
+  if (!now) return { root, unavailable: 'Could not read the working tree.', ...empty }
+
+  // Everything another session did to this repo since our baseline. Turns that
+  // finished before we started cannot have polluted our own window.
+  const since = turns[0].startedAt
+  const foreign = (await rt.store.turns.othersInRoot(root, row.id)).filter((t) => (t.endedAt ?? Date.now()) >= since)
+
+  // --- our own per-turn deltas: the file set, and which turn moved what -----
+  const mine = new Map<string, { turns: number[]; ambiguous: boolean }>()
+  const turnSummaries: SessionTurnSummary[] = []
+  for (const [i, t] of turns.entries()) {
+    const last = i === turns.length - 1
+    const to = t.postTree ?? (last ? now : (turns[i + 1]?.preTree ?? null))
+    const delta = await turnDelta(rt, root, t, to, t.postTree === null)
+    const clashing = foreign.filter((f) => overlaps(t, f))
+    for (const c of delta) {
+      const e = mine.get(c.path) ?? { turns: [], ambiguous: false }
+      e.turns.push(t.seq)
+      // Only uncertain when someone else was running *and* no tool of ours
+      // named the file during this turn.
+      if (clashing.length && !t.touched.includes(path.join(root, c.path))) e.ambiguous = true
+      mine.set(c.path, e)
+    }
+    turnSummaries.push({
+      seq: t.seq,
+      files: delta.length,
+      insertions: delta.reduce((n, c) => n + c.insertions, 0),
+      deletions: delta.reduce((n, c) => n + c.deletions, 0),
+      startedAt: t.startedAt,
+      endedAt: t.endedAt,
+      overlapped: [...new Set(clashing.map((c) => c.sessionId))].map((id) => sessionTitle(rt, id)),
+    })
+  }
+
+  // --- which of those files another session also moved ----------------------
+  const alsoBy = new Map<string, Set<string>>()
+  for (const f of foreign) {
+    const to = f.postTree ?? now
+    const delta = await turnDelta(rt, root, f, to, f.postTree === null)
+    for (const c of delta) {
+      if (!mine.has(c.path)) continue
+      const set = alsoBy.get(c.path) ?? new Set<string>()
+      set.add(f.sessionId)
+      alsoBy.set(c.path, set)
+    }
+  }
+
+  // --- the numbers: net baseline → now, so a file edited twice counts once --
+  const net = await treeDiff(root, turns[0].preTree, now)
+  const touchedAbs = new Set(turns.flatMap((t) => t.touched))
+  const files: ChangedFile[] = []
+  for (const c of net) {
+    const ours = mine.get(c.path)
+    if (!ours) continue // moved in this folder, but never inside one of our turns
+    const also = [...(alsoBy.get(c.path) ?? [])]
+    files.push({
+      path: c.path,
+      status: c.status,
+      insertions: c.insertions,
+      deletions: c.deletions,
+      isBinary: c.isBinary,
+      touched: touchedAbs.has(path.join(root, c.path)),
+      confidence: also.length ? 'shared' : ours.ambiguous ? 'ambiguous' : 'exact',
+      alsoChangedBy: also.map((id) => sessionTitle(rt, id)),
+      turns: ours.turns,
+    })
+  }
+
+  return {
+    root,
+    files,
+    turns: turnSummaries,
+    insertions: files.reduce((n, f) => n + f.insertions, 0),
+    deletions: files.reduce((n, f) => n + f.deletions, 0),
+  }
+}
+
+const sessionTitle = (rt: WorkspaceRuntime, id: string): string => rt.rows.get(id)?.title ?? 'another session'
+
+/** One file's patch, from this session's baseline to the working tree. */
+async function sessionFilePatch(
+  rt: WorkspaceRuntime,
+  row: StoredSession,
+  file: string,
+): Promise<{ patch: string; truncated: boolean } | null> {
+  const root = await sessionRepoRoot(rt, row)
+  if (!root) return null
+  const turns = await rt.store.turns.list(row.id)
+  if (!turns.length) return null
+  const now = await currentTree(root)
+  if (!now) return null
+  return filePatch(root, turns[0].preTree, now, file)
 }
 
 async function createSession(
@@ -3371,6 +3606,42 @@ const server = http.createServer(async (req, res) => {
     json(200, summaries(rt))
     return
   }
+
+  // What this session changed, and one file's patch. Session-scoped on
+  // purpose: the question is "what did this agent do", not "what is dirty".
+  {
+    const m = /^\/api\/sessions\/([^/]+)\/(changes|diff)$/.exec(url.pathname)
+    if (m && req.method === 'GET') {
+      const row = rt.rows.get(m[1]) ?? (await rt.store.sessions.get(m[1]))
+      if (!row) {
+        json(404, { ok: false, error: 'no such session' })
+        return
+      }
+      if (m[2] === 'changes') {
+        let body: SessionChangesResponse
+        try {
+          body = { ok: true, changes: await computeSessionChanges(rt, row) }
+        } catch (err) {
+          body = { ok: false, error: errText(err) }
+        }
+        json(body.ok ? 200 : 500, body)
+        return
+      }
+      const file = url.searchParams.get('path') ?? ''
+      let body: SessionDiffResponse
+      try {
+        if (!file) throw new Error('need a path')
+        const got = await sessionFilePatch(rt, row, file)
+        if (!got) throw new Error('no snapshots for this session')
+        body = { ok: true, path: file, patch: got.patch, isBinary: got.patch.includes('Binary files'), truncated: got.truncated }
+      } catch (err) {
+        body = { ok: false, error: errText(err) }
+      }
+      json(body.ok ? 200 : 400, body)
+      return
+    }
+  }
+
   // The composer's `@` picker: fuzzy file matches under one folder.
   if (url.pathname === '/api/files/search' && req.method === 'GET') {
     const root = expandHome(url.searchParams.get('root') ?? '')

@@ -1875,3 +1875,137 @@ dialog.briefDialog .knobs select { width: auto; }
 .previewTranscript .waiting { padding: 24px; color: var(--ash); font-size: 0.9615rem; }
 
 .page .inner.wform.wide { max-width: 960px; }
+
+/* ---------------------------------------------------------------------------
+   Session changes — the drawer between the transcript and the composer, and
+   the diff primitive it shares with the Edit/Write tool cards.
+   --------------------------------------------------------------------------- */
+
+.pl { color: var(--green); }
+.mn { color: var(--red); }
+
+/* collapsed: a single quiet bar, only when the session actually changed files */
+.changesBar { flex: none; padding: 0 40px; background: var(--canvas); }
+.changesOpen {
+  display: flex; align-items: center; gap: 9px; width: 100%; max-width: var(--measure); margin: 0 auto;
+  height: 30px; padding: 0 12px; border: 0; border-top: 1px solid var(--hair);
+  background: transparent; color: var(--mute); font-size: 0.9231rem; text-align: left;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+.changesOpen:hover { color: var(--ink); background: var(--wash-1); }
+.changesOpen .n { color: var(--body); }
+.changesOpen .num { font-family: var(--mono); font-size: 0.8462rem; }
+.changesOpen .warn { display: inline-flex; align-items: center; gap: 4px; color: var(--yellow); font-size: 0.8462rem; }
+.changesOpen .kbd { margin-left: auto; }
+
+/* open: takes its height from the transcript, never from the composer */
+.changesDrawer {
+  flex: none; display: flex; flex-direction: column; min-height: 0;
+  background: var(--card); border-top: 1px solid var(--hair-strong);
+}
+.changesDrawer .grip { height: 6px; flex: none; display: flex; align-items: center; justify-content: center; cursor: ns-resize; }
+.changesDrawer .grip span { width: 28px; height: 2px; border-radius: var(--r-full); background: var(--hair-strong); }
+.changesDrawer .grip:hover span { background: var(--hair-bright); }
+
+.changesDrawer .dbar {
+  flex: none; display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 14px;
+  border-bottom: 1px solid var(--hair); color: var(--ash);
+}
+.changesDrawer .dbar .t { color: var(--ink); font-size: 1rem; }
+.changesDrawer .dbar .dim { color: var(--stone); font-size: 0.8462rem; }
+.changesDrawer .dbar .sp { margin-left: auto; }
+.changesDrawer .segBtn { gap: 6px; }
+
+/* one chip per changed file; the strip scrolls rather than wraps */
+.changesDrawer .ftabs {
+  flex: none; display: flex; gap: 3px; padding: 6px 10px; overflow-x: auto; overflow-y: hidden;
+  border-bottom: 1px solid var(--hair); scrollbar-width: thin;
+}
+.ftab {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; height: 24px; padding: 0 9px;
+  border: 1px solid transparent; border-radius: var(--r-sm); background: transparent;
+  color: var(--ash); font-family: var(--mono); font-size: 0.8462rem; white-space: nowrap;
+}
+.ftab:hover { color: var(--ink); background: var(--wash-1); }
+.ftab.on { background: var(--elev); border-color: var(--hair); color: var(--ink); }
+.ftab .st { width: 8px; text-align: center; }
+.ftab .st.modified { color: var(--yellow); }
+.ftab .st.added { color: var(--green); }
+.ftab .st.deleted { color: var(--red); }
+.ftab .warnIcon { color: var(--yellow); }
+
+.changesDrawer .dbody { flex: 1; min-height: 0; overflow: auto; background: var(--deep); }
+.changesDrawer .dnote { margin: 0; padding: 18px 16px; color: var(--stone); font-size: 0.9231rem; }
+.changesDrawer .dnote.err { color: #ff7a92; font-family: var(--mono); }
+
+.changesDrawer .dfoot {
+  flex: none; display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 14px;
+  border-top: 1px solid var(--hair); color: var(--ash); font-size: 0.8462rem;
+}
+.changesDrawer .dfoot .path { color: var(--body); font-size: 0.9231rem; }
+.changesDrawer .dfoot .path .dir { color: var(--stone); }
+.changesDrawer .dfoot .warn { display: inline-flex; align-items: center; gap: 5px; color: var(--yellow); }
+.changesDrawer .dfoot .ok { color: var(--stone); }
+.changesDrawer .dfoot .sp { margin-left: auto; }
+.changesDrawer .dfoot .hint { color: var(--stone); }
+
+/* --- the diff primitive: one renderer for git patches and tool inputs ----- */
+.diffView { position: relative; }
+.diffBody { font-family: var(--mono); font-size: 0.9231rem; line-height: 19px; }
+
+.dline { display: flex; min-height: 19px; }
+.dline .ln {
+  width: 40px; flex: none; text-align: right; padding-right: 8px;
+  color: var(--stone); font-size: 0.8462rem; user-select: none;
+}
+.dline .sg { width: 14px; flex: none; text-align: center; color: var(--stone); user-select: none; }
+.dline .tx { white-space: pre; color: var(--body); padding-right: 14px; }
+.dline.add { background: var(--tint-green); }
+.dline.add .sg { color: var(--green); }
+.dline.del { background: var(--tint-red); }
+.dline.del .sg { color: var(--red); }
+.dline.hunk { background: var(--wash-1); }
+.dline.hunk .tx { color: var(--stone); }
+.dline.sel { box-shadow: inset 2px 0 0 var(--blue); background: var(--tint-blue); }
+
+.dpair { display: grid; grid-template-columns: 1fr 1fr; }
+.dpair.sel { box-shadow: inset 2px 0 0 var(--blue); }
+.dcell { display: flex; min-height: 19px; border-right: 1px solid var(--hair); overflow: hidden; }
+.dpair .dcell:last-child { border-right: 0; }
+.dcell .ln {
+  width: 40px; flex: none; text-align: right; padding-right: 8px;
+  color: var(--stone); font-size: 0.8462rem; user-select: none;
+}
+.dcell .sg { width: 12px; flex: none; text-align: center; color: var(--stone); user-select: none; }
+.dcell .tx { white-space: pre; color: var(--body); padding-right: 10px; }
+.dcell.add { background: var(--tint-green); }
+.dcell.add .sg { color: var(--green); }
+.dcell.del { background: var(--tint-red); }
+.dcell.del .sg { color: var(--red); }
+.dcell.hunk { background: var(--wash-1); }
+.dcell.hunk .tx { color: var(--stone); }
+.dcell.empty { background: var(--wash-1); }
+
+.diffMore {
+  display: block; width: 100%; padding: 7px 0; border: 0; border-top: 1px solid var(--hair);
+  background: var(--card); color: var(--mute); font-size: 0.9231rem;
+}
+.diffMore:hover { color: var(--ink); background: var(--elev); }
+
+/* the selection bar: only appears once lines are picked */
+.diffSel {
+  position: sticky; bottom: 0; display: flex; align-items: center; gap: 9px; padding: 7px 14px;
+  background: var(--elev); border-top: 1px solid var(--hair-strong); color: var(--body); font-size: 0.9231rem;
+}
+.diffSel .btn { margin-left: auto; }
+
+/* --- Edit/Write tool cards render their own hunk instead of raw JSON ------ */
+.tool .toolNum { margin-left: auto; flex: none; font-size: 0.8462rem; }
+.toolDiff {
+  margin-top: 8px; border: 1px solid var(--hair); border-radius: var(--r-sm);
+  background: var(--deep); overflow: hidden; max-height: 320px; overflow-y: auto;
+}
+.meta .turnChange {
+  margin-left: 10px; font-family: var(--mono); font-size: 0.8462rem; color: var(--ash);
+}
+.meta .turnChange .warn { color: var(--yellow); }

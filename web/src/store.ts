@@ -190,6 +190,7 @@ export class Store {
 
   /** Who wants to know when the artifacts index changed (the artifacts store, an open artifact page). */
   readonly #artifactsListeners = new Set<() => void>()
+  readonly #changesListeners = new Set<(sessionId: string) => void>()
   /** Who follows brief jobs (the brief store) — one frame per transition. */
   readonly #briefListeners = new Set<(job: BriefJob) => void>()
 
@@ -264,6 +265,9 @@ export class Store {
       case 'artifacts_changed':
         for (const fn of this.#artifactsListeners) fn()
         break
+      case 'session_changed':
+        for (const fn of this.#changesListeners) fn(msg.sessionId)
+        break
       case 'brief_status':
         for (const fn of this.#briefListeners) fn(msg.job)
         break
@@ -291,6 +295,14 @@ export class Store {
     this.#artifactsListeners.add(fn)
     return () => {
       this.#artifactsListeners.delete(fn)
+    }
+  }
+
+  /** Fires when a session's turn ended and its changes may have moved. */
+  onSessionChanged(fn: (sessionId: string) => void): () => void {
+    this.#changesListeners.add(fn)
+    return () => {
+      this.#changesListeners.delete(fn)
     }
   }
 

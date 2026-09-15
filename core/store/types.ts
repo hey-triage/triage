@@ -116,6 +116,49 @@ export interface SessionStore {
   recordWatchRun(id: string, run: WatchRunRecord): Promise<void>
 }
 
+/**
+ * One turn of a session, with the git tree either side of it.
+ *
+ * Sessions in the same folder share a working tree, so "what did *this*
+ * session change" cannot be read off `git status`. It is reconstructed from
+ * these: the agent only edits while its own turn runs, so everything between
+ * `preTree` and `postTree` happened in this session's window — and is this
+ * session's work unless another session's turn overlapped it.
+ */
+export type StoredTurn = {
+  sessionId: string
+  seq: number
+  /** the repo root this turn ran against */
+  root: string
+  /** tree sha of the working tree captured just before the turn started */
+  preTree: string
+  /** tree sha captured after the turn's `result`; null while it is running */
+  postTree: string | null
+  startedAt: number
+  endedAt: number | null
+  /** absolute paths this turn's file-editing tools named */
+  touched: string[]
+}
+
+export interface TurnStore {
+  /** Open a turn. Only the pre-turn tree is known at this point. */
+  begin(t: { sessionId: string; seq: number; root: string; preTree: string; startedAt: number }): Promise<void>
+  /** Close it with the post-turn tree and the paths its tools named. */
+  end(
+    sessionId: string,
+    seq: number,
+    post: { postTree: string | null; endedAt: number; touched: string[] },
+  ): Promise<void>
+  /** This session's turns, oldest first. */
+  list(sessionId: string): Promise<StoredTurn[]>
+  /** Every *other* session's turns against the same root — for collision checks. */
+  othersInRoot(root: string, exceptSessionId: string): Promise<StoredTurn[]>
+  /** The highest turn seq recorded for a session, or 0. */
+  lastSeq(sessionId: string): Promise<number>
+  /** Drop a session's turns (it was deleted). */
+  removeFor(sessionId: string): Promise<void>
+}
+
 export interface EventStore {
   /** Append one event; `seq` must be the caller's next per-session sequence number. */
   append(sessionId: string, seq: number, event: SessionEvent): Promise<void>
@@ -284,6 +327,7 @@ export interface LinkStore {
 export interface Store {
   sessions: SessionStore
   events: EventStore
+  turns: TurnStore
   inbox: InboxStore
   config: ConfigStore
   projects: ProjectStore
