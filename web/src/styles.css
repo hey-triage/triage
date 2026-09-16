@@ -1033,6 +1033,49 @@ dialog.sheet[open] { display: grid; }
 .md img { max-width: 100%; border-radius: var(--r); }
 .md strong { font-weight: 500; color: var(--ink); }
 
+/* Mermaid diagrams from ```mermaid fences (components/Markdown.tsx). Until the
+   SVG exists the figure still holds the source and reads as a code block; the
+   .ready swap replaces it with the diagram and a hover affordance that opens
+   it full-size, since the reading column is narrower than most graphs. */
+.md figure.mermaid { margin: 0 0 12px; }
+.md figure.mermaid.ready {
+  position: relative;
+  background: var(--deep);
+  border: 1px solid var(--hair-strong);
+  border-radius: var(--r);
+  padding: 14px;
+}
+.md .mermaidCanvas { max-height: 420px; overflow: auto; display: flex; justify-content: center; }
+.md .mermaidCanvas svg { max-width: 100%; height: auto; }
+.md .mermaidZoom {
+  position: absolute; top: 8px; right: 8px;
+  font-family: var(--mono); font-size: 0.7692rem;
+  color: var(--mute); background: var(--card); border: 1px solid var(--hair-strong);
+  border-radius: var(--r-xs); padding: 2px 7px; cursor: pointer;
+  opacity: 0; transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.md figure.mermaid.ready:hover .mermaidZoom, .md .mermaidZoom:focus-visible { opacity: 1; }
+.md .mermaidZoom:hover { color: var(--ink); border-color: var(--hair-bright); }
+.md figure.mermaid.failed::after {
+  content: "That diagram did not parse — showing the source.";
+  display: block; margin-top: -4px; font-size: 0.8462rem; color: var(--stone);
+}
+
+/* The expanded diagram: the same SVG at whatever size it wants, scrollable. */
+.mermaidModal {
+  position: fixed; z-index: 81; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(92vw, 1200px); height: min(88vh, 860px);
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 40px 120px rgba(0, 0, 0, 0.65);
+  padding: 20px; outline: none; animation: settingsIn 0.16s ease;
+}
+.mermaidModalClose { position: absolute; top: 10px; right: 10px; z-index: 1; }
+.mermaidModalBody {
+  width: 100%; height: 100%; overflow: auto;
+  display: flex; align-items: center; justify-content: center;
+}
+.mermaidModalBody svg { max-width: 100%; height: auto; }
+
 /* ---------- lists shared by watches / projects / connectors ---------- */
 .list { background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); overflow: hidden; }
 .listRow { display: flex; align-items: center; gap: 12px; padding: 10px 14px; font-size: 1rem; transition: background 0.08s ease; }
@@ -1313,7 +1356,7 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 @media (prefers-reduced-motion: reduce) {
   .dot.live, .tool .glyph.busy, .probing .pip, .msg.assistant.live .md > :last-child::after, .topIcon .connDot.down { animation: none; }
   .uiMenu[data-state="open"] { animation: none; }
-  .settings, .settingsOverlay, .setActions .saved { animation: none; }
+  .settings, .settingsOverlay, .mermaidModal, .setActions .saved { animation: none; }
   .selBar { animation: none; }
 }
 
