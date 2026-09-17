@@ -65,6 +65,12 @@ const TOOLS = [
     },
   },
   {
+    name: 'get_workspace',
+    description:
+      'Which triage workspace this connection is acting in: `current` (id, name, whether it is the default, auth backend) plus `workspaces`, the roster of ids to switch among. This connection picks its workspace with the TRIAGE_WORKSPACE env var; an unknown id silently falls back to the default, so this also reports the id you requested and whether it matched. Everything you list/create/edit here lives in `current`.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'upsert_work_item',
     description:
       'Idempotently upsert one work item into the triage inbox. Id-keyed (e.g. "slack:<permalink-tail>", "github:owner/repo#123"), update-only-if-newer (by updatedAt), user-state-preserving: calling this repeatedly can never create duplicates or clobber done/snoozed/dismissed state. Invalid items are rejected, never repaired.',
@@ -252,6 +258,29 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<{ 
     return body.ok
       ? { text: JSON.stringify(body.context, null, 2), isError: false }
       : { text: `failed: ${body.error}`, isError: true }
+  }
+  if (name === 'get_workspace') {
+    const body = (await api('/api/workspace')) as {
+      ok: boolean
+      current?: { id: string; name: string; isDefault: boolean; authBackend: string }
+      workspaces?: { id: string; name: string; isDefault: boolean }[]
+      error?: string
+    }
+    if (!body.ok || !body.current) return { text: `failed: ${body.error ?? 'no workspace'}`, isError: true }
+    // The server resolved to `current`; if TRIAGE_WORKSPACE was set but does not
+    // match, an unknown id silently fell back to the default — surface that.
+    const requested = WORKSPACE || null
+    const matchedRequest = requested === null ? null : requested === body.current.id
+    const out = {
+      current: body.current,
+      workspaces: body.workspaces ?? [],
+      connection: { serverUrl: BASE_URL, requestedWorkspace: requested, matchedRequest },
+    }
+    const warn =
+      matchedRequest === false
+        ? `NOTE: TRIAGE_WORKSPACE="${requested}" did not match any workspace; fell back to "${body.current.id}".\n\n`
+        : ''
+    return { text: warn + JSON.stringify(out, null, 2), isError: false }
   }
   if (name === 'upsert_work_item') {
     const body = (await api('/api/items/upsert', args)) as { ok: boolean; outcome?: string; error?: string }

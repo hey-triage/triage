@@ -282,6 +282,7 @@ const TRIAGE_READ_TOOLS = new Set([
   'mcp__triage__list_work_items',
   'mcp__triage__get_work_item',
   'mcp__triage__get_session_context',
+  'mcp__triage__get_workspace',
   'mcp__triage__list_artifacts',
   'mcp__triage__read_artifact',
 ])
@@ -2431,6 +2432,23 @@ function wireWorkspace(meta: WorkspaceMeta): Workspace {
 
 const wireWorkspaces = (): Workspace[] => registry.workspaces.map(wireWorkspace)
 
+/**
+ * "Which workspace am I bound to?" — the current workspace a caller resolved to
+ * (chat via cookie/param, external shim via TRIAGE_WORKSPACE) plus the roster of
+ * all workspaces so the caller can see what else exists and how to switch. The
+ * one answer both the in-process tool and the stdio shim's get_workspace return.
+ */
+function workspaceInfo(rt: WorkspaceRuntime) {
+  return {
+    current: wireWorkspace(rt.meta),
+    workspaces: registry.workspaces.map((w) => ({
+      id: w.id,
+      name: w.name,
+      isDefault: w.id === registry.defaultId,
+    })),
+  }
+}
+
 /** Bring a runtime up: sessions, seeds, cached snapshot, background probes. */
 async function initRuntime(rt: WorkspaceRuntime): Promise<void> {
   await loadSessions(rt)
@@ -3523,6 +3541,18 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
         },
       ),
       tool(
+        'get_workspace',
+        'Which triage workspace you are acting in: `current` (its id, name, whether it is the default, and its auth backend) plus `workspaces`, the full roster of ids to switch among. Everything you list/create/edit here lives in `current`. An external Claude Code session picks its workspace with the TRIAGE_WORKSPACE env var (an unknown id silently falls back to the default) — call this to confirm which one you actually landed in.',
+        {},
+        async () => {
+          try {
+            return okResult(JSON.stringify(workspaceInfo(rt), null, 2))
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+      tool(
         'create_work_item',
         'Add a manual to-do to the inbox (a user-authored item). Title is required; description, url, priority (1–4), and projectId are optional.',
         {
@@ -3917,6 +3947,15 @@ const server = http.createServer(async (req, res) => {
 
   // --- everything below is scoped to one workspace ---------------------------
   const rt = resolveRuntime(req, url)
+
+  // The workspace this request resolved to, singular and scoped — unlike the
+  // daemon-wide /api/workspaces list. Backs get_workspace so a chat or the stdio
+  // shim can answer "which workspace am I in?" (and the shim can tell whether its
+  // TRIAGE_WORKSPACE matched or silently fell back to the default).
+  if (url.pathname === '/api/workspace' && req.method === 'GET') {
+    json(200, { ok: true, ...workspaceInfo(rt) })
+    return
+  }
 
   if (url.pathname === '/api/sessions') {
     json(200, summaries(rt))
