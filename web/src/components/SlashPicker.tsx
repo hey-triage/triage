@@ -1,5 +1,5 @@
 import * as Popover from '@radix-ui/react-popover'
-import { useEffect, useRef, type ReactNode } from 'react'
+import { forwardRef, useEffect, useRef, type ReactNode } from 'react'
 import type { CommandHit } from '../commands.js'
 
 type Props = {
@@ -25,8 +25,17 @@ type Props = {
  * because picking a command just writes text. Focus never leaves the textarea,
  * so the keystrokes that move the selection are the same ones still narrowing
  * the list.
+ *
+ * It forwards its ref onto its own anchor so the `@` picker, which wraps this
+ * component in *its* `Popover.Anchor asChild`, still reaches the real box: both
+ * popovers end up anchored to the one `boxWrap` DOM node. Without the forward
+ * the outer anchor's ref would land on a function component and be dropped, and
+ * the `@` picker would never position or open.
  */
-export function SlashPicker({ open, hits, loading, selected, onHover, onPick, children }: Props) {
+export const SlashPicker = forwardRef<HTMLDivElement, Props>(function SlashPicker(
+  { open, hits, loading, selected, onHover, onPick, children },
+  anchorRef,
+) {
   const list = useRef<HTMLDivElement>(null)
 
   // Keep the selected row in view as the arrow keys move it.
@@ -37,7 +46,9 @@ export function SlashPicker({ open, hits, loading, selected, onHover, onPick, ch
 
   return (
     <Popover.Root open={open}>
-      <Popover.Anchor asChild>{children}</Popover.Anchor>
+      <Popover.Anchor asChild ref={anchorRef}>
+        {children}
+      </Popover.Anchor>
       <Popover.Portal>
         <Popover.Content
           className="mnPop slPop"
@@ -86,4 +97,4 @@ export function SlashPicker({ open, hits, loading, selected, onHover, onPick, ch
       </Popover.Portal>
     </Popover.Root>
   )
-}
+})
